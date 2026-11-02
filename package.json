@@ -1,0 +1,28 @@
+{
+  "name": "sidenote",
+  "version": "0.3.0",
+  "description": "Leave inline notes on Claude Code replies in your browser, and send them back to Claude.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/web/tsconfig.json",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "dompurify": "3.4.17",
+    "esbuild": "0.28.2",
+    "marked": "18.1.2",
+    "typescript": "7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sous17/sidenote.git"
+  }
+}

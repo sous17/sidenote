@@ -1,0 +1,14 @@
+{
+  "name": "sidenote",
+  "description": "sidenote: inline browser notes on Claude Code replies",
+  "owner": {
+    "name": "Sourajit Saha"
+  },
+  "plugins": [
+    {
+      "name": "sidenote",
+      "source": "./",
+      "description": "Leave inline notes on Claude's replies in a browser window, and send them back to Claude."
+    }
+  ]
+}
