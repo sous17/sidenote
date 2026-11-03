@@ -14,7 +14,7 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run typecheck && npm test && npm run build"
+    "check": "npm run format:check && npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

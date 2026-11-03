@@ -169,7 +169,7 @@ stripping, with no compile step. The plugin itself runs on Node 20 or newer.
 
 ```shell
 npm install
-npm run check      # formatting, types, tests, then build dist/
+npm run check      # formatting, types, build dist/, then the tests
 npm run format     # apply Prettier
 ```
 
