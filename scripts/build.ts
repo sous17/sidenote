@@ -25,7 +25,7 @@ await Promise.all([
   }),
   build({
     ...shared,
-    entryPoints: { app: join(web, "app.ts"), theme: join(web, "theme.ts") },
+    entryPoints: { app: join(web, "main.ts"), theme: join(web, "theme.ts") },
     outdir: join(dist, "web"),
     platform: "browser",
     format: "iife",

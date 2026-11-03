@@ -1,30 +1,205 @@
 // src/server/main.ts
-import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join as join2 } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// src/shared/paths.ts
+// src/node/paths.ts
 import { homedir } from "node:os";
 import { join } from "node:path";
+var stateDir = () => join(homedir(), ".sidenote");
 var paths = {
-  stateDir: () => join(homedir(), ".sidenote"),
-  storeFile: () => join(paths.stateDir(), "store.json"),
-  serverFile: () => join(paths.stateDir(), "server.json"),
-  portFile: () => join(paths.stateDir(), "port"),
-  logFile: () => join(paths.stateDir(), "server.log"),
-  enabledFlag: () => join(paths.stateDir(), "enabled"),
+  stateDir,
+  storeFile: () => join(stateDir(), "store.json"),
+  serverFile: () => join(stateDir(), "server.json"),
+  portFile: () => join(stateDir(), "port"),
+  logFile: () => join(stateDir(), "server.log"),
+  enabledFlag: () => join(stateDir(), "enabled"),
   transcriptsDir: () => join(homedir(), ".claude", "projects")
+};
+
+// src/node/clock.ts
+var systemClock = {
+  now: () => Date.now() / 1e3,
+  monotonicMs: () => performance.now()
+};
+
+// src/server/delivery.ts
+var LISTENER_STALE_MS = 5e3;
+var Delivery = class {
+  #store;
+  #clock;
+  #waiters = /* @__PURE__ */ new Map();
+  /** Sessions where Claude is mid-turn. */
+  #busy = /* @__PURE__ */ new Set();
+  /** Sessions whose notes go out at the waiter's next poll. */
+  #requested = /* @__PURE__ */ new Set();
+  #statusSignature = "";
+  constructor(store, clock = systemClock) {
+    this.#store = store;
+    this.#clock = clock;
+  }
+  status(sessionId2) {
+    return { status: this.#state(sessionId2), send_requested: this.#requested.has(sessionId2) };
+  }
+  /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
+  refresh() {
+    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, this.status(s.id)]));
+    if (signature === this.#statusSignature) return;
+    this.#statusSignature = signature;
+    this.#store.revision.bump();
+  }
+  /** A new waiter starts when Claude finishes a turn; it replaces any older one. */
+  registerWaiter(sessionId2, waiterId) {
+    this.#waiters.set(sessionId2, { id: waiterId, seenMs: this.#clock.monotonicMs() });
+    this.#busy.delete(sessionId2);
+  }
+  pollWaiter(sessionId2, waiterId) {
+    const waiter = this.#waiters.get(sessionId2);
+    if (waiter?.id !== waiterId) return { action: "exit", comments: [] };
+    waiter.seenMs = this.#clock.monotonicMs();
+    if (!this.#requested.has(sessionId2)) return { action: "wait", comments: [] };
+    this.#requested.delete(sessionId2);
+    this.#waiters.delete(sessionId2);
+    this.#busy.add(sessionId2);
+    const comments = this.#store.claimPending(sessionId2);
+    return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
+  }
+  /** The user sent a prompt in the terminal: the waiter stands down and the prompt carries the notes. */
+  markBusy(sessionId2) {
+    this.#waiters.delete(sessionId2);
+    this.#busy.add(sessionId2);
+    this.#requested.delete(sessionId2);
+  }
+  /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */
+  requestSend(sessionIds) {
+    const pending = this.#store.sessionsWithPendingNotes();
+    const targets = [...new Set(sessionIds)].filter((id) => pending.has(id)).sort();
+    for (const id of targets) this.#requested.add(id);
+    if (targets.length) this.#store.revision.bump();
+    return targets;
+  }
+  #state(sessionId2) {
+    const waiter = this.#waiters.get(sessionId2);
+    if (waiter && this.#clock.monotonicMs() - waiter.seenMs < LISTENER_STALE_MS) return "listening";
+    return this.#busy.has(sessionId2) ? "busy" : "offline";
+  }
 };
 
 // src/server/http.ts
 import { timingSafeEqual } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
 // src/shared/types.ts
 var TOKEN_HEADER = "X-Review-Token";
+var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+// src/server/requests.ts
+var BadRequest = class extends Error {
+};
+var LIMITS = {
+  replyText: 1e6,
+  noteBody: 2e4,
+  quote: 2e3,
+  sessionName: 200,
+  cwd: 4096,
+  sessionIds: 100
+};
+var WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
+var LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+function asObject(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new BadRequest("expected a JSON object");
+  }
+  return value;
+}
+function string(body, key, max) {
+  const value = body[key];
+  if (typeof value !== "string") throw new BadRequest(`${key} must be a string`);
+  if (value.length > max) throw new BadRequest(`${key} is longer than ${max} characters`);
+  return value;
+}
+function optionalString(body, key, max) {
+  return body[key] === void 0 || body[key] === null ? void 0 : string(body, key, max);
+}
+function integer(body, key, min) {
+  const value = body[key];
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
+    throw new BadRequest(`${key} must be an integer of at least ${min}`);
+  }
+  return value;
+}
+function matching(body, key, pattern) {
+  const value = string(body, key, 256);
+  if (!pattern.test(value)) throw new BadRequest(`${key} is malformed`);
+  return value;
+}
+function sessionId(value) {
+  if (!SESSION_ID_PATTERN.test(value)) throw new BadRequest("session_id is malformed");
+  return value;
+}
+function nonEmpty(value, key) {
+  if (!value.trim()) throw new BadRequest(`${key} must not be empty`);
+  return value;
+}
+function parseNewResponse(input) {
+  const body = asObject(input);
+  const createdAt = body["created_at"];
+  if (createdAt !== void 0 && (typeof createdAt !== "number" || !Number.isFinite(createdAt) || createdAt <= 0)) {
+    throw new BadRequest("created_at must be a positive number of seconds");
+  }
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
+    cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
+    text: string(body, "text", LIMITS.replyText),
+    created_at: createdAt
+  };
+}
+function parseNewNote(input) {
+  const body = asObject(input);
+  const text = nonEmpty(string(body, "body", LIMITS.noteBody), "body").trim();
+  if (body["parent_id"] !== void 0 && body["parent_id"] !== null) {
+    return { kind: "follow-up", parentId: integer(body, "parent_id", 1), body: text };
+  }
+  return {
+    kind: "root",
+    responseId: integer(body, "response_id", 1),
+    blockIndex: integer(body, "block_index", -1),
+    quote: string(body, "quote", LIMITS.quote),
+    body: text
+  };
+}
+function parseTouchSession(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
+    cwd: optionalString(body, "cwd", LIMITS.cwd) ?? ""
+  };
+}
+function parseClaim(input) {
+  return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+}
+function parseWaiter(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    waiter_id: matching(body, "waiter_id", WAITER_ID_PATTERN)
+  };
+}
+function parseSend(input) {
+  const ids = asObject(input)["session_ids"];
+  if (!Array.isArray(ids) || ids.length > LIMITS.sessionIds || !ids.every((id) => typeof id === "string")) {
+    throw new BadRequest("session_ids must be a list of session ids");
+  }
+  return { session_ids: ids.map(sessionId) };
+}
+function parseRedeem(input) {
+  return { code: matching(asObject(input), "code", LAUNCH_CODE_PATTERN) };
+}
 
 // src/server/http.ts
 var MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -34,7 +209,16 @@ var CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml"
 };
-var CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+var COMMON_HEADERS = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Cross-Origin-Resource-Policy": "same-origin"
+};
+var PAGE_HEADERS = {
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "X-Frame-Options": "DENY"
+};
 var HttpError = class extends Error {
   status;
   constructor(status, message = "") {
@@ -42,128 +226,188 @@ var HttpError = class extends Error {
     this.status = status;
   }
 };
+var ok = (body, status = 200) => ({ status, body });
+var empty = (status) => ({ status });
+function routes({ store, delivery, launchCodes, token }) {
+  const snapshot = (sessionId2) => {
+    const session = sessionId2 ? store.session(sessionId2) : void 0;
+    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [] };
+    return {
+      version: store.revision.value,
+      session: { ...session, ...delivery.status(session.id) },
+      ...store.sessionContent(session.id)
+    };
+  };
+  return [
+    {
+      method: "GET",
+      path: "/api/state",
+      needsToken: true,
+      handle: ({ query }) => {
+        delivery.refresh();
+        if (query.get("v") === String(store.revision.value)) return empty(204);
+        return ok(snapshot(query.get("s")));
+      }
+    },
+    {
+      method: "GET",
+      path: "/api/sessions",
+      needsToken: true,
+      handle: () => ok({ sessions: store.listSessions() })
+    },
+    { method: "GET", path: "/api/health", needsToken: true, handle: () => ok({ ok: true }) },
+    {
+      method: "POST",
+      path: "/api/sessions",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseTouchSession(body);
+        store.touchSession(input.session_id, input.session_name, input.cwd);
+        return ok({ ok: true });
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/responses",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseNewResponse(body);
+        const { response, newSession } = store.addResponse({
+          sessionId: input.session_id,
+          sessionName: input.session_name,
+          cwd: input.cwd,
+          text: input.text,
+          createdAt: input.created_at
+        });
+        return ok({ response, new_session: newSession }, 201);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/comments",
+      needsToken: true,
+      handle: ({ body }) => {
+        const note = store.addNote(parseNewNote(body));
+        if (!note) throw new HttpError(404, "unknown reply or thread");
+        return ok(note, 201);
+      }
+    },
+    {
+      method: "DELETE",
+      path: /^\/api\/comments\/(\d{1,15})$/,
+      needsToken: true,
+      handle: ({ param }) => empty(store.deletePendingNote(Number(param)) ? 204 : 404)
+    },
+    {
+      method: "POST",
+      path: "/api/claim",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseClaim(body);
+        delivery.markBusy(session_id);
+        return ok({ comments: store.claimPending(session_id) });
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/waiters",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, waiter_id } = parseWaiter(body);
+        delivery.registerWaiter(session_id, waiter_id);
+        return ok({ ok: true });
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/waiters/poll",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, waiter_id } = parseWaiter(body);
+        return ok(delivery.pollWaiter(session_id, waiter_id));
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/send",
+      needsToken: true,
+      handle: ({ body }) => ok({ sessions: delivery.requestSend(parseSend(body).session_ids) })
+    },
+    {
+      method: "POST",
+      path: "/api/launch",
+      needsToken: true,
+      handle: () => ok({ code: launchCodes.issue() })
+    },
+    {
+      method: "POST",
+      path: "/api/launch/redeem",
+      needsToken: false,
+      handle: ({ body }) => {
+        if (!launchCodes.redeem(parseRedeem(body).code))
+          throw new HttpError(403, "this link was already used or has expired");
+        return ok({ token });
+      }
+    }
+  ];
+}
 function createApp(options) {
-  const { store, token, allowedHosts } = options;
   const webDir = resolve(options.webDir);
-  const tokenBytes = Buffer.from(token);
-  function tokenValid(request) {
+  const tokenBytes = Buffer.from(options.token);
+  const table = routes(options);
+  const tokenValid = (request) => {
     const given = Buffer.from(String(request.headers[TOKEN_HEADER.toLowerCase()] ?? ""));
     return given.length === tokenBytes.length && timingSafeEqual(given, tokenBytes);
-  }
-  async function handle(request, response) {
-    if (!allowedHosts.has(request.headers.host ?? "")) throw new HttpError(403);
+  };
+  const serveApi = async (request, url) => {
+    let param = "";
+    const route = table.find((candidate) => {
+      if (candidate.method !== request.method) return false;
+      if (typeof candidate.path === "string") return candidate.path === url.pathname;
+      const match = candidate.path.exec(url.pathname);
+      param = match?.[1] ?? "";
+      return match !== null;
+    });
+    if (!route) throw new HttpError(404);
+    if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    const body = request.method === "POST" ? await readJson(request) : void 0;
+    return route.handle({ body, query: url.searchParams, param });
+  };
+  const handle = async (request, response) => {
+    if (!options.allowedHosts.has(request.headers.host ?? "")) throw new HttpError(403);
     const url = new URL(request.url ?? "/", "http://localhost");
-    const method = request.method ?? "GET";
-    if (method === "GET" && url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
-    if (method === "GET" && url.pathname.startsWith("/static/")) {
-      const file = resolve(webDir, decodeURIComponent(url.pathname.slice("/static/".length)));
-      if (!file.startsWith(webDir + sep)) throw new HttpError(404);
-      return sendFile(response, file);
-    }
-    if (!url.pathname.startsWith("/api/")) throw new HttpError(404);
-    if (!tokenValid(request)) throw new HttpError(403);
-    if (method === "GET") {
-      switch (url.pathname) {
-        case "/api/state": {
-          store.refreshStatus();
-          if (url.searchParams.get("v") === String(store.version)) return sendEmpty(response, 204);
-          return sendJson(response, 200, store.snapshot(url.searchParams.get("s")));
-        }
-        case "/api/sessions": {
-          const result = { sessions: store.listSessions() };
-          return sendJson(response, 200, result);
-        }
-        case "/api/health":
-          return sendJson(response, 200, { ok: true });
-      }
-    }
-    if (method === "POST") {
-      const body = await readJson(request);
-      switch (url.pathname) {
-        case "/api/responses": {
-          const input = body;
-          const sessionId = str(input.session_id);
-          if (!sessionId) throw new HttpError(400, "session_id is required");
-          const { response: created, newSession } = store.addResponse({
-            sessionId,
-            cwd: str(input.cwd),
-            text: str(input.text),
-            createdAt: Number(input.created_at) || void 0,
-            sessionName: str(input.session_name).trim().slice(0, 200)
-          });
-          const result = { response: created, new_session: newSession };
-          return sendJson(response, 201, result);
-        }
-        case "/api/sessions": {
-          const input = body;
-          const sessionId = str(input.session_id);
-          if (!sessionId) throw new HttpError(400, "session_id is required");
-          store.touchSession(sessionId, str(input.session_name).trim().slice(0, 200), str(input.cwd));
-          return sendJson(response, 200, { ok: true });
-        }
-        case "/api/comments": {
-          const input = body;
-          const text = str(input["body"]).trim();
-          if (!text) throw new HttpError(400, "empty note");
-          const parentId = input["parent_id"];
-          const target = parentId !== void 0 && parentId !== null ? { parentId: Number(parentId) } : {
-            responseId: Number(input["response_id"] ?? 0),
-            blockIndex: Number(input["block_index"] ?? -1),
-            quote: str(input["quote"])
-          };
-          const comment = store.addComment(target, text);
-          if (!comment) throw new HttpError(404, "unknown reply or thread");
-          return sendJson(response, 201, comment);
-        }
-        case "/api/claim": {
-          const sessionId = str(body.session_id);
-          store.markBusy(sessionId);
-          const result = { comments: store.claimPending(sessionId) };
-          return sendJson(response, 200, result);
-        }
-        case "/api/waiters": {
-          const input = body;
-          store.registerWaiter(str(input.session_id), str(input.waiter_id));
-          return sendJson(response, 200, { ok: true });
-        }
-        case "/api/waiters/poll": {
-          const input = body;
-          const result = store.pollWaiter(str(input.session_id), str(input.waiter_id));
-          return sendJson(response, 200, result);
-        }
-        case "/api/send": {
-          const ids = body.session_ids;
-          const result = {
-            sessions: store.requestSend(Array.isArray(ids) ? ids.map(String) : void 0)
-          };
-          return sendJson(response, 200, result);
-        }
-      }
-    }
-    if (method === "DELETE" && url.pathname.startsWith("/api/comments/")) {
-      const id = url.pathname.slice("/api/comments/".length);
-      const deleted = /^\d+$/.test(id) && store.deletePendingComment(Number(id));
-      return sendEmpty(response, deleted ? 204 : 404);
-    }
+    if (url.pathname.startsWith("/api/")) return send(response, await serveApi(request, url));
+    if (request.method !== "GET") throw new HttpError(405);
+    if (url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
+    if (url.pathname.startsWith("/static/")) return sendFile(response, staticPath(webDir, url.pathname));
     throw new HttpError(404);
-  }
+  };
   return (request, response) => {
     handle(request, response).catch((error) => {
       if (response.headersSent) return response.destroy();
-      if (error instanceof HttpError) {
-        return error.message ? sendJson(response, error.status, { error: error.message }) : sendEmpty(response, error.status);
-      }
+      if (error instanceof HttpError) return send(response, errorReply(error.status, error.message));
+      if (error instanceof BadRequest) return send(response, errorReply(400, error.message));
       console.error(error);
-      sendEmpty(response, 500);
+      send(response, errorReply(500, "internal error"));
     });
   };
 }
-function str(value) {
-  return value === void 0 || value === null ? "" : String(value);
+function errorReply(status, message) {
+  return message ? { status, body: { error: message } } : { status };
+}
+function staticPath(webDir, pathname) {
+  let relative;
+  try {
+    relative = decodeURIComponent(pathname.slice("/static/".length));
+  } catch {
+    throw new HttpError(404);
+  }
+  const file = resolve(webDir, relative);
+  if (relative.includes("\0") || !file.startsWith(webDir + sep)) throw new HttpError(404);
+  return file;
 }
 async function readJson(request) {
-  const declared = Number(request.headers["content-length"] ?? 0);
-  if (declared > MAX_BODY_BYTES) throw new HttpError(413);
+  if (Number(request.headers["content-length"] ?? 0) > MAX_BODY_BYTES) throw new HttpError(413);
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
@@ -173,37 +417,105 @@ async function readJson(request) {
   }
   const text = Buffer.concat(chunks).toString("utf8");
   try {
-    const parsed = text ? JSON.parse(text) : {};
-    if (typeof parsed !== "object" || parsed === null) throw new Error("not an object");
-    return parsed;
+    return text ? JSON.parse(text) : {};
   } catch {
-    throw new HttpError(400, "invalid json");
+    throw new BadRequest("invalid JSON");
   }
 }
 async function sendFile(response, file) {
-  const info = await stat(file).catch(() => null);
-  if (!info?.isFile()) throw new HttpError(404);
-  const content = await readFile(file);
+  const content = await readFile(file).catch(() => {
+    throw new HttpError(404);
+  });
   response.writeHead(200, {
+    ...COMMON_HEADERS,
+    ...extname(file) === ".html" ? PAGE_HEADERS : {},
     "Content-Type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream",
-    "Content-Length": content.length,
-    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
-    "Cache-Control": "no-store"
+    "Content-Length": content.length
   });
   response.end(content);
 }
-function sendJson(response, status, payload) {
-  const content = Buffer.from(JSON.stringify(payload));
-  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": content.length });
+function send(response, reply) {
+  const content = reply.body === void 0 ? void 0 : Buffer.from(JSON.stringify(reply.body));
+  response.writeHead(reply.status, {
+    ...COMMON_HEADERS,
+    ...content ? { "Content-Type": "application/json" } : {},
+    "Content-Length": content?.length ?? 0
+  });
   response.end(content);
 }
-function sendEmpty(response, status) {
-  response.writeHead(status, { "Content-Length": 0 });
-  response.end();
-}
 
-// src/server/store.ts
+// src/server/launch.ts
+import { randomBytes } from "node:crypto";
+var LAUNCH_CODE_TTL_MS = 2 * 60 * 1e3;
+var MAX_LIVE_CODES = 32;
+var LaunchCodes = class {
+  #issued = /* @__PURE__ */ new Map();
+  #clock;
+  constructor(clock = systemClock) {
+    this.#clock = clock;
+  }
+  issue() {
+    this.#expire();
+    const code = randomBytes(24).toString("base64url");
+    this.#issued.set(code, this.#clock.monotonicMs() + LAUNCH_CODE_TTL_MS);
+    while (this.#issued.size > MAX_LIVE_CODES) this.#issued.delete(this.#issued.keys().next().value);
+    return code;
+  }
+  /** True once per issued code, within its lifetime. */
+  redeem(code) {
+    this.#expire();
+    return this.#issued.delete(code);
+  }
+  #expire() {
+    const now = this.#clock.monotonicMs();
+    for (const [code, expiresAt] of this.#issued) {
+      if (expiresAt <= now) this.#issued.delete(code);
+    }
+  }
+};
+
+// src/server/persistence.ts
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+function emptyStore() {
+  return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], nextId: 1 };
+}
+function loadStore(file) {
+  if (!existsSync(file)) return emptyStore();
+  return migrate(JSON.parse(readFileSync(file, "utf8")));
+}
+function saveStore(file, data) {
+  const contents = {
+    sessions: Object.fromEntries(data.sessions),
+    responses: data.responses,
+    comments: data.comments,
+    next_id: data.nextId
+  };
+  const temp = `${file}.tmp`;
+  writeFileSync(temp, JSON.stringify(contents), { mode: 384 });
+  renameSync(temp, file);
+}
+function migrate(file) {
+  const responses = (file.responses ?? []).filter((r) => SESSION_ID_PATTERN.test(r.session_id));
+  for (const response of responses) response.note_answers ??= {};
+  const responseIds = new Set(responses.map((r) => r.id));
+  const comments = (file.comments ?? []).filter((c) => responseIds.has(c.response_id));
+  for (const comment of comments) {
+    comment.parent_id ??= null;
+    if (comment.answered_by === void 0) comment.answered_by = comment.delivered_at === null ? null : 0;
+  }
+  const sessions = /* @__PURE__ */ new Map();
+  for (const [id, meta] of Object.entries(file.sessions ?? {})) {
+    if (!SESSION_ID_PATTERN.test(id)) continue;
+    sessions.set(id, { name: meta.name ?? "", cwd: meta.cwd ?? "", last_active: meta.last_active ?? 0 });
+  }
+  for (const response of responses) {
+    const meta = sessions.get(response.session_id) ?? { name: "", cwd: response.cwd, last_active: 0 };
+    meta.last_active = Math.max(meta.last_active, response.created_at);
+    sessions.set(response.session_id, meta);
+  }
+  const highestId = Math.max(0, ...responses.map((r) => r.id), ...comments.map((c) => c.id));
+  return { sessions, responses, comments, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
+}
 
 // src/server/split.ts
 var NOTE_MARKER = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
@@ -241,301 +553,253 @@ function markerIds(line) {
 // src/server/store.ts
 var MAX_RESPONSES_PER_SESSION = 100;
 var SESSION_RETENTION_SECONDS = 7 * 24 * 60 * 60;
-var LISTENER_STALE_MS = 5e3;
-var Store = class {
-  version = 0;
-  sessions;
-  responses;
-  comments;
-  nextId;
-  file;
-  now;
-  monotonicMs;
-  // Live-only state for Send now: the current waiter per session, sessions that are
-  // mid-turn, and sessions with a send waiting to go out.
-  waiters = /* @__PURE__ */ new Map();
-  busy = /* @__PURE__ */ new Set();
-  sendRequested = /* @__PURE__ */ new Set();
-  statusSignature = "";
-  constructor(options = {}) {
-    this.file = options.file;
-    this.now = options.now ?? (() => Date.now() / 1e3);
-    this.monotonicMs = options.monotonicMs ?? (() => performance.now());
-    const data = this.file && existsSync(this.file) ? JSON.parse(readFileSync(this.file, "utf8")) : {};
-    this.sessions = data.sessions ?? {};
-    this.responses = data.responses ?? [];
-    this.comments = data.comments ?? [];
-    this.nextId = data.next_id ?? 1;
-    for (const response of this.responses) response.note_answers ??= {};
-    for (const comment of this.comments) {
-      if (comment.answered_by === void 0) comment.answered_by = comment.delivered_at ? 0 : null;
-      comment.parent_id ??= null;
-    }
-    for (const response of this.responses) {
-      const meta = this.sessions[response.session_id] ??= { name: "", cwd: response.cwd, last_active: 0 };
-      meta.last_active = Math.max(meta.last_active, response.created_at);
-    }
-    if (this.prune()) this.persist();
+var Revision = class {
+  #value = 0;
+  get value() {
+    return this.#value;
   }
-  /** One session's replies and notes, as its page shows them. */
-  snapshot(sessionId) {
-    const meta = sessionId === null ? void 0 : this.sessions[sessionId];
-    if (sessionId === null || !meta) return { version: this.version, session: null, responses: [], comments: [] };
-    const responses = this.responses.filter((r) => r.session_id === sessionId);
-    const ids = new Set(responses.map((r) => r.id));
-    return {
-      version: this.version,
-      session: { id: sessionId, ...meta, ...this.sendStatus(sessionId) },
-      responses,
-      comments: this.comments.filter((c) => ids.has(c.response_id))
-    };
+  bump() {
+    this.#value += 1;
+  }
+};
+var Store = class {
+  revision = new Revision();
+  #data;
+  #file;
+  #clock;
+  /** Without a file, the store lives in memory only (tests). */
+  constructor(options = {}) {
+    this.#file = options.file;
+    this.#clock = options.clock ?? systemClock;
+    this.#data = this.#file ? loadStore(this.#file) : emptyStore();
+    if (this.#prune()) this.#persist();
+  }
+  // ---- Reading ---------------------------------------------------------------------------
+  session(sessionId2) {
+    const meta = this.#data.sessions.get(sessionId2);
+    return meta && { id: sessionId2, ...meta };
   }
   /** Known sessions, most recently active first. */
   listSessions() {
-    return Object.entries(this.sessions).map(([id, meta]) => ({ id, ...meta })).sort((a, b) => b.last_active - a.last_active);
+    return [...this.#data.sessions].map(([id, meta]) => ({ id, ...meta })).sort((a, b) => b.last_active - a.last_active);
   }
+  /** One session's replies, oldest first, and the notes on them. */
+  sessionContent(sessionId2) {
+    const responses = this.#data.responses.filter((r) => r.session_id === sessionId2);
+    const ids = new Set(responses.map((r) => r.id));
+    return { responses, comments: this.#data.comments.filter((c) => ids.has(c.response_id)) };
+  }
+  /** Sessions with notes that haven't been sent to Claude yet. */
+  sessionsWithPendingNotes() {
+    const sessionOf = this.#sessionOfResponse();
+    const pending = /* @__PURE__ */ new Set();
+    for (const note of this.#data.comments) {
+      const sessionId2 = sessionOf.get(note.response_id);
+      if (note.delivered_at === null && sessionId2 !== void 0) pending.add(sessionId2);
+    }
+    return pending;
+  }
+  // ---- Writing ---------------------------------------------------------------------------
   /** Remembers a session before its first reply, e.g. when /sidenote:on opens its window. */
-  touchSession(sessionId, name, cwd) {
-    const meta = this.sessions[sessionId] ??= { name: "", cwd, last_active: 0 };
-    if (name) meta.name = name;
-    meta.cwd = cwd || meta.cwd;
-    meta.last_active = Math.max(meta.last_active, this.now());
-    this.changed();
+  touchSession(sessionId2, name, cwd) {
+    this.#upsertSession(sessionId2, { name, cwd, activeAt: this.#clock.now() });
+    this.#changed();
   }
-  addResponse(input) {
-    const { sessionId, cwd, text, createdAt, sessionName } = input;
+  addResponse(reply) {
     const response = {
-      id: this.newId(),
-      session_id: sessionId,
-      cwd,
-      text,
-      created_at: createdAt ?? this.now(),
+      id: this.#newId(),
+      session_id: reply.sessionId,
+      cwd: reply.cwd,
+      text: reply.text,
+      created_at: reply.createdAt ?? this.#clock.now(),
       note_answers: {}
     };
-    const newSession = !this.sessions[sessionId];
-    const meta = this.sessions[sessionId] ??= { name: "", cwd, last_active: 0 };
-    meta.cwd = cwd || meta.cwd;
-    if (sessionName) meta.name = sessionName;
-    meta.last_active = Math.max(meta.last_active, response.created_at);
-    if (createdAt === void 0) this.linkAnswer(response);
-    this.responses.push(response);
-    this.responses.sort((a, b) => a.created_at - b.created_at);
-    this.prune();
-    this.changed();
+    const newSession = !this.#data.sessions.has(reply.sessionId);
+    this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
+    if (reply.createdAt === void 0) this.#takeAnswers(response);
+    this.#data.responses.push(response);
+    this.#data.responses.sort((a, b) => a.created_at - b.created_at);
+    this.#prune();
+    this.#changed();
     return { response, newSession };
   }
-  /** Adds a note on a reply, or a follow-up in an existing thread. Returns null for unknown targets. */
-  addComment(target, body) {
-    let anchor;
-    if ("parentId" in target) {
-      const parent = this.comments.find((c) => c.id === target.parentId);
-      if (!parent) return null;
-      anchor = {
-        responseId: parent.response_id,
-        blockIndex: parent.block_index,
-        quote: parent.quote,
-        parentId: parent.parent_id ?? parent.id
-      };
-    } else {
-      anchor = { ...target, parentId: null };
-    }
-    if (!this.responses.some((r) => r.id === anchor.responseId)) return null;
-    const comment = {
-      id: this.newId(),
-      response_id: anchor.responseId,
-      block_index: anchor.blockIndex,
-      quote: anchor.quote,
-      body,
-      parent_id: anchor.parentId,
-      created_at: this.now(),
+  /** Adds a note on a reply, or a follow-up in a thread. Returns null when the target is unknown. */
+  addNote(note) {
+    const anchor = this.#anchorFor(note);
+    if (!anchor) return null;
+    const created = {
+      id: this.#newId(),
+      ...anchor,
+      body: note.body,
+      created_at: this.#clock.now(),
       delivered_at: null,
       answered_by: null
     };
-    this.comments.push(comment);
-    this.changed();
-    return comment;
+    this.#data.comments.push(created);
+    this.#changed();
+    return created;
   }
-  /** Deletes an undelivered note, together with its follow-ups if none of them were sent. */
-  deletePendingComment(commentId) {
-    const doomed = this.comments.filter((c) => c.id === commentId || c.parent_id === commentId);
-    if (!doomed.some((c) => c.id === commentId) || doomed.some((c) => c.delivered_at !== null)) return false;
-    this.comments = this.comments.filter((c) => !doomed.includes(c));
-    this.changed();
+  /** Deletes an unsent note, with its follow-ups, unless any of them was already sent. */
+  deletePendingNote(noteId) {
+    const doomed = this.#data.comments.filter((c) => c.id === noteId || c.parent_id === noteId);
+    if (!doomed.some((c) => c.id === noteId) || doomed.some((c) => c.delivered_at !== null)) return false;
+    const doomedIds = new Set(doomed.map((c) => c.id));
+    this.#data.comments = this.#data.comments.filter((c) => !doomedIds.has(c.id));
+    this.#changed();
     return true;
   }
-  /** Returns this session's undelivered notes and marks them delivered. */
-  claimPending(sessionId) {
-    const responsesById = new Map(
-      this.responses.filter((r) => r.session_id === sessionId).map((r) => [r.id, r])
+  /** Marks this session's unsent notes delivered and returns them, described for Claude. */
+  claimPending(sessionId2) {
+    const responses = new Map(
+      this.#data.responses.filter((r) => r.session_id === sessionId2).map((r) => [r.id, r])
     );
-    const commentsById = new Map(this.comments.map((c) => [c.id, c]));
+    const notes = new Map(this.#data.comments.map((c) => [c.id, c]));
+    const now = this.#clock.now();
     const claimed = [];
-    const now = this.now();
-    for (const comment of this.comments) {
-      const response = responsesById.get(comment.response_id);
-      if (!response || comment.delivered_at !== null) continue;
-      comment.delivered_at = now;
-      comment.answered_by = null;
-      const root = comment.parent_id === null ? void 0 : commentsById.get(comment.parent_id);
-      claimed.push({ ...comment, response_created_at: response.created_at, root_body: root?.body ?? null });
+    for (const note of this.#data.comments) {
+      const response = responses.get(note.response_id);
+      if (!response || note.delivered_at !== null) continue;
+      note.delivered_at = now;
+      note.answered_by = null;
+      const root = note.parent_id === null ? void 0 : notes.get(note.parent_id);
+      claimed.push({ ...note, response_created_at: response.created_at, root_body: root?.body ?? null });
     }
-    if (claimed.length) this.changed();
+    if (claimed.length) this.#changed();
     return claimed;
   }
-  // ---- Send now ----------------------------------------------------------------
-  /** Bumps the version when a waiter went quiet, so pages see the session stop listening. */
-  refreshStatus() {
-    const signature = JSON.stringify(Object.keys(this.sessions).map((id) => this.sendStatus(id)));
-    if (signature !== this.statusSignature) {
-      this.statusSignature = signature;
-      this.version += 1;
+  // ---- Internals -------------------------------------------------------------------------
+  #anchorFor(note) {
+    if (note.kind === "follow-up") {
+      const parent = this.#data.comments.find((c) => c.id === note.parentId);
+      if (!parent) return null;
+      return {
+        response_id: parent.response_id,
+        block_index: parent.block_index,
+        quote: parent.quote,
+        parent_id: parent.parent_id ?? parent.id
+      };
     }
+    if (!this.#data.responses.some((r) => r.id === note.responseId)) return null;
+    return { response_id: note.responseId, block_index: note.blockIndex, quote: note.quote, parent_id: null };
   }
-  /** A new waiter starts when Claude finishes a turn; it replaces any older one. */
-  registerWaiter(sessionId, waiterId) {
-    this.waiters.set(sessionId, { id: waiterId, seenMs: this.monotonicMs() });
-    this.busy.delete(sessionId);
+  #upsertSession(sessionId2, update) {
+    const meta = this.#data.sessions.get(sessionId2) ?? { name: "", cwd: update.cwd, last_active: 0 };
+    if (update.name) meta.name = update.name;
+    if (update.cwd) meta.cwd = update.cwd;
+    meta.last_active = Math.max(meta.last_active, update.activeAt);
+    this.#data.sessions.set(sessionId2, meta);
   }
-  pollWaiter(sessionId, waiterId) {
-    const waiter = this.waiters.get(sessionId);
-    if (!waiter || waiter.id !== waiterId) return { action: "exit", comments: [] };
-    waiter.seenMs = this.monotonicMs();
-    if (!this.sendRequested.has(sessionId)) return { action: "wait", comments: [] };
-    this.sendRequested.delete(sessionId);
-    this.waiters.delete(sessionId);
-    this.busy.add(sessionId);
-    const comments = this.claimPending(sessionId);
-    return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
-  }
-  /** The user sent a prompt in the terminal: the waiter stands down until the turn ends. */
-  markBusy(sessionId) {
-    this.waiters.delete(sessionId);
-    this.busy.add(sessionId);
-    this.sendRequested.delete(sessionId);
-  }
-  /** Queues pending notes to go out now, or as soon as a busy session's turn ends. */
-  requestSend(sessionIds) {
-    const sessionOf = new Map(this.responses.map((r) => [r.id, r.session_id]));
-    const pendingSessions = new Set(
-      this.comments.filter((c) => c.delivered_at === null).map((c) => sessionOf.get(c.response_id))
-    );
-    const targets = sessionIds ? sessionIds.filter((s) => pendingSessions.has(s)) : [...pendingSessions];
-    for (const sessionId of targets) this.sendRequested.add(sessionId);
-    this.version += 1;
-    return [...new Set(targets)].sort();
-  }
-  sendStatus(sessionId) {
-    const waiter = this.waiters.get(sessionId);
-    const status = waiter && this.monotonicMs() - waiter.seenMs < LISTENER_STALE_MS ? "listening" : this.busy.has(sessionId) ? "busy" : "offline";
-    return { status, send_requested: this.sendRequested.has(sessionId) };
-  }
-  // ---- Internals -----------------------------------------------------------------
   /**
-   * Marks a live reply as Claude's answer to the notes its session was last sent, and moves
-   * the sections it wrote for each note out of the main text into note_answers.
+   * Marks a live reply as Claude's answer to the notes its session was last sent, and moves the
+   * sections it wrote for each note out of the main text into note_answers.
    */
-  linkAnswer(response) {
-    const sessionResponseIds = new Set(
-      this.responses.filter((r) => r.session_id === response.session_id).map((r) => r.id)
-    );
-    const awaiting = this.comments.filter(
-      (c) => sessionResponseIds.has(c.response_id) && c.delivered_at !== null && c.answered_by === null
+  #takeAnswers(response) {
+    const sessionOf = this.#sessionOfResponse();
+    const awaiting = this.#data.comments.filter(
+      (c) => sessionOf.get(c.response_id) === response.session_id && c.delivered_at !== null && c.answered_by === null
     );
     if (!awaiting.length) return;
-    for (const comment of awaiting) comment.answered_by = response.id;
+    for (const note of awaiting) note.answered_by = response.id;
     const { mainText, answers } = splitNoteAnswers(response.text, new Set(awaiting.map((c) => c.id)));
     if (answers.size) {
       response.text = mainText;
       response.note_answers = Object.fromEntries([...answers].map(([id, body]) => [String(id), body]));
     }
   }
-  /**
-   * Forgets sessions idle longer than SESSION_RETENTION_SECONDS and keeps each session's newest
-   * MAX_RESPONSES_PER_SESSION replies, dropping notes on whatever goes. Returns whether anything did.
-   */
-  prune() {
-    const cutoff = this.now() - SESSION_RETENTION_SECONDS;
-    const before = this.responses.length + Object.keys(this.sessions).length;
-    for (const [sessionId, meta] of Object.entries(this.sessions)) {
-      if (meta.last_active < cutoff) delete this.sessions[sessionId];
+  /** Applies the retention limits. Returns whether anything was dropped. */
+  #prune() {
+    const data = this.#data;
+    const before = data.responses.length + data.sessions.size;
+    const cutoff = this.#clock.now() - SESSION_RETENTION_SECONDS;
+    for (const [sessionId2, meta] of data.sessions) {
+      if (meta.last_active < cutoff) data.sessions.delete(sessionId2);
     }
-    const perSession = /* @__PURE__ */ new Map();
     const kept = [];
-    for (const response of [...this.responses].reverse()) {
-      if (!this.sessions[response.session_id]) continue;
+    const perSession = /* @__PURE__ */ new Map();
+    for (const response of [...data.responses].reverse()) {
+      if (!data.sessions.has(response.session_id)) continue;
       const count = (perSession.get(response.session_id) ?? 0) + 1;
       perSession.set(response.session_id, count);
       if (count <= MAX_RESPONSES_PER_SESSION) kept.push(response);
     }
-    this.responses = kept.reverse();
-    const keptIds = new Set(this.responses.map((r) => r.id));
-    this.comments = this.comments.filter((c) => keptIds.has(c.response_id));
-    return this.responses.length + Object.keys(this.sessions).length !== before;
+    data.responses = kept.reverse();
+    const keptIds = new Set(data.responses.map((r) => r.id));
+    data.comments = data.comments.filter((c) => keptIds.has(c.response_id));
+    return data.responses.length + data.sessions.size !== before;
   }
-  newId() {
-    return this.nextId++;
+  #sessionOfResponse() {
+    return new Map(this.#data.responses.map((r) => [r.id, r.session_id]));
   }
-  changed() {
-    this.version += 1;
-    this.persist();
+  #newId() {
+    return this.#data.nextId++;
   }
-  persist() {
-    if (!this.file) return;
-    const data = {
-      sessions: this.sessions,
-      responses: this.responses,
-      comments: this.comments,
-      next_id: this.nextId
-    };
-    const temp = `${this.file}.tmp`;
-    writeFileSync(temp, JSON.stringify(data), { mode: 384 });
-    renameSync(temp, this.file);
+  #changed() {
+    this.revision.bump();
+    this.#persist();
+  }
+  #persist() {
+    if (this.#file) saveStore(this.#file, this.#data);
   }
 };
 
 // src/server/main.ts
 var WEB_DIR = join2(dirname(fileURLToPath(import.meta.url)), "web");
-function listen(server) {
+function listenOn(server, port) {
+  return new Promise((resolvePort, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      const address = server.address();
+      resolvePort(typeof address === "object" && address ? address.port : port);
+    });
+  });
+}
+async function listen(server) {
   let preferred = 0;
   try {
     preferred = Number.parseInt(readFileSync2(paths.portFile(), "utf8"), 10) || 0;
   } catch {
   }
-  const tryPort = (port) => new Promise((resolvePort, reject) => {
-    const onError = (error) => reject(error);
-    server.once("error", onError);
-    server.listen(port, "127.0.0.1", () => {
-      server.off("error", onError);
-      const address = server.address();
-      resolvePort(typeof address === "object" && address ? address.port : port);
-    });
-  });
-  return tryPort(preferred).catch((error) => {
-    if (preferred && error.code === "EADDRINUSE") return tryPort(0);
+  try {
+    return await listenOn(server, preferred);
+  } catch (error) {
+    if (preferred && error.code === "EADDRINUSE") return listenOn(server, 0);
     throw error;
-  });
+  }
+}
+function removeServerFile() {
+  try {
+    const current = JSON.parse(readFileSync2(paths.serverFile(), "utf8"));
+    if (current.pid === process.pid) rmSync(paths.serverFile());
+  } catch {
+  }
 }
 async function main() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
   const store = new Store({ file: paths.storeFile() });
-  const token = randomBytes(24).toString("base64url");
+  const token = randomBytes2(32).toString("base64url");
   const allowedHosts = /* @__PURE__ */ new Set();
-  const server = createServer(createApp({ store, token, allowedHosts, webDir: WEB_DIR }));
+  const server = createServer(
+    createApp({
+      store,
+      delivery: new Delivery(store),
+      launchCodes: new LaunchCodes(),
+      token,
+      allowedHosts,
+      webDir: WEB_DIR
+    })
+  );
   server.keepAliveTimeout = 2e3;
   const port = await listen(server);
   allowedHosts.add(`127.0.0.1:${port}`);
   allowedHosts.add(`localhost:${port}`);
-  writeFileSync2(paths.portFile(), String(port));
-  const info = { port, token, pid: process.pid };
-  writeFileSync2(paths.serverFile(), JSON.stringify(info), { mode: 384 });
-  chmodSync(paths.serverFile(), 384);
+  writeFileSync2(paths.portFile(), String(port), { mode: 384 });
+  writeFileSync2(paths.serverFile(), JSON.stringify({ port, token, pid: process.pid }), {
+    mode: 384
+  });
   console.error(`sidenote listening on http://127.0.0.1:${port}`);
   const shutDown = () => {
-    try {
-      const current = JSON.parse(readFileSync2(paths.serverFile(), "utf8"));
-      if (current.pid === process.pid) rmSync(paths.serverFile());
-    } catch {
-    }
+    removeServerFile();
     server.close();
     server.closeAllConnections();
     process.exit(0);

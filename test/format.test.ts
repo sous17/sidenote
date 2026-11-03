@@ -25,7 +25,10 @@ test("asks for one marker per note, using a real note id in the example", () => 
   assert.match(text, /answer the user's message as usual/);
   assert.match(text, /\*\*↳ Re: note 41\*\*\nYour answer to note 41\./);
   assert.match(text, /Note 41, on your response from 14:05:\n> line one\n> line two\nWhy\?/);
-  assert.match(text, /Note 43, a follow-up in the thread on your response from 14:05:[\s\S]*Their earlier note: Why\?\nFollow-up: And\?/);
+  assert.match(
+    text,
+    /Note 43, a follow-up in the thread on your response from 14:05:[\s\S]*Their earlier note: Why\?\nFollow-up: And\?/,
+  );
 });
 
 test("Send now asks Claude to skip the main answer", () => {

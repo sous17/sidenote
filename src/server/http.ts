@@ -1,43 +1,73 @@
+// The HTTP API and the page's static files. Bound to 127.0.0.1 by main.ts.
+//
+// Defenses, in the order a request meets them:
+// - Host must be this server's own 127.0.0.1/localhost address, which blocks DNS rebinding.
+// - /api/* needs the token in a custom header. Browsers can't send that header cross-origin
+//   without a CORS preflight, which this server never approves, so other sites can't call it.
+// - Bodies are size-limited JSON objects, parsed by requests.ts before any handler runs.
+// - Every response carries nosniff, no-referrer and same-origin headers; the page also gets a
+//   content security policy that allows no inline or remote scripts.
 import { timingSafeEqual } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import {
   TOKEN_HEADER,
-  type ClaimRequest,
   type ClaimResult,
-  type NewResponseRequest,
+  type ErrorResult,
+  type LaunchCodeResult,
   type NewResponseResult,
-  type SessionListResult,
-  type TouchSessionRequest,
-  type SendRequest,
+  type RedeemResult,
   type SendResult,
+  type SessionListResult,
+  type StateSnapshot,
   type WaiterPollResult,
-  type WaiterRequest,
 } from "../shared/types.ts";
+import type { Delivery } from "./delivery.ts";
+import type { LaunchCodes } from "./launch.ts";
+import {
+  BadRequest,
+  parseClaim,
+  parseNewNote,
+  parseNewResponse,
+  parseRedeem,
+  parseSend,
+  parseTouchSession,
+  parseWaiter,
+} from "./requests.ts";
 import type { Store } from "./store.ts";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
-const CONTENT_TYPES: Record<string, string> = {
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
 };
 
-// No inline scripts and no remote loads: even if a reply smuggles HTML past the sanitizer,
-// it cannot run code that reads the token and posts fake notes.
-const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-  "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const COMMON_HEADERS: Readonly<Record<string, string>> = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Cross-Origin-Resource-Policy": "same-origin",
+};
+
+const PAGE_HEADERS: Readonly<Record<string, string>> = {
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+    "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "X-Frame-Options": "DENY",
+};
 
 export interface AppOptions {
   store: Store;
+  delivery: Delivery;
+  launchCodes: LaunchCodes;
   token: string;
-  /** Host header values to accept; rejecting others blocks DNS-rebinding pages. */
+  /** Host header values to accept. Filled in by main.ts once the port is known. */
   allowedHosts: ReadonlySet<string>;
-  /** Directory holding index.html, app.js, app.css and the other page files. */
+  /** Directory holding index.html and the page's other files. */
   webDir: string;
 }
 
@@ -49,140 +79,216 @@ class HttpError extends Error {
   }
 }
 
-export function createApp(options: AppOptions): RequestListener {
-  const { store, token, allowedHosts } = options;
-  const webDir = resolve(options.webDir);
-  const tokenBytes = Buffer.from(token);
+type Json = object;
 
-  function tokenValid(request: IncomingMessage): boolean {
+interface Reply {
+  status: number;
+  body?: Json;
+}
+
+interface Route {
+  method: "GET" | "POST" | "DELETE";
+  /** A path, or a pattern whose first group is passed on as the route parameter. */
+  path: string | RegExp;
+  /** false only for the launch code exchange, which is how a page gets the token. */
+  needsToken: boolean;
+  handle(context: { body: unknown; query: URLSearchParams; param: string }): Reply | Promise<Reply>;
+}
+
+const ok = (body: Json, status = 200): Reply => ({ status, body });
+const empty = (status: number): Reply => ({ status });
+
+function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
+  const snapshot = (sessionId: string | null): StateSnapshot => {
+    const session = sessionId ? store.session(sessionId) : undefined;
+    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [] };
+    return {
+      version: store.revision.value,
+      session: { ...session, ...delivery.status(session.id) },
+      ...store.sessionContent(session.id),
+    };
+  };
+
+  return [
+    {
+      method: "GET",
+      path: "/api/state",
+      needsToken: true,
+      handle: ({ query }) => {
+        delivery.refresh();
+        // The page passes the version it has; an unchanged store costs one empty reply.
+        if (query.get("v") === String(store.revision.value)) return empty(204);
+        return ok(snapshot(query.get("s")));
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/sessions",
+      needsToken: true,
+      handle: () => ok({ sessions: store.listSessions() } satisfies SessionListResult),
+    },
+    { method: "GET", path: "/api/health", needsToken: true, handle: () => ok({ ok: true }) },
+    {
+      method: "POST",
+      path: "/api/sessions",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseTouchSession(body);
+        store.touchSession(input.session_id, input.session_name, input.cwd);
+        return ok({ ok: true });
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/responses",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseNewResponse(body);
+        const { response, newSession } = store.addResponse({
+          sessionId: input.session_id,
+          sessionName: input.session_name,
+          cwd: input.cwd,
+          text: input.text,
+          createdAt: input.created_at,
+        });
+        return ok({ response, new_session: newSession } satisfies NewResponseResult, 201);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/comments",
+      needsToken: true,
+      handle: ({ body }) => {
+        const note = store.addNote(parseNewNote(body));
+        if (!note) throw new HttpError(404, "unknown reply or thread");
+        return ok(note, 201);
+      },
+    },
+    {
+      method: "DELETE",
+      path: /^\/api\/comments\/(\d{1,15})$/,
+      needsToken: true,
+      handle: ({ param }) => empty(store.deletePendingNote(Number(param)) ? 204 : 404),
+    },
+    {
+      method: "POST",
+      path: "/api/claim",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseClaim(body);
+        delivery.markBusy(session_id);
+        return ok({ comments: store.claimPending(session_id) } satisfies ClaimResult);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/waiters",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, waiter_id } = parseWaiter(body);
+        delivery.registerWaiter(session_id, waiter_id);
+        return ok({ ok: true });
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/waiters/poll",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, waiter_id } = parseWaiter(body);
+        return ok(delivery.pollWaiter(session_id, waiter_id) satisfies WaiterPollResult);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/send",
+      needsToken: true,
+      handle: ({ body }) => ok({ sessions: delivery.requestSend(parseSend(body).session_ids) } satisfies SendResult),
+    },
+    {
+      method: "POST",
+      path: "/api/launch",
+      needsToken: true,
+      handle: () => ok({ code: launchCodes.issue() } satisfies LaunchCodeResult),
+    },
+    {
+      method: "POST",
+      path: "/api/launch/redeem",
+      needsToken: false,
+      handle: ({ body }) => {
+        if (!launchCodes.redeem(parseRedeem(body).code))
+          throw new HttpError(403, "this link was already used or has expired");
+        return ok({ token } satisfies RedeemResult);
+      },
+    },
+  ];
+}
+
+export function createApp(options: AppOptions): RequestListener {
+  const webDir = resolve(options.webDir);
+  const tokenBytes = Buffer.from(options.token);
+  const table = routes(options);
+
+  const tokenValid = (request: IncomingMessage): boolean => {
     const given = Buffer.from(String(request.headers[TOKEN_HEADER.toLowerCase()] ?? ""));
     return given.length === tokenBytes.length && timingSafeEqual(given, tokenBytes);
-  }
+  };
 
-  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!allowedHosts.has(request.headers.host ?? "")) throw new HttpError(403);
+  const serveApi = async (request: IncomingMessage, url: URL): Promise<Reply> => {
+    let param = "";
+    const route = table.find((candidate) => {
+      if (candidate.method !== request.method) return false;
+      if (typeof candidate.path === "string") return candidate.path === url.pathname;
+      const match = candidate.path.exec(url.pathname);
+      param = match?.[1] ?? "";
+      return match !== null;
+    });
+    if (!route) throw new HttpError(404);
+    if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    const body = request.method === "POST" ? await readJson(request) : undefined;
+    return route.handle({ body, query: url.searchParams, param });
+  };
+
+  const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    if (!options.allowedHosts.has(request.headers.host ?? "")) throw new HttpError(403);
     const url = new URL(request.url ?? "/", "http://localhost");
-    const method = request.method ?? "GET";
-
-    if (method === "GET" && url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
-    if (method === "GET" && url.pathname.startsWith("/static/")) {
-      const file = resolve(webDir, decodeURIComponent(url.pathname.slice("/static/".length)));
-      if (!file.startsWith(webDir + sep)) throw new HttpError(404);
-      return sendFile(response, file);
-    }
-    if (!url.pathname.startsWith("/api/")) throw new HttpError(404);
-    if (!tokenValid(request)) throw new HttpError(403);
-
-    if (method === "GET") {
-      switch (url.pathname) {
-        case "/api/state": {
-          store.refreshStatus();
-          if (url.searchParams.get("v") === String(store.version)) return sendEmpty(response, 204);
-          return sendJson(response, 200, store.snapshot(url.searchParams.get("s")));
-        }
-        case "/api/sessions": {
-          const result: SessionListResult = { sessions: store.listSessions() };
-          return sendJson(response, 200, result);
-        }
-        case "/api/health":
-          return sendJson(response, 200, { ok: true });
-      }
-    }
-
-    if (method === "POST") {
-      const body = await readJson(request);
-      switch (url.pathname) {
-        case "/api/responses": {
-          const input = body as Partial<NewResponseRequest>;
-          const sessionId = str(input.session_id);
-          if (!sessionId) throw new HttpError(400, "session_id is required");
-          const { response: created, newSession } = store.addResponse({
-            sessionId,
-            cwd: str(input.cwd),
-            text: str(input.text),
-            createdAt: Number(input.created_at) || undefined,
-            sessionName: str(input.session_name).trim().slice(0, 200),
-          });
-          const result: NewResponseResult = { response: created, new_session: newSession };
-          return sendJson(response, 201, result);
-        }
-        case "/api/sessions": {
-          const input = body as Partial<TouchSessionRequest>;
-          const sessionId = str(input.session_id);
-          if (!sessionId) throw new HttpError(400, "session_id is required");
-          store.touchSession(sessionId, str(input.session_name).trim().slice(0, 200), str(input.cwd));
-          return sendJson(response, 200, { ok: true });
-        }
-        case "/api/comments": {
-          const input = body as Record<string, unknown>;
-          const text = str(input["body"]).trim();
-          if (!text) throw new HttpError(400, "empty note");
-          const parentId = input["parent_id"];
-          const target =
-            parentId !== undefined && parentId !== null
-              ? { parentId: Number(parentId) }
-              : {
-                  responseId: Number(input["response_id"] ?? 0),
-                  blockIndex: Number(input["block_index"] ?? -1),
-                  quote: str(input["quote"]),
-                };
-          const comment = store.addComment(target, text);
-          if (!comment) throw new HttpError(404, "unknown reply or thread");
-          return sendJson(response, 201, comment);
-        }
-        case "/api/claim": {
-          const sessionId = str((body as Partial<ClaimRequest>).session_id);
-          store.markBusy(sessionId);
-          const result: ClaimResult = { comments: store.claimPending(sessionId) };
-          return sendJson(response, 200, result);
-        }
-        case "/api/waiters": {
-          const input = body as Partial<WaiterRequest>;
-          store.registerWaiter(str(input.session_id), str(input.waiter_id));
-          return sendJson(response, 200, { ok: true });
-        }
-        case "/api/waiters/poll": {
-          const input = body as Partial<WaiterRequest>;
-          const result: WaiterPollResult = store.pollWaiter(str(input.session_id), str(input.waiter_id));
-          return sendJson(response, 200, result);
-        }
-        case "/api/send": {
-          const ids = (body as SendRequest).session_ids;
-          const result: SendResult = {
-            sessions: store.requestSend(Array.isArray(ids) ? ids.map(String) : undefined),
-          };
-          return sendJson(response, 200, result);
-        }
-      }
-    }
-
-    if (method === "DELETE" && url.pathname.startsWith("/api/comments/")) {
-      const id = url.pathname.slice("/api/comments/".length);
-      const deleted = /^\d+$/.test(id) && store.deletePendingComment(Number(id));
-      return sendEmpty(response, deleted ? 204 : 404);
-    }
+    if (url.pathname.startsWith("/api/")) return send(response, await serveApi(request, url));
+    if (request.method !== "GET") throw new HttpError(405);
+    if (url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
+    if (url.pathname.startsWith("/static/")) return sendFile(response, staticPath(webDir, url.pathname));
     throw new HttpError(404);
-  }
+  };
 
   return (request, response) => {
     handle(request, response).catch((error: unknown) => {
       if (response.headersSent) return response.destroy();
-      if (error instanceof HttpError) {
-        return error.message ? sendJson(response, error.status, { error: error.message }) : sendEmpty(response, error.status);
-      }
+      if (error instanceof HttpError) return send(response, errorReply(error.status, error.message));
+      if (error instanceof BadRequest) return send(response, errorReply(400, error.message));
       console.error(error);
-      sendEmpty(response, 500);
+      send(response, errorReply(500, "internal error"));
     });
   };
 }
 
-function str(value: unknown): string {
-  return value === undefined || value === null ? "" : String(value);
+function errorReply(status: number, message: string): Reply {
+  return message ? { status, body: { error: message } satisfies ErrorResult } : { status };
+}
+
+/** The file a /static/ path names, refusing anything outside the page directory. */
+function staticPath(webDir: string, pathname: string): string {
+  let relative: string;
+  try {
+    relative = decodeURIComponent(pathname.slice("/static/".length));
+  } catch {
+    throw new HttpError(404); // malformed percent-encoding
+  }
+  const file = resolve(webDir, relative);
+  if (relative.includes("\0") || !file.startsWith(webDir + sep)) throw new HttpError(404);
+  return file;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const declared = Number(request.headers["content-length"] ?? 0);
-  if (declared > MAX_BODY_BYTES) throw new HttpError(413);
+  if (Number(request.headers["content-length"] ?? 0) > MAX_BODY_BYTES) throw new HttpError(413);
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request as AsyncIterable<Buffer>) {
@@ -192,34 +298,31 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
   const text = Buffer.concat(chunks).toString("utf8");
   try {
-    const parsed: unknown = text ? JSON.parse(text) : {};
-    if (typeof parsed !== "object" || parsed === null) throw new Error("not an object");
-    return parsed;
+    return text ? (JSON.parse(text) as unknown) : {};
   } catch {
-    throw new HttpError(400, "invalid json");
+    throw new BadRequest("invalid JSON");
   }
 }
 
 async function sendFile(response: ServerResponse, file: string): Promise<void> {
-  const info = await stat(file).catch(() => null);
-  if (!info?.isFile()) throw new HttpError(404);
-  const content = await readFile(file);
+  const content = await readFile(file).catch(() => {
+    throw new HttpError(404);
+  });
   response.writeHead(200, {
+    ...COMMON_HEADERS,
+    ...(extname(file) === ".html" ? PAGE_HEADERS : {}),
     "Content-Type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream",
     "Content-Length": content.length,
-    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
-    "Cache-Control": "no-store",
   });
   response.end(content);
 }
 
-function sendJson(response: ServerResponse, status: number, payload: unknown): void {
-  const content = Buffer.from(JSON.stringify(payload));
-  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": content.length });
+function send(response: ServerResponse, reply: Reply): void {
+  const content = reply.body === undefined ? undefined : Buffer.from(JSON.stringify(reply.body));
+  response.writeHead(reply.status, {
+    ...COMMON_HEADERS,
+    ...(content ? { "Content-Type": "application/json" } : {}),
+    "Content-Length": content?.length ?? 0,
+  });
   response.end(content);
-}
-
-function sendEmpty(response: ServerResponse, status: number): void {
-  response.writeHead(status, { "Content-Length": 0 });
-  response.end();
 }

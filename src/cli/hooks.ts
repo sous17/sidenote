@@ -1,3 +1,4 @@
+// The three Claude Code hooks. Each reads Claude Code's JSON hook input from stdin (see main.ts).
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -5,10 +6,10 @@ import type {
   ClaimResult,
   NewResponseRequest,
   NewResponseResult,
-  ServerInfo,
   WaiterPollResult,
+  WaiterRequest,
 } from "../shared/types.ts";
-import { SERVER_START_TIMEOUT_MS, callApi, ensureServer, openBrowser, pageUrl, runningServer } from "./client.ts";
+import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude } from "./format.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
@@ -22,6 +23,7 @@ export interface HookInput {
   last_assistant_message?: string;
 }
 
+/** The session's /rename name, or "" if the transcript can't be read or has none. */
 function sessionName(transcriptPath: string | undefined): string {
   if (!transcriptPath) return "";
   try {
@@ -31,27 +33,27 @@ function sessionName(transcriptPath: string | undefined): string {
   }
 }
 
-/** Stop: sends the finished reply to the session's window, opening it for a new session. */
+/** Stop: sends the finished reply to its session's window, opening the window for a new session. */
 export async function hookStop(input: HookInput): Promise<void> {
-  const text = (input.last_assistant_message ?? "").trim();
-  const sessionId = input.session_id ?? "";
+  const text = input.last_assistant_message?.trim();
+  const sessionId = input.session_id;
   if (!text || !sessionId) return;
-  const { server, started } = await ensureServer();
-  const body: NewResponseRequest = {
+  const { client, started } = await SidenoteClient.ensure();
+  const reply: NewResponseRequest = {
     session_id: sessionId,
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
     text,
   };
-  const result = await callApi<NewResponseResult>(server, "POST", "/api/responses", body);
-  if (started || result.new_session) openBrowser(pageUrl(server, sessionId));
+  const result = await client.post<NewResponseResult>("/api/responses", reply);
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
 }
 
-/** UserPromptSubmit: attaches this session's pending notes to the prompt. */
+/** UserPromptSubmit: attaches the session's pending notes to the prompt as context. */
 export async function hookPrompt(input: HookInput): Promise<void> {
-  const server = await runningServer();
-  if (!server) return;
-  const { comments } = await callApi<ClaimResult>(server, "POST", "/api/claim", { session_id: input.session_id ?? "" });
+  const client = await SidenoteClient.connect();
+  if (!client || !input.session_id) return;
+  const { comments } = await client.post<ClaimResult>("/api/claim", { session_id: input.session_id });
   if (!comments.length) return;
   const output = {
     hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatNotesForClaude(comments) },
@@ -60,36 +62,40 @@ export async function hookPrompt(input: HookInput): Promise<void> {
 }
 
 /**
- * Stop, run in the background with asyncRewake: waits for the user to click Send now in the
- * browser, then prints the notes to stderr and exits 2, which wakes Claude to answer them.
+ * Stop, in the background with asyncRewake: waits for Send now in the browser, then prints the
+ * notes to stderr and exits 2, which wakes Claude to answer them.
  */
 export async function hookWait(input: HookInput): Promise<void> {
-  const sessionId = input.session_id;
-  if (!sessionId) return;
-  // The Stop hook that starts the server runs alongside this one, so give it time.
-  let server: ServerInfo | null = null;
-  const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
-  while (!(server = await runningServer())) {
-    if (Date.now() > deadline) return;
-    await sleep(500);
-  }
-  const waiter = { session_id: sessionId, waiter_id: randomBytes(8).toString("hex") };
-  await callApi(server, "POST", "/api/waiters", waiter);
+  if (!input.session_id) return;
+  const client = await connectWithin(SERVER_START_TIMEOUT_MS);
+  if (!client) return;
+  const waiter: WaiterRequest = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  await client.post("/api/waiters", waiter);
   for (;;) {
     await sleep(WAITER_POLL_MS);
     let result: WaiterPollResult;
     try {
-      result = await callApi<WaiterPollResult>(server, "POST", "/api/waiters/poll", waiter);
+      result = await client.post<WaiterPollResult>("/api/waiters/poll", waiter);
     } catch {
       return; // sidenote was turned off or restarted
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
       process.stderr.write(formatNotesForClaude(result.comments, { fromBrowser: true }));
-      // Exit code 2 is what wakes Claude. Set it rather than calling process.exit, so stderr
-      // finishes writing first (pipes are asynchronous on macOS).
+      // Exit code 2 wakes Claude. Set it instead of calling process.exit, so stderr finishes
+      // writing first (pipes are asynchronous on macOS).
       process.exitCode = 2;
       return;
     }
+  }
+}
+
+/** The Stop hook that starts the server runs alongside hook-wait, so give it time. */
+async function connectWithin(timeoutMs: number): Promise<SidenoteClient | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const client = await SidenoteClient.connect();
+    if (client || Date.now() > deadline) return client;
+    await sleep(500);
   }
 }

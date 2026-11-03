@@ -38,7 +38,12 @@ export function formatNotesForClaude(notes: readonly ClaimedNote[], options: { f
   ];
   for (const note of notes) {
     const time = clockTime(note.response_created_at);
-    const quote = note.quote ? note.quote.split(/\r?\n/).map((line) => `> ${line}`).join("\n") : "> (whole response)";
+    const quote = note.quote
+      ? note.quote
+          .split(/\r?\n/)
+          .map((line) => `> ${line}`)
+          .join("\n")
+      : "> (whole response)";
     if (note.root_body) {
       lines.push(
         `\nNote ${note.id}, a follow-up in the thread on your response from ${time}:\n` +

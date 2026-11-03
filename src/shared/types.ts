@@ -1,4 +1,4 @@
-// The API contract shared by the server, the hooks and the page.
+// The contract between the server, the hooks and the page.
 // Field names are snake_case because they are also the on-disk format of ~/.sidenote/store.json.
 
 /** Seconds since the epoch, with a fraction. */
@@ -9,7 +9,7 @@ export interface StoredResponse {
   id: number;
   session_id: string;
   cwd: string;
-  /** The main answer; sections Claude wrote for notes are moved into note_answers. */
+  /** The main answer. Sections Claude wrote for notes are moved into note_answers. */
   text: string;
   created_at: EpochSeconds;
   /** Claude's answer to each note this reply answered, keyed by String(note id). */
@@ -31,8 +31,12 @@ export interface Note {
   answered_by: number | null;
 }
 
-/** "listening": Send now wakes Claude. "busy": Claude is mid-turn, a send waits for it.
- *  "offline": no waiter; notes go with the next terminal prompt. */
+/**
+ * Whether Send now can reach the session's Claude:
+ * - listening: a waiter is running, so Send now wakes Claude at once
+ * - busy: Claude is mid-turn, so a send goes as soon as it finishes
+ * - offline: nothing is waiting, so notes go with the next terminal prompt
+ */
 export type SessionState = "listening" | "busy" | "offline";
 
 /** What sidenote remembers about a Claude Code session. */
@@ -40,18 +44,23 @@ export interface SessionMeta {
   /** The name given with /rename, or "" when the session has none. */
   name: string;
   cwd: string;
-  /** When the session's latest reply arrived; sessions idle too long are forgotten. */
+  /** When the session was last active; sessions idle too long are forgotten. */
   last_active: EpochSeconds;
 }
 
-/** The session a page shows, with its Send now status. */
-export interface SessionView extends SessionMeta {
+export interface SessionSummary extends SessionMeta {
   id: string;
+}
+
+export interface SendStatus {
   status: SessionState;
   send_requested: boolean;
 }
 
-/** One session's replies and notes: each page shows exactly one session. */
+/** The session a page shows, with its Send now status. */
+export type SessionView = SessionSummary & SendStatus;
+
+/** One session's replies and notes. Each page shows exactly one session. */
 export interface StateSnapshot {
   version: number;
   /** null when the page names no session, or one sidenote has never seen or has forgotten. */
@@ -65,6 +74,8 @@ export interface ClaimedNote extends Note {
   response_created_at: EpochSeconds;
   root_body: string | null;
 }
+
+// ---- Requests and results ------------------------------------------------------------------
 
 export interface NewResponseRequest {
   session_id: string;
@@ -83,8 +94,7 @@ export interface NewResponseResult {
 }
 
 export type NewNoteRequest =
-  | { response_id: number; block_index: number; quote: string; body: string }
-  | { parent_id: number; body: string };
+  { response_id: number; block_index: number; quote: string; body: string } | { parent_id: number; body: string };
 
 export interface TouchSessionRequest {
   session_id: string;
@@ -93,7 +103,7 @@ export interface TouchSessionRequest {
 }
 
 export interface SessionListResult {
-  sessions: Array<SessionMeta & { id: string }>;
+  sessions: SessionSummary[];
 }
 
 export interface ClaimRequest {
@@ -117,12 +127,28 @@ export interface WaiterPollResult {
 }
 
 export interface SendRequest {
-  /** Omit to send every session's pending notes. */
-  session_ids?: string[];
+  session_ids: string[];
 }
 
 export interface SendResult {
   sessions: string[];
+}
+
+/** A single-use code that lets a newly opened page obtain the API token. */
+export interface LaunchCodeResult {
+  code: string;
+}
+
+export interface RedeemRequest {
+  code: string;
+}
+
+export interface RedeemResult {
+  token: string;
+}
+
+export interface ErrorResult {
+  error: string;
 }
 
 /** Written to ~/.sidenote/server.json so the hooks can find the running server. */
@@ -132,4 +158,12 @@ export interface ServerInfo {
   pid: number;
 }
 
+// ---- Protocol constants --------------------------------------------------------------------
+
 export const TOKEN_HEADER = "X-Review-Token";
+
+/** URL fragment key that carries a launch code to a newly opened page. */
+export const LAUNCH_FRAGMENT_KEY = "launch";
+
+/** Session ids are Claude Code UUIDs; anything else is refused. */
+export const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

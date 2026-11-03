@@ -79,13 +79,13 @@ claude plugin install sidenote@sidenote
 4. **Keep going.** Click a note to open its thread, and reply there. Follow-ups are sent with
    the earlier notes, so Claude has the context.
 
-| Command | What it does |
-| --- | --- |
-| `/sidenote:on` | Turns sidenote on and opens this session's window |
-| `/sidenote:off` | Turns it off for all sessions. Pending notes are kept for next time |
-| `/sidenote:open` | Reopens this session's window, for example after closing the tab |
-| `/sidenote:status` | Shows this session's window address, replies, pending notes, and Send now status |
-| `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too |
+| Command              | What it does                                                                     |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `/sidenote:on`       | Turns sidenote on and opens this session's window                                |
+| `/sidenote:off`      | Turns it off for all sessions. Pending notes are kept for next time              |
+| `/sidenote:open`     | Reopens this session's window, for example after closing the tab                 |
+| `/sidenote:status`   | Shows this session's window address, replies, pending notes, and Send now status |
+| `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too      |
 
 ## Update and uninstall
 
@@ -111,8 +111,8 @@ turned on, or the plugin installed, after that session's last reply. Send any pr
 session; once Claude replies, the button turns on. Saved notes still go with your next prompt.
 
 **Nothing appears in the window.** Run `/sidenote:status` in that session. If it says
-`enabled: no`, run `/sidenote:on`. If the tab says "Stale tab", sidenote was restarted: run
-`/sidenote:open`.
+`enabled: no`, run `/sidenote:on`. If the tab says "Stale tab" or "This link has expired",
+run `/sidenote:open`: links to a window work once, and a restart of sidenote retires old tabs.
 
 **The window shows the folder name, not the session name.** Name the session with `/rename`;
 the window picks up the new name with Claude's next reply.
@@ -138,34 +138,55 @@ the markers out, the reply stays whole in the feed and the thread links to it.
 
 ## Security
 
-- The server listens on `127.0.0.1` only, on a port it reuses between runs.
-- Every API call needs a random token, created on each start and stored in
-  `~/.sidenote/server.json` (readable only by you). The page gets it through its URL.
-- Requests with a foreign `Host` header are refused, which blocks DNS-rebinding attacks.
-- Replies are rendered with marked and sanitized with DOMPurify. The page's content security
-  policy allows no inline or remote scripts.
+Anyone who can call sidenote's API can put words in front of your Claude session, so the API is
+locked down:
+
+- **Local only.** The server listens on `127.0.0.1`, and refuses requests whose `Host` header
+  isn't its own address, which blocks DNS-rebinding attacks.
+- **A token for every call.** A random 256-bit token, created on each start, is stored in
+  `~/.sidenote/server.json`, readable only by you. It travels in a custom header, which other
+  websites can't send to the server: the server never approves a cross-origin request.
+- **No token in URLs.** The CLI opens a window with a single-use launch code in the URL
+  fragment, which browsers never send over the network. The page trades the code for the token
+  once and keeps it in the tab's session storage, so browser history, synced history and
+  `ps` only ever see a spent code that expires within two minutes anyway.
+- **Validated input.** Every request body is parsed against a fixed shape, with size limits,
+  before it reaches the store. Session ids must look like ids.
+- **Inert replies.** Raw HTML in a reply is shown as text. The rendered markdown is sanitized
+  with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own
+  controls. The page's content security policy allows no inline or remote scripts, and every
+  response carries `nosniff`, `no-referrer` and anti-framing headers.
+- **Private files.** `~/.sidenote` and everything in it are readable only by you.
+
+Found a security problem? Please report it privately through GitHub's
+[security advisories](https://github.com/sous17/sidenote/security/advisories/new) rather than
+in a public issue.
 
 ## Development
 
+Development needs Node 22.18 or newer: tests run the TypeScript directly with Node's type
+stripping, with no compile step. The plugin itself runs on Node 20 or newer.
+
 ```shell
 npm install
-npm run check      # typecheck, run the tests, build dist/
+npm run check      # formatting, types, tests, then build dist/
+npm run format     # apply Prettier
 ```
 
-| Path | What's there |
-| --- | --- |
-| `src/shared/types.ts` | The API contract, used by the server, the hooks and the page |
-| `src/server/` | The store, reply splitting, Send now waiters, and the HTTP server |
-| `src/cli/` | The `/sidenote:*` commands and the three hooks |
-| `src/web/` | The page |
-| `bin/sidenote` | Finds Node and runs `dist/cli.js` |
-| `hooks/`, `skills/`, `.claude-plugin/` | The plugin wiring |
-| `dist/` | Built output, committed so installing needs no build step |
+| Path                                   | What's there                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------ |
+| `src/shared/types.ts`                  | The API contract, used by the server, the hooks and the page             |
+| `src/server/`                          | Request parsing, the store, Send now, launch codes, and the HTTP routes  |
+| `src/cli/`                             | The `/sidenote:*` commands and the three hooks                           |
+| `src/node/`                            | Paths and clock, shared by the server and the CLI                        |
+| `src/web/`                             | The page: feed, thread pane, note editor, and Send now controls          |
+| `test/`                                | Unit tests, HTTP security tests, and an end-to-end run of the real hooks |
+| `bin/sidenote`                         | Finds Node and runs `dist/cli.js`                                        |
+| `hooks/`, `skills/`, `.claude-plugin/` | The plugin wiring                                                        |
+| `dist/`                                | Built output, committed so installing needs no build step                |
 
-Run `npm run build` after changing anything in `src/`, and commit `dist/` with it.
-
-Tests run the TypeScript directly with Node's type stripping (Node 22.18 or newer for
-development). `test/hooks.test.ts` drives the built launcher end to end in a scratch `HOME`.
+Run `npm run build` after changing anything in `src/`, and commit `dist/` with it. CI runs
+`npm run check` on Linux and macOS and fails if `dist/` doesn't match the source.
 
 To try a change without reinstalling, start Claude Code with `claude --plugin-dir .` from this
 folder.

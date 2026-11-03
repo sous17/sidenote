@@ -1,16 +1,17 @@
 // src/cli/main.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, rmSync as rmSync2, writeFileSync } from "node:fs";
 
-// src/shared/paths.ts
+// src/node/paths.ts
 import { homedir } from "node:os";
 import { join } from "node:path";
+var stateDir = () => join(homedir(), ".sidenote");
 var paths = {
-  stateDir: () => join(homedir(), ".sidenote"),
-  storeFile: () => join(paths.stateDir(), "store.json"),
-  serverFile: () => join(paths.stateDir(), "server.json"),
-  portFile: () => join(paths.stateDir(), "port"),
-  logFile: () => join(paths.stateDir(), "server.log"),
-  enabledFlag: () => join(paths.stateDir(), "enabled"),
+  stateDir,
+  storeFile: () => join(stateDir(), "store.json"),
+  serverFile: () => join(stateDir(), "server.json"),
+  portFile: () => join(stateDir(), "port"),
+  logFile: () => join(stateDir(), "server.log"),
+  enabledFlag: () => join(stateDir(), "enabled"),
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
 
@@ -18,16 +19,83 @@ var paths = {
 import { spawn } from "node:child_process";
 import { mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join as join2 } from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 // src/shared/types.ts
 var TOKEN_HEADER = "X-Review-Token";
+var LAUNCH_FRAGMENT_KEY = "launch";
 
 // src/cli/client.ts
 var SERVER_START_TIMEOUT_MS = 1e4;
 var REQUEST_TIMEOUT_MS = 3e3;
 var SERVER_SCRIPT = join2(dirname(fileURLToPath(import.meta.url)), "server.js");
+var ApiError = class extends Error {
+  status;
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+};
+var SidenoteClient = class _SidenoteClient {
+  #server;
+  constructor(server) {
+    this.#server = server;
+  }
+  /** The running server, or null when none answers. */
+  static async connect() {
+    const server = readServerInfo();
+    if (!server) return null;
+    const client = new _SidenoteClient(server);
+    try {
+      await client.get("/api/health");
+      return client;
+    } catch {
+      return null;
+    }
+  }
+  /** The running server, starting one if needed; `started` says whether this call started it. */
+  static async ensure() {
+    const running = await _SidenoteClient.connect();
+    if (running) return { client: running, started: false };
+    return { client: await startServer(), started: true };
+  }
+  get origin() {
+    return `http://127.0.0.1:${this.#server.port}`;
+  }
+  get(path) {
+    return this.#request("GET", path);
+  }
+  post(path, body) {
+    return this.#request("POST", path, body);
+  }
+  /**
+   * A one-time link to a session's window. The launch code sits in the URL fragment, which the
+   * browser never sends to the server; the page trades it for the token once.
+   */
+  async windowUrl(sessionId) {
+    const { code } = await this.post("/api/launch", {});
+    const query = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
+    return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
+  }
+  async #request(method, path, body) {
+    const response = await fetch(this.origin + path, {
+      method,
+      headers: { [TOKEN_HEADER]: this.#server.token, "Content-Type": "application/json" },
+      body: body === void 0 ? void 0 : JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      const detail = text ? JSON.parse(text).error : void 0;
+      throw new ApiError(
+        response.status,
+        `${method} ${path} failed with ${response.status}${detail ? `: ${detail}` : ""}`
+      );
+    }
+    return text ? JSON.parse(text) : null;
+  }
+};
 function readServerInfo() {
   try {
     return JSON.parse(readFileSync(paths.serverFile(), "utf8"));
@@ -35,54 +103,27 @@ function readServerInfo() {
     return null;
   }
 }
-async function callApi(server, method, path, payload) {
-  const response = await fetch(`http://127.0.0.1:${server.port}${path}`, {
-    method,
-    headers: { [TOKEN_HEADER]: server.token, "Content-Type": "application/json" },
-    body: payload === void 0 ? void 0 : JSON.stringify(payload),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-  });
-  if (!response.ok) throw new Error(`${method} ${path} failed with ${response.status}`);
-  const text = await response.text();
-  return text ? JSON.parse(text) : null;
-}
-async function runningServer() {
-  const server = readServerInfo();
-  if (!server) return null;
-  try {
-    await callApi(server, "GET", "/api/health");
-    return server;
-  } catch {
-    return null;
-  }
+function serverPid() {
+  return readServerInfo()?.pid ?? null;
 }
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
   rmSync(paths.serverFile(), { force: true });
-  const log = openSync(paths.logFile(), "a");
+  const log = openSync(paths.logFile(), "a", 384);
   spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const server = await runningServer();
-    if (server) return server;
+    const client = await SidenoteClient.connect();
+    if (client) return client;
     await sleep(100);
   }
-  throw new Error(`sidenote server did not start, see ${paths.logFile()}`);
-}
-function pageUrl(server, sessionId) {
-  const session = sessionId ? `&s=${encodeURIComponent(sessionId)}` : "";
-  return `http://127.0.0.1:${server.port}/?t=${server.token}${session}`;
+  throw new Error(`the sidenote server did not start; see ${paths.logFile()}`);
 }
 function openBrowser(url) {
-  const [command2, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+  const [command2, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
   const child = spawn(command2, args, { detached: true, stdio: "ignore" });
-  child.on("error", () => console.error(`Open ${url} in your browser.`));
+  child.on("error", () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
   child.unref();
-}
-async function ensureServer() {
-  const existing = await runningServer();
-  if (existing) return { server: existing, started: false };
-  return { server: await startServer(), started: true };
 }
 
 // src/cli/hooks.ts
@@ -232,23 +273,23 @@ function sessionName(transcriptPath) {
   }
 }
 async function hookStop(input) {
-  const text = (input.last_assistant_message ?? "").trim();
-  const sessionId = input.session_id ?? "";
+  const text = input.last_assistant_message?.trim();
+  const sessionId = input.session_id;
   if (!text || !sessionId) return;
-  const { server, started } = await ensureServer();
-  const body = {
+  const { client, started } = await SidenoteClient.ensure();
+  const reply = {
     session_id: sessionId,
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
     text
   };
-  const result = await callApi(server, "POST", "/api/responses", body);
-  if (started || result.new_session) openBrowser(pageUrl(server, sessionId));
+  const result = await client.post("/api/responses", reply);
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
 }
 async function hookPrompt(input) {
-  const server = await runningServer();
-  if (!server) return;
-  const { comments } = await callApi(server, "POST", "/api/claim", { session_id: input.session_id ?? "" });
+  const client = await SidenoteClient.connect();
+  if (!client || !input.session_id) return;
+  const { comments } = await client.post("/api/claim", { session_id: input.session_id });
   if (!comments.length) return;
   const output = {
     hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatNotesForClaude(comments) }
@@ -257,21 +298,16 @@ async function hookPrompt(input) {
 `);
 }
 async function hookWait(input) {
-  const sessionId = input.session_id;
-  if (!sessionId) return;
-  let server = null;
-  const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
-  while (!(server = await runningServer())) {
-    if (Date.now() > deadline) return;
-    await sleep2(500);
-  }
-  const waiter = { session_id: sessionId, waiter_id: randomBytes(8).toString("hex") };
-  await callApi(server, "POST", "/api/waiters", waiter);
+  if (!input.session_id) return;
+  const client = await connectWithin(SERVER_START_TIMEOUT_MS);
+  if (!client) return;
+  const waiter = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  await client.post("/api/waiters", waiter);
   for (; ; ) {
     await sleep2(WAITER_POLL_MS);
     let result;
     try {
-      result = await callApi(server, "POST", "/api/waiters/poll", waiter);
+      result = await client.post("/api/waiters/poll", waiter);
     } catch {
       return;
     }
@@ -283,14 +319,22 @@ async function hookWait(input) {
     }
   }
 }
+async function connectWithin(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (; ; ) {
+    const client = await SidenoteClient.connect();
+    if (client || Date.now() > deadline) return client;
+    await sleep2(500);
+  }
+}
 
 // src/cli/main.ts
 var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser.
 
   sidenote on [session]        turn sidenote on and open the session's window
-  sidenote off                 turn sidenote off; pending notes are kept
+  sidenote off                 turn sidenote off; unsent notes are kept
   sidenote open [session]      reopen the session's window
-  sidenote status [session]    show the address and the session's notes
+  sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
@@ -298,101 +342,116 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
+var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
 var isEnabled = () => existsSync2(paths.enabledFlag());
-function sessionArg() {
-  const arg = process.argv[3]?.trim();
-  return arg && !arg.includes("$") ? arg : void 0;
+function sessionArgument() {
+  const value = process.argv[3]?.trim();
+  return value && !value.includes("$") ? value : void 0;
 }
-async function latestSession(server) {
-  const { sessions } = await callApi(server, "GET", "/api/sessions");
+async function latestSession(client) {
+  const { sessions } = await client.get("/api/sessions");
   return sessions[0]?.id;
 }
-async function touchSession(server, sessionId) {
+function fetchState(client, sessionId) {
+  return client.get(`/api/state?s=${encodeURIComponent(sessionId ?? "")}`);
+}
+async function touchSession(client, sessionId) {
   const file = findTranscript(paths.transcriptsDir(), sessionId);
   const transcript = file ? readTranscript(file) : "";
-  await callApi(server, "POST", "/api/sessions", {
+  await client.post("/api/sessions", {
     session_id: sessionId,
     session_name: sessionNameFromTranscript(transcript),
     cwd: cwdFromTranscript(transcript)
   });
 }
-async function openSessionWindow(server, sessionId) {
-  if (sessionId) await touchSession(server, sessionId);
-  const url = pageUrl(server, sessionId ?? await latestSession(server));
-  openBrowser(url);
-  return url;
+async function openWindow(client, requested) {
+  if (requested) await touchSession(client, requested);
+  const sessionId = requested ?? await latestSession(client);
+  openBrowser(await client.windowUrl(sessionId));
+  const { session } = await fetchState(client, sessionId);
+  const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
+  return `Opened the ${label} window in your browser (${client.origin}).`;
 }
-async function commandOn() {
-  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
-  writeFileSync(paths.enabledFlag(), "");
-  const { server } = await ensureServer();
-  console.log(`sidenote on: ${await openSessionWindow(server, sessionArg())}`);
-}
-async function commandOff() {
-  rmSync2(paths.enabledFlag(), { force: true });
-  const server = readServerInfo();
-  if (server) {
-    try {
-      process.kill(server.pid, "SIGTERM");
-    } catch {
+var commands = {
+  async on() {
+    mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
+    writeFileSync(paths.enabledFlag(), "");
+    const { client } = await SidenoteClient.ensure();
+    console.log(`sidenote is on. ${await openWindow(client, sessionArgument())}`);
+  },
+  async off() {
+    rmSync2(paths.enabledFlag(), { force: true });
+    const pid = serverPid();
+    if (pid) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+      }
     }
-  }
-  console.log("sidenote off. Undelivered notes are kept and will be sent after the next 'on'.");
-}
-async function commandStatus() {
-  const server = await runningServer();
-  console.log(`enabled: ${isEnabled() ? "yes" : "no"}`);
-  if (!server) {
-    console.log("server:  not running");
-    return;
-  }
-  const sessionId = sessionArg() ?? await latestSession(server);
-  console.log(`window:  ${pageUrl(server, sessionId)}`);
-  const state = await callApi(server, "GET", `/api/state?s=${encodeURIComponent(sessionId ?? "")}`);
-  if (!state.session) {
-    console.log("This session has no replies in sidenote yet.");
-    return;
-  }
-  const { session } = state;
-  console.log(`session: ${session.name || "(unnamed)"} \xB7 ${session.id.slice(0, 8)} \xB7 ${session.cwd}`);
-  console.log(`replies: ${state.responses.length}`);
-  console.log(`pending notes: ${state.comments.filter((c) => c.delivered_at === null).length}`);
-  console.log(`Send now: ${session.status === "offline" ? "not available until Claude's next reply" : "ready"}`);
-}
-async function commandOpen() {
-  const server = await runningServer();
-  if (!server) {
-    console.log("The sidenote server is not running; use /sidenote:on first.");
-    return;
-  }
-  console.log(await openSessionWindow(server, sessionArg()));
-}
-async function commandBackfill() {
-  const server = await runningServer();
-  if (!server) {
-    console.log("The sidenote server is not running; use /sidenote:on first.");
-    return;
-  }
-  const sessionId = sessionArg() ?? await latestSession(server);
-  const file = sessionId ? findTranscript(paths.transcriptsDir(), sessionId) : null;
-  if (!sessionId || !file) {
-    console.log("No transcript found for this session.");
-    return;
-  }
-  const transcript = readTranscript(file);
-  const state = await callApi(server, "GET", `/api/state?s=${encodeURIComponent(sessionId)}`);
-  const knownTexts = new Set(state.responses.map((r) => r.text));
-  const cwd = state.session?.cwd || cwdFromTranscript(transcript);
-  const sessionName2 = sessionNameFromTranscript(transcript);
-  let imported = 0;
-  for (const { createdAt, text } of finalResponsesPerTurn(transcript)) {
-    if (knownTexts.has(text)) continue;
-    const body = { session_id: sessionId, session_name: sessionName2, cwd, text, created_at: createdAt };
-    await callApi(server, "POST", "/api/responses", body);
-    imported += 1;
-  }
-  console.log(`Imported ${imported} earlier replies of this session.`);
-}
+    console.log("sidenote is off. Unsent notes are kept and go out after the next /sidenote:on.");
+  },
+  async open() {
+    const client = await SidenoteClient.connect();
+    console.log(client ? await openWindow(client, sessionArgument()) : NOT_RUNNING);
+  },
+  async status() {
+    console.log(`enabled: ${isEnabled() ? "yes" : "no"}`);
+    const client = await SidenoteClient.connect();
+    if (!client) {
+      console.log("server:  not running");
+      return;
+    }
+    console.log(`server:  ${client.origin}`);
+    const { session, responses, comments } = await fetchState(
+      client,
+      sessionArgument() ?? await latestSession(client)
+    );
+    if (!session) {
+      console.log("This session has no replies in sidenote yet.");
+      return;
+    }
+    console.log(`session: ${session.name || "(unnamed)"} \xB7 ${session.id.slice(0, 8)} \xB7 ${session.cwd}`);
+    console.log(`replies: ${responses.length}`);
+    console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
+    console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
+  },
+  /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
+  async backfill() {
+    const client = await SidenoteClient.connect();
+    if (!client) {
+      console.log(NOT_RUNNING);
+      return;
+    }
+    const sessionId = sessionArgument() ?? await latestSession(client);
+    const file = sessionId ? findTranscript(paths.transcriptsDir(), sessionId) : null;
+    if (!sessionId || !file) {
+      console.log("No transcript found for this session.");
+      return;
+    }
+    const transcript = readTranscript(file);
+    const state = await fetchState(client, sessionId);
+    const known = new Set(state.responses.map((r) => r.text));
+    const cwd = state.session?.cwd || cwdFromTranscript(transcript);
+    const sessionName2 = sessionNameFromTranscript(transcript);
+    let imported = 0;
+    for (const { createdAt, text } of finalResponsesPerTurn(transcript)) {
+      if (known.has(text)) continue;
+      const reply = {
+        session_id: sessionId,
+        session_name: sessionName2,
+        cwd,
+        text,
+        created_at: createdAt
+      };
+      await client.post("/api/responses", reply);
+      imported += 1;
+    }
+    console.log(`Imported ${imported} earlier replies of this session.`);
+  },
+  "hook-stop": () => runHook(hookStop),
+  "hook-prompt": () => runHook(hookPrompt),
+  "hook-wait": () => runHook(hookWait)
+};
 async function runHook(handler) {
   if (!isEnabled()) return;
   try {
@@ -402,23 +461,15 @@ async function runHook(handler) {
   } catch (error) {
     mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
     appendFileSync(paths.logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${handler.name} failed: ${String(error)}
-`);
+`, {
+      mode: 384
+    });
   }
 }
-var COMMANDS = {
-  on: commandOn,
-  off: commandOff,
-  status: commandStatus,
-  open: commandOpen,
-  backfill: commandBackfill,
-  "hook-stop": () => runHook(hookStop),
-  "hook-prompt": () => runHook(hookPrompt),
-  "hook-wait": () => runHook(hookWait)
-};
-var command = COMMANDS[process.argv[2] ?? "status"];
-if (!command) {
+var command = commands[process.argv[2] ?? "status"];
+if (command) {
+  await command();
+} else {
   console.log(USAGE);
   process.exitCode = 2;
-} else {
-  await command();
 }

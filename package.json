@@ -1,6 +1,6 @@
 {
   "name": "sidenote",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Leave inline notes on Claude Code replies in your browser, and send them back to Claude.",
   "type": "module",
   "private": true,
@@ -12,13 +12,16 @@
     "build": "node scripts/build.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p src/web/tsconfig.json",
     "test": "node --test \"test/**/*.test.ts\"",
-    "check": "npm run typecheck && npm test && npm run build"
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
     "@types/node": "26.6.6",
     "dompurify": "3.4.17",
     "esbuild": "0.28.2",
     "marked": "18.1.2",
+    "prettier": "3.9.10",
     "typescript": "7.0.2"
   },
   "repository": {
