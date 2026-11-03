@@ -187,6 +187,7 @@ npm run format     # apply Prettier
 | `src/cli/`                             | The `/sidenote:*` commands and the three hooks                           |
 | `src/node/`                            | Paths and clock, shared by the server and the CLI                        |
 | `src/web/`                             | The page: feed, thread pane, note editor, and Send now controls          |
+| `src/tui/`                             | Drawing replies in the terminal, for the coming `sidenote tui`           |
 | `test/`                                | Unit tests, HTTP security tests, and an end-to-end run of the real hooks |
 | `bin/sidenote`                         | Finds Node and runs `dist/cli.js`                                        |
 | `hooks/`, `skills/`, `.claude-plugin/` | The plugin wiring                                                        |

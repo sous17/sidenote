@@ -9,6 +9,7 @@ const MARGIN_LAYOUT_MIN_WIDTH = 1000;
 // The split view needs this much window width; narrower, the thread pane covers the feed.
 const SPLIT_MIN_WIDTH = 900;
 const NOTE_GAP_PX = 8;
+// What notes attach to. The terminal numbers blocks with src/shared/blocks.ts: change both together.
 const BLOCK_SELECTOR = [
   ":scope > p",
   ":scope > pre",
