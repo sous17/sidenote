@@ -106,7 +106,7 @@ From then on, each session opens in a terminal pane beside Claude Code instead o
 window, and Claude's pane keeps the focus. `/sidenote:on browser` switches back; the choice is
 remembered for all sessions.
 
-sidenote opens the pane itself in **tmux**, **WezTerm**, and **kitty** (with
+sidenote opens the pane itself in **tmux**, **WezTerm**, **iTerm2**, and **kitty** (with
 [remote control](https://sw.kovidgoyal.net/kitty/remote-control/) on and `listen_on` set, and
 the `splits` layout for a side-by-side pane). In other terminals, it tells you once per session
 the command to run in a pane you open yourself; `/sidenote:status` prints it too, on its

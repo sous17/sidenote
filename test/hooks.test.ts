@@ -23,7 +23,15 @@ interface Run {
 }
 
 /** Set by terminals that can split; a test that runs inside tmux must not split it for real. */
-const TERMINAL_VARIABLES = ["TMUX", "TMUX_PANE", "WEZTERM_PANE", "KITTY_WINDOW_ID", "KITTY_LISTEN_ON"];
+const TERMINAL_VARIABLES = [
+  "TMUX",
+  "TMUX_PANE",
+  "WEZTERM_PANE",
+  "KITTY_WINDOW_ID",
+  "KITTY_LISTEN_ON",
+  "TERM_PROGRAM",
+  "ITERM_SESSION_ID",
+];
 
 function run(args: string[], stdin = "", terminal: Record<string, string> = {}): Promise<Run> {
   const env: NodeJS.ProcessEnv = {

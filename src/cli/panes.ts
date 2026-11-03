@@ -1,5 +1,6 @@
 // Opening sidenote tui in a pane beside Claude Code, in the terminals that can split from the
-// command line: tmux, WezTerm, and kitty with remote control. Claude's pane keeps the focus.
+// command line: tmux, WezTerm, kitty with remote control, and iTerm2 through AppleScript.
+// Claude's pane keeps the focus.
 // Each running pane records its pid, so a session never gets a second one.
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +13,35 @@ import { SESSION_ID_PATTERN } from "../shared/types.ts";
 export const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "sidenote");
 
 const PANE_PERCENT = 45;
+
+/** $ITERM_SESSION_ID is w<window>t<tab>p<pane>:<the session's AppleScript id>. */
+const ITERM_SESSION = /^w\d+t\d+p\d+:([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})$/;
+
+/**
+ * Splits the iTerm2 session with the given id, then selects it again so it keeps the focus.
+ * The id and the command arrive as arguments, never as script text, so neither can change
+ * what the script does. It fails, and osascript exits non-zero, when the session isn't found.
+ */
+const ITERM_SPLIT = [
+  "on run argv",
+  "set targetId to item 1 of argv",
+  "set paneCommand to item 2 of argv",
+  'tell application id "com.googlecode.iterm2"',
+  "repeat with aWindow in windows",
+  "repeat with aTab in tabs of aWindow",
+  "repeat with aSession in sessions of aTab",
+  "if (id of aSession) is targetId then",
+  "tell aSession to split vertically with default profile command paneCommand",
+  "tell aSession to select",
+  "return",
+  "end if",
+  "end repeat",
+  "end repeat",
+  "end repeat",
+  "end tell",
+  'error "sidenote: iTerm2 session not found"',
+  "end run",
+];
 const SPLIT_TIMEOUT_MS = 5000;
 
 export interface Step {
@@ -20,7 +50,7 @@ export interface Step {
 }
 
 export interface PanePlan {
-  terminal: "tmux" | "WezTerm" | "kitty";
+  terminal: "tmux" | "WezTerm" | "kitty" | "iTerm2";
   steps: Step[];
 }
 
@@ -73,6 +103,14 @@ export function panePlan(env: NodeJS.ProcessEnv, command: string[], cwd: string)
       ...command,
     ];
     return { terminal: "kitty", steps: [{ command: "kitten", args: launch }] };
+  }
+  const iTermSession = ITERM_SESSION.exec(env["ITERM_SESSION_ID"] ?? "");
+  if (env["TERM_PROGRAM"] === "iTerm.app" && iTermSession) {
+    // iTerm2 runs the command as a shell command, so each part is quoted. The pane starts in the
+    // profile's folder; the command names the session, so the folder doesn't matter.
+    const line = command.map(shellQuote).join(" ");
+    const script = ITERM_SPLIT.flatMap((statement) => ["-e", statement]);
+    return { terminal: "iTerm2", steps: [{ command: "osascript", args: [...script, iTermSession[1]!, line] }] };
   }
   return null;
 }
@@ -168,6 +206,6 @@ export async function openTerminal(
     message:
       `To read replies and leave notes in the terminal, run this in another pane: ` +
       `${command.map((part, i) => (i ? part : shellQuote(part))).join(" ")} ` +
-      `(sidenote opens the pane itself in tmux, WezTerm, or kitty with remote control.)`,
+      `(sidenote opens the pane itself in tmux, WezTerm, iTerm2, or kitty with remote control.)`,
   };
 }

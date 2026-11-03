@@ -210,6 +210,12 @@ function panePlan(env, command2, cwd) {
     ];
     return { terminal: "kitty", steps: [{ command: "kitten", args: launch }] };
   }
+  const iTermSession = ITERM_SESSION.exec(env["ITERM_SESSION_ID"] ?? "");
+  if (env["TERM_PROGRAM"] === "iTerm.app" && iTermSession) {
+    const line = command2.map(shellQuote).join(" ");
+    const script = ITERM_SPLIT.flatMap((statement) => ["-e", statement]);
+    return { terminal: "iTerm2", steps: [{ command: "osascript", args: [...script, iTermSession[1], line] }] };
+  }
   return null;
 }
 async function openPane(plan) {
@@ -280,10 +286,10 @@ async function openTerminal(sessionId, cwd, env) {
   }
   return {
     opened: false,
-    message: `To read replies and leave notes in the terminal, run this in another pane: ${command2.map((part, i) => i ? part : shellQuote(part)).join(" ")} (sidenote opens the pane itself in tmux, WezTerm, or kitty with remote control.)`
+    message: `To read replies and leave notes in the terminal, run this in another pane: ${command2.map((part, i) => i ? part : shellQuote(part)).join(" ")} (sidenote opens the pane itself in tmux, WezTerm, iTerm2, or kitty with remote control.)`
   };
 }
-var LAUNCHER, PANE_PERCENT, SPLIT_TIMEOUT_MS;
+var LAUNCHER, PANE_PERCENT, ITERM_SESSION, ITERM_SPLIT, SPLIT_TIMEOUT_MS;
 var init_panes = __esm({
   "src/cli/panes.ts"() {
     "use strict";
@@ -291,6 +297,27 @@ var init_panes = __esm({
     init_types();
     LAUNCHER = join3(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
     PANE_PERCENT = 45;
+    ITERM_SESSION = /^w\d+t\d+p\d+:([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})$/;
+    ITERM_SPLIT = [
+      "on run argv",
+      "set targetId to item 1 of argv",
+      "set paneCommand to item 2 of argv",
+      'tell application id "com.googlecode.iterm2"',
+      "repeat with aWindow in windows",
+      "repeat with aTab in tabs of aWindow",
+      "repeat with aSession in sessions of aTab",
+      "if (id of aSession) is targetId then",
+      "tell aSession to split vertically with default profile command paneCommand",
+      "tell aSession to select",
+      "return",
+      "end if",
+      "end repeat",
+      "end repeat",
+      "end repeat",
+      "end tell",
+      'error "sidenote: iTerm2 session not found"',
+      "end run"
+    ];
     SPLIT_TIMEOUT_MS = 5e3;
   }
 });

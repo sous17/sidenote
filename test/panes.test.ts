@@ -51,6 +51,29 @@ test("uses kitty only when its remote control socket is known", () => {
   ]);
 });
 
+test("splits iTerm2 beside Claude's session, passing the id and command as arguments", () => {
+  const uuid = "C3D91F33-3805-47E2-A3F6-B8AED6EC2209";
+  const plan = panePlan({ TERM_PROGRAM: "iTerm.app", ITERM_SESSION_ID: `w0t1p2:${uuid}` }, COMMAND, "/w");
+  assert.equal(plan?.terminal, "iTerm2");
+  const args = plan!.steps[0]!.args;
+  assert.equal(plan!.steps[0]!.command, "osascript");
+  assert.deepEqual(args.slice(-2), [uuid, "'/plugin/bin/sidenote' 'tui' 's1'"]);
+  const script = args
+    .slice(0, -2)
+    .filter((_, i) => i % 2 === 1)
+    .join("\n");
+  assert.ok(args.slice(0, -2).every((arg, i) => i % 2 === 1 || arg === "-e"));
+  assert.match(script, /split vertically with default profile command paneCommand/);
+  assert.match(script, /tell aSession to select/, "Claude's session keeps the focus");
+  assert.ok(!script.includes(uuid), "the id is never part of the script");
+
+  assert.equal(panePlan({ ITERM_SESSION_ID: `w0t1p2:${uuid}` }, COMMAND, "/w"), null, "only inside iTerm2");
+  assert.equal(
+    panePlan({ TERM_PROGRAM: "iTerm.app", ITERM_SESSION_ID: `w0t1p2:${uuid}" & do shell script "x` }, COMMAND, "/w"),
+    null,
+  );
+});
+
 test("ignores pane ids that don't look like ids, and other terminals", () => {
   assert.equal(panePlan({}, COMMAND, "/w"), null);
   assert.equal(panePlan({ TMUX_PANE: "%1" }, COMMAND, "/w"), null, "TMUX_PANE alone isn't tmux");
