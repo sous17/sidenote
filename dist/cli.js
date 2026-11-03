@@ -3656,6 +3656,8 @@ var init_main = __esm({
 init_paths();
 init_client();
 import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2, join as join5 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/cli/hooks.ts
 init_client();
@@ -3890,6 +3892,10 @@ The /sidenote:* commands pass the current session. Without one, the most recentl
 session is used.`;
 var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
 var isEnabled = () => existsSync3(paths.enabledFlag());
+var LAUNCHER = join5(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
+function shellQuote(text) {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
 function sessionArgument() {
   const value = process.argv[3]?.trim();
   return value && !value.includes("$") ? value : void 0;
@@ -3960,6 +3966,7 @@ var commands = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c2) => c2.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
+    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
   },
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {

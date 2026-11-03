@@ -26,6 +26,8 @@ note on its own, and each answer lands in that note's thread.
 - **One window per session.** Each Claude Code session gets its own window, titled with the
   name you gave the session with `/rename` (or its project folder). Notes always go back to
   the session they were written on.
+- **Or stay in the terminal.** `sidenote tui` shows the same feed, notes and threads in a
+  terminal pane next to Claude Code.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -91,6 +93,40 @@ claude plugin install sidenote@sidenote
 | `/sidenote:open`     | Reopens this session's window, for example after closing the tab                 |
 | `/sidenote:status`   | Shows this session's window address, replies, pending notes, and Send now status |
 | `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too      |
+
+### In the terminal
+
+If you'd rather not leave the terminal, open a second pane next to Claude Code and run the
+command `/sidenote:status` prints on its `terminal:` line:
+
+```shell
+'…/sidenote/bin/sidenote' tui <session id>
+```
+
+Run without a session id, it shows the most recently active session in the folder it was
+started in, and waits for one if there is none yet. The browser window and the terminal pane
+can be open at the same time; they show the same notes.
+
+| Key                  | What it does                                                     |
+| -------------------- | ---------------------------------------------------------------- |
+| `j` `k` (or arrows)  | Move between blocks, notes and answers. Long blocks scroll first |
+| `n`                  | Note on this block. On a note: reply in its thread               |
+| `N`                  | Note on the whole reply                                          |
+| `v`                  | Pick lines of code or a diff, then `n` to note just those        |
+| `Enter`              | Open a note's thread, or fold and unfold a file of a diff        |
+| `x` `x`              | Delete a note that hasn't been sent                              |
+| `S`                  | Send every pending note now                                      |
+| `g` `G`, `Space` `b` | First and latest reply, page down and up                         |
+| `q`                  | Quit                                                             |
+
+In the note editor, **Enter** sends now (or saves, when Claude isn't listening), **Ctrl+S**
+saves for your next prompt, **Alt+Enter** starts a new line, **Ctrl+E** opens `$EDITOR`, and
+**Esc** closes it, keeping what you wrote for next time. A thread replaces the feed in the
+pane: `r` replies, `f` shows the note's block in the feed, and `Esc` goes back.
+
+Wider than 110 columns, notes sit in a margin beside the text they are about; narrower, under
+it. Colors come from your terminal's own theme, `NO_COLOR` turns them off, and links are
+clickable in terminals that support it (set `SIDENOTE_HYPERLINKS=0` or `1` to override).
 
 ## Update and uninstall
 
@@ -187,7 +223,7 @@ npm run format     # apply Prettier
 | `src/cli/`                             | The `/sidenote:*` commands and the three hooks                           |
 | `src/node/`                            | Paths and clock, shared by the server and the CLI                        |
 | `src/web/`                             | The page: feed, thread pane, note editor, and Send now controls          |
-| `src/tui/`                             | Drawing replies in the terminal, for the coming `sidenote tui`           |
+| `src/tui/`                             | `sidenote tui`: the terminal pane, its views, editor and renderer        |
 | `test/`                                | Unit tests, HTTP security tests, and an end-to-end run of the real hooks |
 | `bin/sidenote`                         | Finds Node and runs `dist/cli.js`                                        |
 | `hooks/`, `skills/`, `.claude-plugin/` | The plugin wiring                                                        |

@@ -168,6 +168,11 @@ test("status and open act on the session", async () => {
   assert.match(status.stdout, /enabled: yes/);
   assert.match(status.stdout, /replies: 2/);
   assert.match(status.stdout, /pending notes: 0/);
+  assert.match(
+    status.stdout,
+    new RegExp(`terminal: '${launcher}' tui ${SESSION}\n`),
+    "the command for a terminal pane",
+  );
   assert.doesNotMatch(status.stdout, new RegExp(server().token), "status never prints the token");
 
   await run(["open"]);

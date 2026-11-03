@@ -1,5 +1,7 @@
 // sidenote CLI: the /sidenote:* commands and the three Claude Code hooks.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { paths } from "../node/paths.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
@@ -32,6 +34,14 @@ session is used.`;
 const NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
 
 const isEnabled = (): boolean => existsSync(paths.enabledFlag());
+
+/** The launcher, next to dist/: the plugin's bin/ isn't on the user's PATH. */
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "sidenote");
+
+/** Quoted for a POSIX shell, so a folder with spaces or quotes still pastes as one word. */
+function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
 
 /** The command's session argument, unless it is missing or an unexpanded placeholder. */
 function sessionArgument(): string | undefined {
@@ -115,6 +125,7 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
+    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
   },
 
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
