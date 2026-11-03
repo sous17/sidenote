@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lineToAnsi, type AnsiOptions } from "../src/tui/ansi.ts";
 import { PLAIN, type Line, type Span } from "../src/tui/lines.ts";
+import { terminalOptions } from "../src/tui/main.ts";
 import { terminalSafe } from "../src/tui/sanitize.ts";
 import { displayWidth } from "../src/tui/width.ts";
 import { spansWidth, wrapSpans } from "../src/tui/wrap.ts";
@@ -65,6 +66,29 @@ test("styles become escape codes, with links only for http and https", () => {
   assert.equal(link("javascript:alert(1)"), "go");
   assert.equal(link("https://example.com/\x1b\\x"), "go", "an ESC in a link would end the sequence early");
   assert.equal(link("file:///etc/passwd"), "go");
+});
+
+test("the accent is the mockups' amber, never the terminal's magenta", () => {
+  const accent = (options: AnsiOptions): string =>
+    lineToAnsi({ spans: [{ text: "◆", style: { tone: "accent" } }], block: 0 }, options);
+  assert.equal(accent({ ...COLOR, truecolor: true }), "\x1b[38;2;227;179;65m◆\x1b[0m", "#e3b341");
+  assert.equal(accent(COLOR), "\x1b[33m◆\x1b[0m", "yellow from the terminal's own palette");
+  const prompt = lineToAnsi(
+    { spans: [{ text: "›", style: { tone: "link", bold: true } }], block: 0 },
+    { ...COLOR, truecolor: true },
+  );
+  assert.equal(prompt, "\x1b[1;38;2;121;192;255m›\x1b[0m", "the user's words in #79c0ff");
+});
+
+test("sidenote's palette only on dark terminals that draw 24-bit color", () => {
+  const palette = (env: NodeJS.ProcessEnv): boolean | undefined => terminalOptions(env).truecolor;
+  assert.equal(palette({ COLORTERM: "truecolor" }), true);
+  assert.equal(palette({ TERM_PROGRAM: "iTerm.app" }), true);
+  assert.equal(palette({ TERM_PROGRAM: "Apple_Terminal" }), false, "Terminal.app has 256 colors at most");
+  assert.equal(palette({ COLORTERM: "truecolor", COLORFGBG: "0;15" }), false, "a light background");
+  assert.equal(palette({ COLORTERM: "truecolor", COLORFGBG: "15;0" }), true, "a dark background");
+  assert.equal(palette({ SIDENOTE_COLOR: "basic", COLORTERM: "truecolor" }), false);
+  assert.equal(palette({ SIDENOTE_COLOR: "truecolor" }), true);
 });
 
 test("a line with hostile text comes out with only sidenote's own escape codes", () => {

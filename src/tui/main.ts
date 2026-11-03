@@ -26,8 +26,29 @@ function supportsHyperlinks(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
+/**
+ * sidenote's own palette needs 24-bit color and a dark background: its amber and light blue
+ * are unreadable on white. COLORFGBG ("15;0") is the only common hint of a light terminal.
+ */
+function supportsPalette(env: NodeJS.ProcessEnv): boolean {
+  if (env["SIDENOTE_COLOR"] === "basic") return false;
+  if (env["SIDENOTE_COLOR"] === "truecolor") return true;
+  const background = Number((env["COLORFGBG"] ?? "").split(";").pop());
+  if (background === 7 || background === 15) return false;
+  const program = env["TERM_PROGRAM"] ?? "";
+  return (
+    ["truecolor", "24bit"].includes(env["COLORTERM"] ?? "") ||
+    ["iTerm.app", "WezTerm", "vscode", "ghostty"].includes(program) ||
+    Boolean(env["KITTY_WINDOW_ID"] || env["WT_SESSION"])
+  );
+}
+
 export function terminalOptions(env: NodeJS.ProcessEnv): AnsiOptions {
-  return { color: !env["NO_COLOR"] && env["TERM"] !== "dumb", hyperlinks: supportsHyperlinks(env) };
+  return {
+    color: !env["NO_COLOR"] && env["TERM"] !== "dumb",
+    hyperlinks: supportsHyperlinks(env),
+    truecolor: supportsPalette(env),
+  };
 }
 
 export async function runTui(args: string[]): Promise<void> {

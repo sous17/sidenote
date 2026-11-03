@@ -351,7 +351,7 @@ function lineToAnsi(line, options) {
   for (const span of line.spans) {
     const text = terminalSafe(span.text).replace(/[\t\n]/g, " ");
     if (!text) continue;
-    const codes = sgr(span.style, options.color);
+    const codes = sgr(span.style, options);
     let piece = codes ? `\x1B[${codes}m${text}\x1B[0m` : text;
     const href = span.style.href;
     if (options.hyperlinks && href && LINKABLE.test(href)) piece = `\x1B]8;;${href}\x1B\\${piece}\x1B]8;;\x1B\\`;
@@ -359,25 +359,41 @@ function lineToAnsi(line, options) {
   }
   return out;
 }
-function sgr(style, color) {
+function sgr(style, options) {
   const codes = [];
   if (style.bold) codes.push("1");
   if (style.italic) codes.push("3");
   if (style.underline) codes.push("4");
   if (style.strike) codes.push("9");
-  const tone = style.tone && (color ? TONES[style.tone] : UNCOLORED_TONES[style.tone]);
+  const tones = options.truecolor ? PALETTE : TONES;
+  const tone = style.tone && (options.color ? tones[style.tone] : UNCOLORED_TONES[style.tone]);
   if (tone) codes.push(tone);
   return codes.join(";");
 }
-var TONES, UNCOLORED_TONES, LINKABLE;
+var rgb, PALETTE, TONES, UNCOLORED_TONES, LINKABLE;
 var init_ansi = __esm({
   "src/tui/ansi.ts"() {
     "use strict";
     init_sanitize();
+    rgb = (hex) => {
+      const n = Number.parseInt(hex.slice(1), 16);
+      return `38;2;${n >> 16};${n >> 8 & 255};${n & 255}`;
+    };
+    PALETTE = {
+      accent: rgb("#e3b341"),
+      muted: rgb("#8b949e"),
+      link: rgb("#79c0ff"),
+      code: rgb("#79c0ff"),
+      add: rgb("#7ee787"),
+      del: rgb("#ffa198"),
+      addMark: `${rgb("#7ee787")};7`,
+      delMark: `${rgb("#ffa198")};7`,
+      hunk: rgb("#8b949e")
+    };
     TONES = {
-      accent: "35",
+      accent: "33",
       muted: "2",
-      link: "34",
+      link: "94",
       code: "36",
       add: "32",
       del: "31",
@@ -4454,8 +4470,20 @@ function supportsHyperlinks(env) {
   const program = env["TERM_PROGRAM"] ?? "";
   return ["iTerm.app", "WezTerm", "vscode", "ghostty"].includes(program) || Boolean(env["KITTY_WINDOW_ID"] || env["WT_SESSION"]) || Number(env["VTE_VERSION"] ?? 0) >= 5e3;
 }
+function supportsPalette(env) {
+  if (env["SIDENOTE_COLOR"] === "basic") return false;
+  if (env["SIDENOTE_COLOR"] === "truecolor") return true;
+  const background = Number((env["COLORFGBG"] ?? "").split(";").pop());
+  if (background === 7 || background === 15) return false;
+  const program = env["TERM_PROGRAM"] ?? "";
+  return ["truecolor", "24bit"].includes(env["COLORTERM"] ?? "") || ["iTerm.app", "WezTerm", "vscode", "ghostty"].includes(program) || Boolean(env["KITTY_WINDOW_ID"] || env["WT_SESSION"]);
+}
 function terminalOptions(env) {
-  return { color: !env["NO_COLOR"] && env["TERM"] !== "dumb", hyperlinks: supportsHyperlinks(env) };
+  return {
+    color: !env["NO_COLOR"] && env["TERM"] !== "dumb",
+    hyperlinks: supportsHyperlinks(env),
+    truecolor: supportsPalette(env)
+  };
 }
 async function runTui(args) {
   if (!needsTerminal("sidenote tui")) return;

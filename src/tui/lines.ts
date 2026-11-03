@@ -2,7 +2,7 @@
 // belongs to. The styles are roles, not escape codes, so layout can be tested as plain text and
 // ansi.ts alone decides how they look.
 
-/** Colors come from the terminal's own palette, so they suit its light or dark theme. */
+/** A role, not a color: ansi.ts picks sidenote's palette or the terminal's own colors for it. */
 export type Tone = "accent" | "muted" | "link" | "code" | "add" | "del" | "addMark" | "delMark" | "hunk";
 
 export interface Style {
