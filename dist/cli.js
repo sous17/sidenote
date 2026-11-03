@@ -133,6 +133,7 @@ import { setTimeout as sleep2 } from "node:timers/promises";
 
 // src/cli/format.ts
 var MAX_CONTEXT_CHARS = 9500;
+var CODE_CHANGE_RULE = "When a note asks to see, show or change code, show it as changes to the current code, not as whole files: for each change, a sentence or two on what it does and why, then a ```diff block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines and use @@ hunks with about three lines of context. Use one block per file or per step.";
 function formatNotesForClaude(notes, options = {}) {
   const first = notes[0];
   if (!first) return "";
@@ -151,7 +152,9 @@ function formatNotesForClaude(notes, options = {}) {
     `**\u21B3 Re: note ${first.id}**`,
     `Your answer to note ${first.id}.`,
     "",
-    "Use one marker per note, with the note numbers given below, and put nothing after a note's section that is not about that note. The sidenote window files each section into that note's thread, so keep the main answer free of the note answers."
+    "Use one marker per note, with the note numbers given below, and put nothing after a note's section that is not about that note. The sidenote window files each section into that note's thread, so keep the main answer free of the note answers.",
+    "",
+    CODE_CHANGE_RULE
   ];
   for (const note of notes) {
     const time = clockTime(note.response_created_at);

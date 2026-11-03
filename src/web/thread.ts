@@ -2,7 +2,7 @@
 import type { Note } from "../shared/types.ts";
 import { button, el, formatTime, tag } from "./dom.ts";
 import { createMeta, type Feed } from "./feed.ts";
-import { renderMarkdown } from "./markdown.ts";
+import { renderMarkdownInto } from "./markdown.ts";
 import { isAnswered, type Model } from "./model.ts";
 import { isSendNow, submitOnModEnter, type Sending } from "./sending.ts";
 
@@ -195,7 +195,7 @@ export class ThreadPane {
     }
     for (const text of texts) {
       const body = el("div", "markdown");
-      body.innerHTML = renderMarkdown(text);
+      renderMarkdownInto(body, text);
       element.append(body);
     }
     return element;

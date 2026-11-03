@@ -4,6 +4,16 @@ import type { ClaimedNote, EpochSeconds } from "../shared/types.ts";
 export const MAX_CONTEXT_CHARS = 9500;
 
 /**
+ * Code in an answer should come as diffs, which the sidenote window draws step by step: each
+ * explanation, then the change it describes (see src/web/diffview.ts).
+ */
+export const CODE_CHANGE_RULE =
+  "When a note asks to see, show or change code, show it as changes to the current code, not " +
+  "as whole files: for each change, a sentence or two on what it does and why, then a ```diff " +
+  "block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines " +
+  "and use @@ hunks with about three lines of context. Use one block per file or per step.";
+
+/**
  * Describes delivered notes for Claude, and asks it to answer each under a marker line
  * ("**↳ Re: note 41**") so the server can file each answer into that note's thread.
  */
@@ -35,6 +45,8 @@ export function formatNotesForClaude(notes: readonly ClaimedNote[], options: { f
     "Use one marker per note, with the note numbers given below, and put nothing after a " +
       "note's section that is not about that note. The sidenote window files each section " +
       "into that note's thread, so keep the main answer free of the note answers.",
+    "",
+    CODE_CHANGE_RULE,
   ];
   for (const note of notes) {
     const time = clockTime(note.response_created_at);

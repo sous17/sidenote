@@ -1,7 +1,7 @@
 // The feed: one card per reply, with notes in the margin beside the text they are about.
 import type { Note, StoredResponse } from "../shared/types.ts";
 import { button, el, flash, formatTime, plainText, plural, tag, truncate } from "./dom.ts";
-import { renderMarkdown } from "./markdown.ts";
+import { renderMarkdownInto } from "./markdown.ts";
 import { answeredNoteIds, isAnswered, type Model } from "./model.ts";
 
 // Must match the @container feed min-width in app.css that moves notes into the margin.
@@ -14,6 +14,7 @@ const BLOCK_SELECTOR = [
   ":scope > pre",
   ":scope > blockquote",
   ":scope > table",
+  ":scope > .diffview",
   ":scope > h1",
   ":scope > h2",
   ":scope > h3",
@@ -226,7 +227,7 @@ export class Feed {
     meta.append(count, wholeReplyButton);
 
     const body = el("div", "markdown");
-    body.innerHTML = renderMarkdown(response.text);
+    renderMarkdownInto(body, response.text);
     const blocks = [...body.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)];
     const threads = blocks.map((block, index) => {
       block.classList.add("block");

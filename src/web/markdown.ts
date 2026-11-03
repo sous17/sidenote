@@ -6,6 +6,7 @@
 // attributes, classes other than code-highlighting ones). The page's CSP blocks scripts either way.
 import DOMPurify, { type Config } from "dompurify";
 import { Marked } from "marked";
+import { renderDiffs } from "./diffview.ts";
 
 const ESCAPES: Readonly<Record<string, string>> = {
   "&": "&amp;",
@@ -58,6 +59,12 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
     else node.removeAttribute("class");
   }
 });
+
+/** Renders markdown into an element, drawing any ```diff blocks as diffs. */
+export function renderMarkdownInto(element: HTMLElement, markdown: string): void {
+  element.innerHTML = renderMarkdown(markdown);
+  renderDiffs(element);
+}
 
 /** Markdown to sanitized HTML, ready for innerHTML. */
 export function renderMarkdown(markdown: string): string {

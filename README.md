@@ -20,6 +20,9 @@ note on its own, and each answer lands in that note's thread.
   **Save** keeps a note until your next prompt instead.
 - **Threads.** Click a note to open its thread beside the feed: your note, Claude's answer,
   your follow-ups. Claude's answer appears only in the thread, never duplicated in the feed.
+- **Code changes as diffs.** When a note asks to see or change code, Claude explains each
+  change and shows it as a diff, with the edited words highlighted. Answers that touch several
+  files fold each file open from its header.
 - **One window per session.** Each Claude Code session gets its own window, titled with the
   name you gave the session with `/rename` (or its project folder). Notes always go back to
   the session they were written on.

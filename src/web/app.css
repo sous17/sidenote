@@ -17,6 +17,14 @@
   --sent-ink: #2f7a46;
   --danger: #c8443a;
   --code-bg: #f1f1f5;
+  --add-bg: #e9f6ec;
+  --add-mark: #b9e4c4;
+  --add-ink: #1f6b38;
+  --del-bg: #fcecec;
+  --del-mark: #f3c3c0;
+  --del-ink: #a5352c;
+  --hunk-bg: #eef0fb;
+  --hunk-ink: #5a5d9a;
   --shadow: 0 1px 2px rgb(27 28 42 / 0.06), 0 4px 16px rgb(27 28 42 / 0.05);
   --topbar-height: 52px;
   --margin-width: 280px;
@@ -43,6 +51,14 @@
   --sent-ink: #8fd3a5;
   --danger: #ff8a7f;
   --code-bg: #262834;
+  --add-bg: #17301f;
+  --add-mark: #24553a;
+  --add-ink: #8fd3a5;
+  --del-bg: #3a1d1f;
+  --del-mark: #6b2d2f;
+  --del-ink: #ff9b92;
+  --hunk-bg: #23253a;
+  --hunk-ink: #a9abe8;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.2);
   color-scheme: dark;
 }
@@ -957,4 +973,136 @@ li.block:hover:has(li.block:hover) {
 }
 .editor-actions {
   flex-wrap: wrap;
+}
+
+/* Diffs from ```diff blocks: a file header with counts, then +/- lines with edited words marked. */
+.diffview {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+}
+.diff-file {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  min-width: 0;
+}
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--code-bg);
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.diff-file > .diff-head {
+  border-bottom: 1px solid var(--border);
+}
+details.diff-file:not([open]) > .diff-head {
+  border-bottom: 0;
+}
+summary.diff-head {
+  cursor: pointer;
+  list-style: none;
+}
+summary.diff-head::-webkit-details-marker {
+  display: none;
+}
+summary.diff-head::before {
+  content: "▸";
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+details[open] > summary.diff-head::before {
+  transform: rotate(90deg);
+}
+summary.diff-head:hover {
+  color: var(--accent);
+}
+.diff-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diff-stats {
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.diff-added {
+  color: var(--add-ink);
+}
+.diff-removed {
+  color: var(--del-ink);
+}
+.diff-scroll {
+  overflow-x: auto;
+}
+.diff-lines {
+  border-collapse: collapse;
+  width: 100%;
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.diff-lines td {
+  padding: 0 10px 0 0;
+  white-space: pre;
+  vertical-align: top;
+}
+.diff-lines td.diff-sign {
+  width: 1%;
+  padding: 0 6px 0 10px;
+  user-select: none;
+  color: var(--muted);
+}
+.diff-add td {
+  background: var(--add-bg);
+}
+.diff-del td {
+  background: var(--del-bg);
+}
+.diff-add td.diff-sign {
+  color: var(--add-ink);
+}
+.diff-del td.diff-sign {
+  color: var(--del-ink);
+}
+.diff-hunk td {
+  background: var(--hunk-bg);
+  color: var(--hunk-ink);
+  padding: 1px 10px;
+}
+.diff-add mark {
+  background: var(--add-mark);
+  color: inherit;
+  border-radius: 2px;
+}
+.diff-del mark {
+  background: var(--del-mark);
+  color: inherit;
+  border-radius: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  summary.diff-head::before {
+    transition: none;
+  }
+}
+/* Keep the reply table styles (.markdown table/td) off diff tables. */
+.diffview .diff-lines {
+  display: table;
+  margin: 0;
+  font-size: 12px;
+}
+.diffview .diff-lines td {
+  border: 0;
 }
