@@ -189,15 +189,24 @@ beside it. Run it in your project folder (it doesn't need `/sidenote:on`):
 ```
 
 A new Claude Code session starts there, using your normal Claude Code login and settings. Type
-at the `you ›` line and press **Enter**. Claude's reply streams in above it, with each tool call
-as a one-line row (`⏺ Edit src/app.ts`, `✗` when it failed). When Claude asks to use a tool, the
-request shows in full under the reply: **y** allows it, **a** always allows it (Claude Code's
-suggested rule, such as accepting edits for this session), **n** denies it. **Esc** interrupts
-Claude; messages you typed while it worked come back to the prompt line.
+at the `you ›` line and press **Enter**. Claude's reply streams in above it: who spoke and when
+in a column on the left, the conversation in the middle, and a turn's tool calls on one line
+(`✓ read app.py   ◐ npm test`, `✗` when one failed). When Claude asks to use a tool, the request
+shows in full under the reply: **y** allows it, **a** always allows it (Claude Code's suggested
+rule, such as accepting edits for this session), **n** denies it. **Esc** interrupts Claude;
+messages you typed while it worked come back to the prompt line.
 
 **Tab** moves between the prompt line and the conversation, where the keys above work: move to
-a block, **n** to note it, **Enter** to open a thread. Notes ride along with your next message,
-or go on their own with **S**. Their answers land in the notes' threads, as in the browser.
+a block, **n** to note it, **v** to pick lines, **]** and **[** to go to the next or previous
+note. Wider than 120 columns, notes sit in a margin on the right, level with their text (◆ until
+sent, ◇ after, with the start of Claude's answer), and you write them in a box right there.
+Notes ride along with your next message, or go on their own with **S**. Their answers land in
+the notes' threads, as in the browser.
+
+**Enter** on a note opens its thread in the right half, beside the conversation. **r** writes a
+reply at the bottom of that half; **Enter** asks it now, **Ctrl+S** keeps it for your next
+message. **Tab** switches halves, **]** and **[** go to the next or previous thread, and **Esc**
+closes it. In windows narrower than 120 columns the thread takes the whole window instead.
 
 Claude runs in the sidenote server, not in the window, so it keeps working if you close the
 window. The window prints the session's id when it closes; `sidenote chat <session id>` picks

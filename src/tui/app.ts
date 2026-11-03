@@ -21,7 +21,7 @@ import { PLAIN, type Span, type Style } from "./lines.ts";
 import { renderReply, type RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { buildThread } from "./thread.ts";
-import { MARGIN_WIDTH, buildConversation, conversationLayout } from "./conversation.ts";
+import { CONVERSATION_MARGIN_MIN_WIDTH, MARGIN_WIDTH, buildConversation, conversationLayout } from "./conversation.ts";
 import { clipSpans, spansWidth } from "./wrap.ts";
 
 export interface TuiApi {
@@ -72,6 +72,7 @@ const MAX_QUOTE_CHARS = 600;
 const GUTTER = 2;
 const EDITOR_MAX_ROWS = 6;
 const PROMPT_LABEL = "you › ";
+const REPLY_LABEL = "reply › ";
 const MIN_COLUMNS = 30;
 const MIN_ROWS = 8;
 
@@ -117,6 +118,10 @@ export class App {
   #focus: "prompt" | "feed" = "prompt";
   /** Keep the bottom of the conversation in view as it grows. */
   #follow = true;
+  /** With the thread in the right half, which half takes the keys. */
+  #half: "thread" | "conversation" = "thread";
+  /** Where the text cursor goes while a reply is written in the thread's half. */
+  #paneCursor: { row: number; column: number } | null = null;
 
   #view: "feed" | "thread" = "feed";
   #threadRoot: number | null = null;
@@ -234,8 +239,9 @@ export class App {
       else if (await this.#permissionKey(key)) return;
       else if (this.#lines) this.#linesKey(this.#lines, key);
       else if (this.#chat && this.#view === "feed" && this.#focus === "prompt") await this.#promptKey(key);
-      else if (this.#view === "thread") await this.#threadKey(key, confirming);
-      else await this.#feedKey(key, confirming);
+      else if (this.#view === "thread" && !(this.#split() && this.#half === "conversation")) {
+        await this.#threadKey(key, confirming);
+      } else await this.#feedKey(key, confirming);
     } catch (error) {
       this.#message = { text: errorText(error), style: { tone: "del" } };
     }
@@ -244,6 +250,19 @@ export class App {
 
   async #feedKey(key: Key, confirming: number | null): Promise<void> {
     const target = this.#selectedTarget();
+    if (this.#view === "thread") {
+      // The conversation's half, beside an open thread.
+      if (key.name === "tab") {
+        this.#half = "thread";
+        return;
+      }
+      if (key.name === "escape" || key.name === "i") {
+        this.#closeThread();
+        if (key.name === "i") this.#focus = "prompt";
+        return;
+      }
+    }
+    if (key.name === "]" || key.name === "[") return this.#nextNote(key.name === "]" ? 1 : -1);
     if (this.#chat && (key.name === "tab" || key.name === "i")) {
       this.#focus = "prompt";
       return;
@@ -343,6 +362,12 @@ export class App {
   async #threadKey(key: Key, confirming: number | null): Promise<void> {
     const height = this.#bodyHeight();
     switch (key.name) {
+      case "tab":
+        if (this.#split()) this.#half = "conversation";
+        return;
+      case "]":
+      case "[":
+        return this.#nextThread(key.name === "]" ? 1 : -1);
       case "j":
       case "down":
         this.#threadScroll += 1;
@@ -393,8 +418,10 @@ export class App {
   async #editorKey(editing: Editing, key: Key): Promise<void> {
     if (key.name === "escape") return this.#closeEditor();
     if (key.name === "enter" && !(key.alt || key.shift)) {
-      // In chat, notes wait for the next message; S sends them on their own.
-      return this.#submit(editing, !this.#chat && (this.#model?.canSend() ?? false));
+      // In chat, notes wait for the next message, and S sends them on their own; a reply in a
+      // thread beside the conversation is a question, so it goes now.
+      const now = this.#chat ? this.#inThreadPane(editing) : (this.#model?.canSend() ?? false);
+      return this.#submit(editing, now);
     }
     if (key.ctrl && key.name === "s") return this.#submit(editing, false);
     const edited = await this.#editText(editing.text, key, this.#editorWidth());
@@ -648,6 +675,42 @@ export class App {
     this.#view = "thread";
     this.#threadRoot = rootId;
     this.#threadScroll = 0;
+    this.#half = "thread";
+  }
+
+  /** The notes in the conversation's order: the cursor's targets that are notes. */
+  #noteTargets(): Target[] {
+    return (this.#feed?.targets ?? []).filter((target) => target.kind === "note");
+  }
+
+  /** ] and [ in the conversation: the cursor to the next or previous note. */
+  #nextNote(direction: 1 | -1): void {
+    const notes = this.#noteTargets();
+    const current = this.#selectedTarget();
+    const start = current?.start ?? -1;
+    const next =
+      direction > 0
+        ? notes.find((t) => t.start > start || (t.start === start && t.key !== current?.key && t.side === "right"))
+        : notes.findLast((t) => t.start < start);
+    if (!next) {
+      this.#message = { text: direction > 0 ? "No more notes below" : "No more notes above", style: MUTED };
+      return;
+    }
+    if (this.#chat) this.#follow = false;
+    this.#select(next.key);
+  }
+
+  /** ] and [ in a thread: the next or previous note's thread. */
+  #nextThread(direction: 1 | -1): void {
+    const notes = this.#noteTargets();
+    const index = notes.findIndex((t) => t.rootId === this.#threadRoot);
+    const next = notes[index + direction];
+    if (!next) {
+      this.#message = { text: direction > 0 ? "This is the last thread" : "This is the first thread", style: MUTED };
+      return;
+    }
+    this.#select(next.key);
+    this.#openThread(next.rootId!);
   }
 
   #closeThread(): void {
@@ -682,20 +745,27 @@ export class App {
     }
     const frame: string[] = [this.#ansiRow(this.#topBar(columns))];
     const height = this.#bodyHeight();
-    const body = this.#view === "thread" ? this.#threadBody(columns, height) : this.#feedBody(columns, height);
+    this.#paneCursor = null;
+    const body =
+      this.#view === "feed"
+        ? this.#feedBody(columns, height)
+        : this.#split()
+          ? this.#splitBody(columns, height)
+          : this.#threadBody(columns, height);
     frame.push(...body.map((spans) => this.#ansiRow(clipSpans(spans, columns))));
     // After the body, which settles the selection the key hints describe.
     const bottom = this.#bottom(columns);
     const cursor = bottom.cursor
       ? { row: frame.length + bottom.cursor.row, column: bottom.cursor.column }
-      : this.#composerCursor;
+      : (this.#composerCursor ?? this.#paneCursor);
     frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
     this.#terminal.draw(frame, cursor);
   }
 
   /** The rows under the conversation: a note editor, or the prompt line, then the key hints. */
   #bottom(columns: number): { rows: Span[][]; cursor: { row: number; column: number } | null } {
-    if (this.#editor && !this.#inMargin(this.#editor)) return this.#editorRows(this.#editor, columns);
+    const editor = this.#editor;
+    if (editor && !this.#inMargin(editor) && !this.#inThreadPane(editor)) return this.#editorRows(editor, columns);
     const hint = clipSpans(this.#hint(), columns);
     if (!this.#chat) return { rows: [hint], cursor: null };
     const prompt = this.#promptRows(columns);
@@ -865,7 +935,8 @@ export class App {
         out.push([]);
         continue;
       }
-      const cursorShown = !this.#chat || this.#focus === "feed";
+      const cursorShown =
+        !this.#chat || (this.#view === "thread" ? this.#half === "conversation" : this.#focus === "feed");
       const onTarget = cursorShown && target?.side === "left" && row >= target.start && row < target.end;
       const gutter: Span =
         row >= lineFrom && row <= lineTo
@@ -944,7 +1015,118 @@ export class App {
 
   #editorWidth(): number {
     if (this.#editor && this.#inMargin(this.#editor)) return MARGIN_WIDTH - 4;
+    if (this.#editor && this.#inThreadPane(this.#editor))
+      return Math.max(10, this.#halves().right - REPLY_LABEL.length - 1);
     return Math.max(10, this.#terminal.size().columns - 3);
+  }
+
+  /** In chat, wide enough for the thread to take the right half beside the conversation. */
+  #split(): boolean {
+    return (
+      this.#chat !== null && this.#view === "thread" && this.#terminal.size().columns >= CONVERSATION_MARGIN_MIN_WIDTH
+    );
+  }
+
+  /** Columns of the conversation's half and the thread's, the rule between them aside. */
+  #halves(): { left: number; right: number } {
+    const columns = this.#terminal.size().columns;
+    const left = Math.floor(columns / 2);
+    return { left, right: columns - left - 2 };
+  }
+
+  /** Whether this is a reply written at the bottom of the thread's half. */
+  #inThreadPane(editing: Editing): boolean {
+    return this.#split() && "parent_id" in editing.request && editing.request.parent_id === this.#threadRoot;
+  }
+
+  /** The conversation on the left, the open thread on the right. */
+  #splitBody(columns: number, height: number): Span[][] {
+    const { left, right } = this.#halves();
+    const pane = this.#threadPane(right, height, left + 2);
+    if (!pane) {
+      this.#closeThread();
+      return this.#feedBody(columns, height);
+    }
+    const conversation = this.#feedBody(left, height);
+    const rule: Span = { text: "│ ", style: this.#half === "thread" ? ACCENT : MUTED };
+    return conversation.map((spans, i) => {
+      const clipped = clipSpans(spans, left);
+      const pad: Span = { text: " ".repeat(Math.max(0, left - spansWidth(clipped))), style: PLAIN };
+      return [...clipped, pad, rule, ...(pane[i] ?? [])];
+    });
+  }
+
+  /**
+   * The thread's half: what it is about, the note and Claude's answers, then its reply line.
+   * column is where the half starts, for the text cursor of a reply being written.
+   */
+  #threadPane(width: number, height: number, column: number): Span[][] | null {
+    const model = this.#model;
+    const root = model?.note(this.#threadRoot);
+    const rows = model && root ? buildThread(model, root.id, width - 1) : null;
+    if (!rows || !root) return null;
+    const about = root.quote ? `note on: ${terminalSafe(root.quote).replace(/\s+/g, " ")}` : "note on the whole reply";
+    const close = this.#half === "thread" ? "esc close" : "tab thread";
+    const head = clipSpans(
+      [
+        { text: "thread", style: { tone: "accent", bold: true } },
+        { text: ` · ${about}`, style: MUTED },
+      ],
+      Math.max(10, width - close.length - 2),
+    );
+    const header: Span[] = [
+      ...head,
+      { text: " ".repeat(Math.max(1, width - spansWidth(head) - close.length)), style: PLAIN },
+      { text: close, style: MUTED },
+    ];
+
+    const editing = this.#editor && this.#inThreadPane(this.#editor) ? this.#editor : null;
+    const reply = this.#replyRows(editing, width);
+    // buildThread's own heading is replaced by the header above.
+    const body = rows.slice(2);
+    const room = Math.max(1, height - 1 - reply.rows.length);
+    this.#threadScroll = Math.max(0, Math.min(this.#threadScroll, body.length - room));
+    const out: Span[][] = [header];
+    for (let i = 0; i < room; i++) out.push(body[this.#threadScroll + i] ?? []);
+    if (reply.cursor)
+      this.#paneCursor = { row: 1 + out.length + reply.cursor.row, column: column + reply.cursor.column };
+    out.push(...reply.rows);
+    return out.slice(0, height);
+  }
+
+  /** "reply › …" at the bottom of the thread's half, as an editor while a reply is written. */
+  #replyRows(
+    editing: Editing | null,
+    width: number,
+  ): { rows: Span[][]; cursor: { row: number; column: number } | null } {
+    const rule: Span[] = [{ text: "─".repeat(width), style: MUTED }];
+    const label: Span = { text: REPLY_LABEL, style: { tone: "accent", bold: true } };
+    const indent: Span = { text: " ".repeat(REPLY_LABEL.length), style: PLAIN };
+    if (!editing) {
+      return {
+        rows: [
+          rule,
+          [label, { text: this.#half === "thread" ? "r to reply…" : "tab, then r to reply…", style: MUTED }],
+        ],
+        cursor: null,
+      };
+    }
+    const layout = editing.text.layout(this.#editorWidth());
+    const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
+    editing.scroll = Math.min(Math.max(editing.scroll, layout.cursorRow - visible + 1), layout.cursorRow);
+    const rows: Span[][] = [rule];
+    for (let i = 0; i < visible; i++) {
+      rows.push([i ? indent : label, { text: layout.rows[editing.scroll + i] ?? "", style: PLAIN }]);
+    }
+    if (editing.text.text === "") rows[1] = [label, { text: "Your follow-up…", style: MUTED }];
+    rows.push([{ text: "⏎ ask now · ^S keep for later · esc close", style: MUTED }]);
+    return {
+      rows,
+      cursor: {
+        row: 1 + layout.cursorRow - editing.scroll,
+        column: REPLY_LABEL.length + layout.cursorColumn,
+      },
+    };
   }
 
   /** Whether this note is written in a box in the margin, beside its text. */
@@ -1006,7 +1188,9 @@ export class App {
   #hint(): Span[] {
     if (this.#message) return [{ text: this.#message.text, style: this.#message.style }];
     if (this.#editor) {
-      const text = "⏎ save: it goes with your next message · ⌥⏎ new line · ^E $EDITOR · esc close";
+      const text = this.#inThreadPane(this.#editor)
+        ? "⏎ ask now: your other pending notes go too · ^S keep for later · ⌥⏎ new line · esc close"
+        : "⏎ save: it goes with your next message · ⌥⏎ new line · ^E $EDITOR · esc close";
       return [{ text, style: MUTED }];
     }
     const parts: string[] = [];
@@ -1023,7 +1207,10 @@ export class App {
     }
     if (this.#lines) {
       parts.push("j/k pick lines", "n note on these lines", "esc cancel");
-    } else if (this.#view === "thread") {
+    } else if (this.#split() && this.#half === "thread") {
+      parts.push("tab conversation", "j/k scroll", "r reply", "]/[ next/prev thread", "f show in conversation");
+      parts.push("x delete unsent", "esc close");
+    } else if (this.#view === "thread" && !this.#split()) {
       parts.push("j/k scroll", "r reply", "x delete unsent", "f show in feed", "esc back");
     } else {
       const target = this.#selectedTarget();
@@ -1034,7 +1221,9 @@ export class App {
       if (target?.kind === "note") parts.push("x delete");
       if (target?.code) parts.push("v pick lines");
       parts.push("N note on reply");
-      if (this.#chat) parts.push("tab message");
+      if (this.#chat) parts.push("]/[ next/prev note");
+      if (this.#split()) parts.push("tab thread", "esc close thread");
+      else if (this.#chat) parts.push("tab message");
       if (this.#chat && this.#working) parts.push("esc interrupt");
     }
     if (this.#model?.pendingCount() && this.#model.canSend()) parts.push("S send now");

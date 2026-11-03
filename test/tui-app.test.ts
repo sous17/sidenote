@@ -624,3 +624,53 @@ test("chat: narrower than the margin, notes are still written at the bottom", as
     /^── Note on: /,
   );
 });
+
+test("chat: a thread opens in the right half, with its own reply line", async () => {
+  const api = new FakeApi(
+    [reply(2, REPLY_TWO)],
+    [note({ id: 7, body: "Why constant time?", block_index: 2, quote: "it compares in constant time" })],
+  );
+  const { app, terminal } = await startChat(api, new FakeChat(), new FakeTerminal(130, 30));
+  await press(app, "\tg]");
+  assert.match(terminal.text.at(-1)!, /\]\/\[ next\/prev note/);
+  await press(app, "\r");
+  const header = terminal.text[1]!;
+  assert.match(header, /^.{65}│ thread · note on: it compares in constant time +esc close$/, "the right half");
+  assert.ok(terminal.text.some((row) => /^.{65}│ {3}Why constant time\?/.test(row)));
+  assert.ok(
+    terminal.text.some((row) => /I moved the check into verifyToken\. +│/.test(row)),
+    "the conversation stays",
+  );
+  assert.match(terminal.text.at(-4)!, /│ reply › r to reply…$/);
+
+  await press(app, "rAnd timing?");
+  const row = terminal.text.findIndex((text) => text.includes("reply › And timing?"));
+  assert.deepEqual(terminal.cursor, { row, column: terminal.text[row]!.indexOf("And timing?") + "And timing?".length });
+  await press(app, "\r");
+  assert.deepEqual(api.added.at(-1), { parent_id: 7, body: "And timing?" });
+  assert.equal(api.sends, 1, "a reply in the thread is asked now");
+
+  await press(app, "\t");
+  assert.match(terminal.text.at(-1)!, /tab thread · esc close thread/);
+  await press(app, "\x1b");
+  assert.ok(!terminal.has("│ thread ·"), "Esc in the conversation's half closes the thread");
+});
+
+test("chat: ] and [ move between threads, and narrow windows show the thread full width", async () => {
+  const api = new FakeApi(
+    [reply(2, REPLY_TWO)],
+    [note({ id: 7, body: "First note", block_index: 0 }), note({ id: 8, body: "Second note", block_index: 2 })],
+  );
+  const { app, terminal } = await startChat(api);
+  await press(app, "\tg]\r");
+  assert.ok(terminal.text.some((row) => row.includes("│   First note")));
+  await press(app, "]");
+  assert.ok(terminal.text.some((row) => row.includes("│   Second note")));
+  await press(app, "]");
+  assert.ok(terminal.has("This is the last thread"));
+
+  const narrow = await startChat(api, new FakeChat(), new FakeTerminal(100, 30));
+  await press(narrow.app, "\tg]\r");
+  assert.ok(narrow.terminal.has("Thread · on the reply from"), "the thread replaces the conversation");
+  assert.ok(!narrow.terminal.has("│ thread ·"));
+});
