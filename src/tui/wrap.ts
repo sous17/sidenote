@@ -78,3 +78,25 @@ function trimEnd(line: Span[]): void {
     line.pop();
   }
 }
+
+/** Cuts styled text to a width, ending in "…" when something was cut. */
+export function clipSpans(spans: readonly Span[], width: number): Span[] {
+  if (spansWidth(spans) <= width) return [...spans];
+  const out: Span[] = [];
+  let column = 0;
+  for (const span of spans) {
+    let text = "";
+    for (const grapheme of graphemes(span.text)) {
+      const size = graphemeWidth(grapheme);
+      if (column + size > width - 1) {
+        if (text) out.push({ text, style: span.style });
+        out.push({ text: "…", style: span.style });
+        return out;
+      }
+      text += grapheme;
+      column += size;
+    }
+    if (text) out.push({ text, style: span.style });
+  }
+  return out;
+}

@@ -65,6 +65,10 @@ export class SidenoteClient {
     return this.#request<T>("POST", path, body);
   }
 
+  delete<T>(path: string): Promise<T> {
+    return this.#request<T>("DELETE", path);
+  }
+
   /**
    * A one-time link to a session's window. The launch code sits in the URL fragment, which the
    * browser never sends to the server; the page trades it for the token once.

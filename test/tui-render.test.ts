@@ -49,8 +49,14 @@ test("every line stays within the width", () => {
 
 test("lines carry the block numbers notes are stored with", () => {
   const markdown = "Intro\n\n1. one\n   - nested\n2. two\n\n> quote\n> - in quote\n\n```\ncode\n```";
-  const { lines, blockCount } = render(markdown);
-  assert.equal(blockCount, replyBlocks(lexReply(markdown)).length);
+  const { lines, blocks } = render(markdown);
+  assert.equal(blocks.length, replyBlocks(lexReply(markdown)).length);
+  assert.deepEqual(
+    blocks.map((block) => block.code),
+    [false, false, false, false, false, false, true],
+  );
+  assert.equal(blocks[0]!.quote, "Intro");
+  assert.equal(blocks[6]!.quote, "code");
   const blockOf = (wanted: string): number => lines.find((line) => lineText(line).includes(wanted))!.block;
   assert.deepEqual(
     ["Intro", "1. one", "◦ nested", "2. two", "▌ quote", "• in quote", "│ code"].map(blockOf),

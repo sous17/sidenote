@@ -1,9 +1,10 @@
 // The sidenote page: one Claude Code session's replies, with notes in the margin.
 import { Api, ApiError, obtainToken } from "./api.ts";
-import { byId, projectName } from "./dom.ts";
+import { projectName } from "../shared/text.ts";
+import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
-import { Model } from "./model.ts";
+import { Model } from "../shared/model.ts";
 import { installNoteStarters } from "./selection.ts";
 import { Sending } from "./sending.ts";
 import { ThreadPane } from "./thread.ts";

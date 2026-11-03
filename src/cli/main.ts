@@ -12,9 +12,11 @@ import {
   sessionNameFromTranscript,
 } from "./transcript.ts";
 
-const USAGE = `sidenote: leave inline notes on Claude Code replies in your browser.
+const USAGE = `sidenote: leave inline notes on Claude Code replies in your browser or terminal.
 
   sidenote on [session]        turn sidenote on and open the session's window
+  sidenote tui [session]       show the session's replies in this terminal; without a session,
+                               the latest one in this folder
   sidenote off                 turn sidenote off; unsent notes are kept
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
@@ -147,6 +149,12 @@ const commands: Record<string, () => Promise<void>> = {
       imported += 1;
     }
     console.log(`Imported ${imported} earlier replies of this session.`);
+  },
+
+  async tui() {
+    // Loaded only for this command, so the hooks don't pay for the terminal UI.
+    const { runTui } = await import("../tui/main.ts");
+    await runTui(process.argv.slice(3));
   },
 
   "hook-session": () => runHook(hookSession),

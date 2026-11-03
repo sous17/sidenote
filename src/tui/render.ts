@@ -16,9 +16,18 @@ export interface RenderOptions {
   isFileOpen?: (file: number) => boolean;
 }
 
+/** What a note on a block needs: whether it is code, and the text it quotes. */
+export interface BlockInfo {
+  /** Code and diffs can be noted line by line. */
+  code: boolean;
+  /** The block's own text, like the page's quote of a whole block. */
+  quote: string;
+}
+
 export interface RenderedReply {
   lines: Line[];
-  blockCount: number;
+  /** One per block, by block number. */
+  blocks: BlockInfo[];
   /** Files in the reply's diffs; header lines carry their number in Line.file. */
   fileCount: number;
   /** True when the diffs touch more than one path, so each file folds open from its header. */
@@ -54,7 +63,18 @@ export function renderReply(markdown: string, options: RenderOptions): RenderedR
   const blocks = replyBlocks(tokens);
   const renderer = new ReplyRenderer(tokens, blocks, options);
   const lines = renderer.blocks(tokens, Math.max(MIN_WIDTH, options.width), -1, 0, true);
-  return { lines, blockCount: blocks.length, fileCount: renderer.fileCount, foldable: renderer.foldable };
+  return {
+    lines,
+    blocks: blocks.map(blockInfo),
+    fileCount: renderer.fileCount,
+    foldable: renderer.foldable,
+  };
+}
+
+function blockInfo(token: Token): BlockInfo {
+  // A table's text is its rows as written; every other block keeps its source text.
+  const text = token.type === "table" || !("text" in token) ? token.raw : String(token.text);
+  return { code: token.type === "code", quote: text.trim() };
 }
 
 class ReplyRenderer {

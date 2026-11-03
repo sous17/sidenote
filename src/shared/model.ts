@@ -1,5 +1,6 @@
-// The page's state: the latest snapshot from the server, the open thread, and questions about them.
-import type { Note, SendStatus, StateSnapshot, StoredResponse } from "../shared/types.ts";
+// A session's state as the page and the terminal see it: the latest snapshot from the server, the
+// open thread, and questions about them.
+import type { Note, SendStatus, StateSnapshot, StoredResponse } from "./types.ts";
 
 export type AnsweredNote = Note & { answered_by: number };
 

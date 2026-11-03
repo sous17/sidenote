@@ -1,8 +1,9 @@
 // The feed: one card per reply, with notes in the margin beside the text they are about.
 import type { Note, StoredResponse } from "../shared/types.ts";
-import { button, el, flash, formatTime, plainText, plural, tag, truncate } from "./dom.ts";
+import { formatTime, plainText, plural, truncate } from "../shared/text.ts";
+import { button, el, flash, tag } from "./dom.ts";
 import { renderMarkdownInto } from "./markdown.ts";
-import { answeredNoteIds, isAnswered, type Model } from "./model.ts";
+import { answeredNoteIds, isAnswered, type Model } from "../shared/model.ts";
 
 // Must match the @container feed min-width in app.css that moves notes into the margin.
 const MARGIN_LAYOUT_MIN_WIDTH = 1000;

@@ -1,9 +1,10 @@
 // The thread pane: one note's whole conversation beside the feed, with a reply box.
 import type { Note } from "../shared/types.ts";
-import { button, el, formatTime, tag } from "./dom.ts";
+import { formatTime } from "../shared/text.ts";
+import { button, el, tag } from "./dom.ts";
 import { createMeta, type Feed } from "./feed.ts";
 import { renderMarkdownInto } from "./markdown.ts";
-import { isAnswered, type Model } from "./model.ts";
+import { isAnswered, type Model } from "../shared/model.ts";
 import { isSendNow, submitOnModEnter, type Sending } from "./sending.ts";
 
 export class ThreadPane {
