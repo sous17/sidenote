@@ -3393,6 +3393,8 @@ var init_app = __esm({
       #model = null;
       #reachable = true;
       #conversation = null;
+      /** Where the text cursor goes while a note is written in the margin. */
+      #composerCursor = null;
       /** The message being typed. */
       #prompt = new NoteText();
       #promptScroll = 0;
@@ -3593,7 +3595,11 @@ var init_app = __esm({
           const [from, to] = [Math.min(...lines), Math.max(...lines)];
           const quote = target.quote.split("\n").slice(from - target.start, to - target.start + 1).join("\n");
           this.#lines = null;
-          this.#startNote({ ...target, quote });
+          const count = to - from + 1;
+          this.#startNote(
+            { ...target, quote },
+            { offset: from - target.start, label: plural(count, "picked line", "picked lines") }
+          );
           return;
         }
         this.#keepRowVisible(lines[1]);
@@ -3779,7 +3785,7 @@ var init_app = __esm({
         else open.add(file);
         this.#openFiles.set(responseId, open);
       }
-      #startNote(target) {
+      #startNote(target, picked) {
         const whole = target.kind === "reply" || target.block < 0;
         const quote = whole ? "" : target.quote;
         const draftKey = whole ? `r:${target.responseId}` : `${target.key}:${quote}`;
@@ -3793,12 +3799,22 @@ var init_app = __esm({
           draftKey,
           title
         );
+        const label = picked?.label ?? (whole ? "the whole reply" : target.code ? "this code" : "this block");
+        this.#editor.anchor = { key: target.key, offset: picked?.offset ?? 0, label: `note on ${label}` };
+        if (this.#chat) this.#follow = false;
       }
       #startReply(rootId) {
         this.#openEditor({ parent_id: rootId }, `t:${rootId}`, "Reply in this thread");
       }
       #openEditor(request, draftKey, title) {
-        this.#editor = { text: new NoteText(this.#drafts.get(draftKey) ?? ""), request, draftKey, title, scroll: 0 };
+        this.#editor = {
+          text: new NoteText(this.#drafts.get(draftKey) ?? ""),
+          request,
+          draftKey,
+          title,
+          scroll: 0,
+          anchor: null
+        };
       }
       #closeEditor() {
         const editing = this.#editor;
@@ -3897,17 +3913,17 @@ var init_app = __esm({
         const body = this.#view === "thread" ? this.#threadBody(columns, height) : this.#feedBody(columns, height);
         frame.push(...body.map((spans) => this.#ansiRow(clipSpans(spans, columns))));
         const bottom = this.#bottom(columns);
-        const cursor = bottom.cursor && { row: frame.length + bottom.cursor.row, column: bottom.cursor.column };
+        const cursor = bottom.cursor ? { row: frame.length + bottom.cursor.row, column: bottom.cursor.column } : this.#composerCursor;
         frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
         this.#terminal.draw(frame, cursor);
       }
       /** The rows under the conversation: a note editor, or the prompt line, then the key hints. */
       #bottom(columns) {
-        if (this.#editor) return this.#editorRows(this.#editor, columns);
+        if (this.#editor && !this.#inMargin(this.#editor)) return this.#editorRows(this.#editor, columns);
         const hint = clipSpans(this.#hint(), columns);
         if (!this.#chat) return { rows: [hint], cursor: null };
         const prompt = this.#promptRows(columns);
-        const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines;
+        const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines && !this.#editor;
         const rule = [{ text: "\u2500".repeat(columns), style: MUTED6 }];
         const cursor = prompt.cursor && { row: prompt.cursor.row + 1, column: prompt.cursor.column };
         return { rows: [rule, ...prompt.rows, hint], cursor: focused ? cursor : null };
@@ -4034,6 +4050,8 @@ var init_app = __esm({
         this.#reveal = false;
         if (this.#follow && this.#chat) this.#scroll = feed.rows.length;
         this.#scroll = this.#clampScroll(this.#scroll);
+        this.#composerCursor = null;
+        if (this.#editor && this.#inMargin(this.#editor)) this.#placeComposer(feed, this.#editor, height);
         if (this.#scroll + height >= feed.rows.length) this.#newBelow = false;
         const lines = this.#lines;
         const [lineFrom, lineTo] = lines ? [Math.min(...lines), Math.max(...lines)] : [-1, -1];
@@ -4109,10 +4127,60 @@ var init_app = __esm({
         };
       }
       #editorWidth() {
+        if (this.#editor && this.#inMargin(this.#editor)) return MARGIN_WIDTH2 - 4;
         return Math.max(10, this.#terminal.size().columns - 3);
+      }
+      /** Whether this note is written in a box in the margin, beside its text. */
+      #inMargin(editing) {
+        return this.#chat !== null && this.#view === "feed" && editing.anchor !== null && conversationLayout(this.#terminal.size().columns).margin;
+      }
+      /**
+       * Draws the note being written as a box in the margin, beside the rows it is about, and
+       * scrolls so the box is in view. Sets where the text cursor goes.
+       */
+      #placeComposer(feed, editing, height) {
+        const target = feed.targets.find((t) => t.key === editing.anchor.key);
+        if (!target) return;
+        const width = this.#editorWidth();
+        const layout = editing.text.layout(width);
+        const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
+        editing.scroll = Math.min(Math.max(editing.scroll, layout.cursorRow - visible + 1), layout.cursorRow);
+        const accent = { tone: "accent" };
+        const edge = (left, label, right) => {
+          const text = terminalSafe(label);
+          const fill = Math.max(0, MARGIN_WIDTH2 - 2 - spansWidth([{ text: `\u2500 ${text} `, style: PLAIN }]));
+          return [
+            { text: `${left}\u2500 `, style: accent },
+            { text, style: label.startsWith("\u23CE") ? MUTED6 : accent },
+            { text: ` ${"\u2500".repeat(fill)}${right}`, style: accent }
+          ];
+        };
+        const box = [edge("\u256D", editing.anchor.label, "\u256E")];
+        for (let i = 0; i < Math.max(2, visible); i++) {
+          const text = layout.rows[editing.scroll + i] ?? "";
+          const shown = i === 0 && editing.text.text === "" ? { text: "Your note for Claude\u2026", style: MUTED6 } : { text, style: { bold: true } };
+          const pad = Math.max(0, width - spansWidth([shown]));
+          box.push([{ text: "\u2502 ", style: accent }, shown, { text: `${" ".repeat(pad)} \u2502`, style: accent }]);
+        }
+        box.push(edge("\u2570", "\u23CE save \xB7 esc close", "\u256F"));
+        const at2 = Math.min(target.start + editing.anchor.offset, target.end - 1);
+        while (feed.rows.length < at2 + box.length) feed.rows.push({ left: [], right: [] });
+        box.forEach((spans, k) => feed.rows[at2 + k].right = spans);
+        if (at2 < this.#scroll) this.#scroll = at2;
+        else if (at2 + box.length > this.#scroll + height) this.#scroll = at2 + box.length - height;
+        this.#scroll = this.#clampScroll(this.#scroll);
+        const marginColumn = (feed.leadWidth ?? 0) + GUTTER + feed.leftWidth + 1 + 2;
+        this.#composerCursor = {
+          row: 1 + at2 + 1 + layout.cursorRow - editing.scroll - this.#scroll,
+          column: marginColumn + 2 + layout.cursorColumn
+        };
       }
       #hint() {
         if (this.#message) return [{ text: this.#message.text, style: this.#message.style }];
+        if (this.#editor) {
+          const text = "\u23CE save: it goes with your next message \xB7 \u2325\u23CE new line \xB7 ^E $EDITOR \xB7 esc close";
+          return [{ text, style: MUTED6 }];
+        }
         const parts = [];
         if (this.#conversation?.permission && this.#view === "feed" && !this.#lines) {
           return [{ text: "Claude is waiting: y allow \xB7 a always allow \xB7 n deny", style: { tone: "accent", bold: true } }];

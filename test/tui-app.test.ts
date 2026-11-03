@@ -424,7 +424,8 @@ async function startChat(api: FakeApi, chat = new FakeChat(), terminal = new Fak
 
 /** Rows without trailing spaces or the margin rule, so the conversation column reads plainly. */
 function conversationRows(terminal: FakeTerminal): string[] {
-  return terminal.text.map((row) => row.replace(/ *│.*$/, "").trimEnd());
+  const wide = terminal.columns >= 120;
+  return terminal.text.map((row) => (wide && row.includes("│") ? row.slice(0, row.lastIndexOf("│")) : row).trimEnd());
 }
 
 /** Rows the cursor is on, in the conversation column after the speaker column. */
@@ -586,4 +587,40 @@ test("chat: under 120 columns notes go under their block, and under 60 the speak
   const you = small.findIndex((row) => /^ {2}you · /.test(row));
   assert.equal(small[you + 1], "  › Check it");
   assert.equal(small[you + 3], "  claude");
+});
+
+test("chat: a note is written in a box in the margin, beside the lines it is about", async () => {
+  const api = new FakeApi([reply(2, REPLY_TWO)]);
+  const { app, terminal } = await startChat(api);
+  await press(app, "\tG");
+  for (let i = 0; i < 10 && !picked(terminal).some((row) => row.includes("const a = 1;")); i++) {
+    await press(app, "k");
+  }
+  // Picking starts on the block's first row, its language label.
+  await press(app, "vjjnDrop b?");
+  const boxTop = terminal.text.findIndex((row) => row.includes("╭─ note on 3 picked lines "));
+  assert.ok(boxTop > 0);
+  assert.match(terminal.text[boxTop]!, / ts +│ ╭─ note on 3 picked lines ─+╮$/, "level with the first picked row");
+  assert.match(terminal.text[boxTop + 1]!, /const a = 1; +│ │ Drop b\? +│$/);
+  assert.match(terminal.text[boxTop + 3]!, /const c = 3; +│ ╰─ ⏎ save · esc close ─+╯$/);
+  const column = terminal.text[boxTop + 1]!.indexOf("Drop b?") + "Drop b?".length;
+  assert.deepEqual(terminal.cursor, { row: boxTop + 1, column }, "the text cursor is in the box");
+  assert.equal(terminal.text.at(-2), "you › Message Claude…", "the prompt line stays where it is");
+
+  await press(app, "\r");
+  assert.deepEqual(api.added, [
+    { response_id: 2, block_index: 3, quote: "ts\nconst a = 1;\nconst b = 2;", body: "Drop b?" },
+  ]);
+  assert.ok(terminal.has("│ ◆ Drop b?"));
+});
+
+test("chat: narrower than the margin, notes are still written at the bottom", async () => {
+  const api = new FakeApi([reply(2, REPLY_TWO)]);
+  const { app, terminal } = await startChat(api, new FakeChat(), new FakeTerminal(100, 30));
+  await press(app, "\tn");
+  assert.ok(!terminal.has("╭─ note on"));
+  assert.match(
+    terminal.text.find((row) => row.startsWith("── Note on"))!,
+    /^── Note on: /,
+  );
 });

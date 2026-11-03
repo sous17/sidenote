@@ -21,7 +21,7 @@ import { PLAIN, type Span, type Style } from "./lines.ts";
 import { renderReply, type RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { buildThread } from "./thread.ts";
-import { buildConversation } from "./conversation.ts";
+import { MARGIN_WIDTH, buildConversation, conversationLayout } from "./conversation.ts";
 import { clipSpans, spansWidth } from "./wrap.ts";
 
 export interface TuiApi {
@@ -87,6 +87,8 @@ interface Editing {
   draftKey: string;
   title: string;
   scroll: number;
+  /** In chat with a margin, the note is written in a box beside these rows of this target. */
+  anchor: { key: string; offset: number; label: string } | null;
 }
 
 interface Message {
@@ -106,6 +108,8 @@ export class App {
   #reachable = true;
 
   #conversation: ConversationView | null = null;
+  /** Where the text cursor goes while a note is written in the margin. */
+  #composerCursor: { row: number; column: number } | null = null;
   /** The message being typed. */
   #prompt = new NoteText();
   #promptScroll = 0;
@@ -326,7 +330,11 @@ export class App {
         .slice(from - target.start, to - target.start + 1)
         .join("\n");
       this.#lines = null;
-      this.#startNote({ ...target, quote });
+      const count = to - from + 1;
+      this.#startNote(
+        { ...target, quote },
+        { offset: from - target.start, label: plural(count, "picked line", "picked lines") },
+      );
       return;
     }
     this.#keepRowVisible(lines[1]);
@@ -531,7 +539,7 @@ export class App {
     this.#openFiles.set(responseId, open);
   }
 
-  #startNote(target: Target): void {
+  #startNote(target: Target, picked?: { offset: number; label: string }): void {
     const whole = target.kind === "reply" || target.block < 0;
     const quote = whole ? "" : target.quote;
     const draftKey = whole ? `r:${target.responseId}` : `${target.key}:${quote}`;
@@ -545,6 +553,10 @@ export class App {
       draftKey,
       title,
     );
+    const label = picked?.label ?? (whole ? "the whole reply" : target.code ? "this code" : "this block");
+    this.#editor!.anchor = { key: target.key, offset: picked?.offset ?? 0, label: `note on ${label}` };
+    // Writing beside the text: keep that part of the conversation still.
+    if (this.#chat) this.#follow = false;
   }
 
   #startReply(rootId: number): void {
@@ -552,7 +564,14 @@ export class App {
   }
 
   #openEditor(request: NoteRequest, draftKey: string, title: string): void {
-    this.#editor = { text: new NoteText(this.#drafts.get(draftKey) ?? ""), request, draftKey, title, scroll: 0 };
+    this.#editor = {
+      text: new NoteText(this.#drafts.get(draftKey) ?? ""),
+      request,
+      draftKey,
+      title,
+      scroll: 0,
+      anchor: null,
+    };
   }
 
   #closeEditor(): void {
@@ -667,18 +686,20 @@ export class App {
     frame.push(...body.map((spans) => this.#ansiRow(clipSpans(spans, columns))));
     // After the body, which settles the selection the key hints describe.
     const bottom = this.#bottom(columns);
-    const cursor = bottom.cursor && { row: frame.length + bottom.cursor.row, column: bottom.cursor.column };
+    const cursor = bottom.cursor
+      ? { row: frame.length + bottom.cursor.row, column: bottom.cursor.column }
+      : this.#composerCursor;
     frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
     this.#terminal.draw(frame, cursor);
   }
 
   /** The rows under the conversation: a note editor, or the prompt line, then the key hints. */
   #bottom(columns: number): { rows: Span[][]; cursor: { row: number; column: number } | null } {
-    if (this.#editor) return this.#editorRows(this.#editor, columns);
+    if (this.#editor && !this.#inMargin(this.#editor)) return this.#editorRows(this.#editor, columns);
     const hint = clipSpans(this.#hint(), columns);
     if (!this.#chat) return { rows: [hint], cursor: null };
     const prompt = this.#promptRows(columns);
-    const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines;
+    const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines && !this.#editor;
     const rule: Span[] = [{ text: "─".repeat(columns), style: MUTED }];
     const cursor = prompt.cursor && { row: prompt.cursor.row + 1, column: prompt.cursor.column };
     return { rows: [rule, ...prompt.rows, hint], cursor: focused ? cursor : null };
@@ -831,6 +852,8 @@ export class App {
     this.#reveal = false;
     if (this.#follow && this.#chat) this.#scroll = feed.rows.length;
     this.#scroll = this.#clampScroll(this.#scroll);
+    this.#composerCursor = null;
+    if (this.#editor && this.#inMargin(this.#editor)) this.#placeComposer(feed, this.#editor, height);
     if (this.#scroll + height >= feed.rows.length) this.#newBelow = false;
 
     const lines = this.#lines;
@@ -920,11 +943,72 @@ export class App {
   }
 
   #editorWidth(): number {
+    if (this.#editor && this.#inMargin(this.#editor)) return MARGIN_WIDTH - 4;
     return Math.max(10, this.#terminal.size().columns - 3);
+  }
+
+  /** Whether this note is written in a box in the margin, beside its text. */
+  #inMargin(editing: Editing): boolean {
+    return (
+      this.#chat !== null &&
+      this.#view === "feed" &&
+      editing.anchor !== null &&
+      conversationLayout(this.#terminal.size().columns).margin
+    );
+  }
+
+  /**
+   * Draws the note being written as a box in the margin, beside the rows it is about, and
+   * scrolls so the box is in view. Sets where the text cursor goes.
+   */
+  #placeComposer(feed: FeedView, editing: Editing, height: number): void {
+    const target = feed.targets.find((t) => t.key === editing.anchor!.key);
+    if (!target) return;
+    const width = this.#editorWidth();
+    const layout = editing.text.layout(width);
+    const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
+    editing.scroll = Math.min(Math.max(editing.scroll, layout.cursorRow - visible + 1), layout.cursorRow);
+    const accent: Style = { tone: "accent" };
+    const edge = (left: string, label: string, right: string): Span[] => {
+      const text = terminalSafe(label);
+      const fill = Math.max(0, MARGIN_WIDTH - 2 - spansWidth([{ text: `─ ${text} `, style: PLAIN }]));
+      return [
+        { text: `${left}─ `, style: accent },
+        { text, style: label.startsWith("⏎") ? MUTED : accent },
+        { text: ` ${"─".repeat(fill)}${right}`, style: accent },
+      ];
+    };
+    const box: Span[][] = [edge("╭", editing.anchor!.label, "╮")];
+    for (let i = 0; i < Math.max(2, visible); i++) {
+      const text = layout.rows[editing.scroll + i] ?? "";
+      const shown: Span =
+        i === 0 && editing.text.text === ""
+          ? { text: "Your note for Claude…", style: MUTED }
+          : { text, style: { bold: true } };
+      const pad = Math.max(0, width - spansWidth([shown]));
+      box.push([{ text: "│ ", style: accent }, shown, { text: `${" ".repeat(pad)} │`, style: accent }]);
+    }
+    box.push(edge("╰", "⏎ save · esc close", "╯"));
+
+    const at = Math.min(target.start + editing.anchor!.offset, target.end - 1);
+    while (feed.rows.length < at + box.length) feed.rows.push({ left: [], right: [] });
+    box.forEach((spans, k) => (feed.rows[at + k]!.right = spans));
+    if (at < this.#scroll) this.#scroll = at;
+    else if (at + box.length > this.#scroll + height) this.#scroll = at + box.length - height;
+    this.#scroll = this.#clampScroll(this.#scroll);
+    const marginColumn = (feed.leadWidth ?? 0) + GUTTER + feed.leftWidth + 1 + 2;
+    this.#composerCursor = {
+      row: 1 + at + 1 + layout.cursorRow - editing.scroll - this.#scroll,
+      column: marginColumn + 2 + layout.cursorColumn,
+    };
   }
 
   #hint(): Span[] {
     if (this.#message) return [{ text: this.#message.text, style: this.#message.style }];
+    if (this.#editor) {
+      const text = "⏎ save: it goes with your next message · ⌥⏎ new line · ^E $EDITOR · esc close";
+      return [{ text, style: MUTED }];
+    }
     const parts: string[] = [];
     if (this.#conversation?.permission && this.#view === "feed" && !this.#lines) {
       return [{ text: "Claude is waiting: y allow · a always allow · n deny", style: { tone: "accent", bold: true } }];
