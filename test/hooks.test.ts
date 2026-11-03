@@ -1,7 +1,7 @@
 // End to end: the built launcher and CLI against a real server, in a scratch HOME.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -13,7 +13,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const launcher = join(root, "bin", "sidenote");
 const home = mkdtempSync(join(tmpdir(), "sidenote-home-"));
 const opened = join(home, "opened.txt");
-const tmuxArgs = join(home, "tmux-args.txt");
 const SESSION = "e2e-session";
 
 interface Run {
@@ -21,17 +20,6 @@ interface Run {
   stdout: string;
   stderr: string;
 }
-
-/** Set by terminals that can split; a test that runs inside tmux must not split it for real. */
-const TERMINAL_VARIABLES = [
-  "TMUX",
-  "TMUX_PANE",
-  "WEZTERM_PANE",
-  "KITTY_WINDOW_ID",
-  "KITTY_LISTEN_ON",
-  "TERM_PROGRAM",
-  "ITERM_SESSION_ID",
-];
 
 /** Runs the launcher; extra holds variables to set, such as a terminal's. */
 function run(args: string[], stdin = "", extra: Record<string, string> = {}): Promise<Run> {
@@ -41,7 +29,6 @@ function run(args: string[], stdin = "", extra: Record<string, string> = {}): Pr
     PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
     SIDENOTE_NODE: process.execPath,
   };
-  for (const name of TERMINAL_VARIABLES) delete env[name];
   const child = spawn(launcher, args, { env: { ...env, ...extra } });
   let stdout = "";
   let stderr = "";
@@ -92,9 +79,6 @@ before(() => {
     writeFileSync(join(home, "fakebin", opener), `#!/bin/sh\necho "$1" >> "${opened}"\n`);
     chmodSync(join(home, "fakebin", opener), 0o755);
   }
-  // A stand-in tmux that records how it was asked to split.
-  writeFileSync(join(home, "fakebin", "tmux"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${tmuxArgs}"\n`);
-  chmodSync(join(home, "fakebin", "tmux"), 0o755);
 });
 
 after(async () => {
@@ -197,61 +181,11 @@ test("status and open act on the session", async () => {
   assert.match(status.stdout, /enabled: yes/);
   assert.match(status.stdout, /replies: 2/);
   assert.match(status.stdout, /pending notes: 0/);
-  assert.match(
-    status.stdout,
-    new RegExp(`terminal: '${launcher}' tui ${SESSION}\n`),
-    "the command for a terminal pane",
-  );
+  assert.match(status.stdout, new RegExp(`terminal: '${launcher}' tui ${SESSION}\n`), "the command for sidenote tui");
   assert.doesNotMatch(status.stdout, new RegExp(server().token), "status never prints the token");
 
   await run(["open"]);
   assert.equal((await lastOpened()).searchParams.get("s"), SESSION, "open without a session picks the latest");
-});
-
-test("in the terminal, a new session opens a pane beside Claude, or says how to", async () => {
-  const on = await run(["on", "", "terminal"]);
-  assert.match(on.stdout, /^sidenote is on\. To read replies and leave notes in the terminal/);
-  assert.ok(on.stdout.includes(`'${launcher}' tui ${SESSION}`), "the command to run in another pane");
-  assert.match((await run(["status"])).stdout, /shows in: terminal/);
-
-  const tmux = { TMUX: "/tmp/tmux-501/default,1234,0", TMUX_PANE: "%3" };
-  const reply = (session: string): string =>
-    JSON.stringify({ session_id: session, cwd: "/w/other", last_assistant_message: "hello" });
-  const browserOpens = readFileSync(opened, "utf8").split("\n").length;
-  const split = await run(["hook-stop"], reply("term-1"), tmux);
-  assert.equal(split.stdout, "", "nothing to tell the user when the pane opened");
-  assert.deepEqual(readFileSync(tmuxArgs, "utf8").trim().split("\n"), [
-    "split-window",
-    "-h",
-    "-d",
-    "-l",
-    "45%",
-    "-t",
-    "%3",
-    "-c",
-    "/w/other",
-    launcher,
-    "tui",
-    "term-1",
-  ]);
-  assert.equal(readFileSync(opened, "utf8").split("\n").length, browserOpens, "no browser window");
-
-  // A terminal that can't split gets the command once, with the session's first reply.
-  const first = await run(["hook-stop"], reply("term-2"));
-  const message = (JSON.parse(first.stdout) as { systemMessage: string }).systemMessage;
-  assert.ok(message.includes(`'${launcher}' tui term-2`));
-  assert.equal((await run(["hook-stop"], reply("term-2"))).stdout, "", "not again on later replies");
-
-  // A running pane isn't opened twice.
-  mkdirSync(join(home, ".sidenote", "panes"), { recursive: true });
-  writeFileSync(join(home, ".sidenote", "panes", "term-1.pid"), `${process.pid}\n`);
-  rmSync(tmuxArgs);
-  assert.match((await run(["open", "term-1"], "", tmux)).stdout, /already open in a terminal pane/);
-  assert.equal(existsSync(tmuxArgs), false);
-
-  assert.match((await run(["on", "", "sideways"])).stdout, /isn't a choice/);
-  assert.match((await run(["on", "", "browser"])).stdout, /^sidenote is on\. Opened the .* window in your browser/);
-  await lastOpened();
 });
 
 test("off stops the server and hooks go quiet", async () => {

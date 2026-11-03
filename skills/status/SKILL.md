@@ -5,7 +5,7 @@ disable-model-invocation: true
 ---
 
 Run this and report its output to the user in one or two lines, then give the `terminal:`
-command exactly as printed, in a code block, so they can paste it into another terminal pane:
+command exactly as printed, in a code block, so they can run it in another terminal window:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/sidenote" status "${CLAUDE_SESSION_ID}"

@@ -10,9 +10,7 @@ import type {
   WaiterRequest,
 } from "../shared/types.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
-import { readUi } from "./config.ts";
 import { formatNotesForClaude, sessionContext } from "../shared/format.ts";
-import { openTerminal } from "./panes.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
 const WAITER_POLL_MS = 1000;
@@ -35,11 +33,7 @@ function sessionName(transcriptPath: string | undefined): string {
   }
 }
 
-/**
- * Stop: sends the finished reply to its session's window. A new session's window opens: in the
- * browser, or in a terminal pane beside Claude, or, where no pane can be opened, a one-time
- * message says how to open one.
- */
+/** Stop: sends the finished reply to its session's window, opening it for a new session. */
 export async function hookStop(input: HookInput): Promise<void> {
   const text = input.last_assistant_message?.trim();
   const sessionId = input.session_id;
@@ -53,12 +47,7 @@ export async function hookStop(input: HookInput): Promise<void> {
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
   if (!started && !result.new_session) return;
-  if (readUi() === "browser") {
-    openBrowser(await client.windowUrl(sessionId));
-    return;
-  }
-  const pane = await openTerminal(sessionId, input.cwd ?? "", process.env);
-  if (!pane.opened) process.stdout.write(`${JSON.stringify({ systemMessage: pane.message })}\n`);
+  openBrowser(await client.windowUrl(sessionId));
 }
 
 /** SessionStart: tells Claude how to show code changes so the window can draw them as diffs. */

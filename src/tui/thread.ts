@@ -1,5 +1,5 @@
 // A note's thread as rows of text: what it is about, the note and its follow-ups, and Claude's
-// answers. It replaces the feed in the pane, so the screen never holds more than two panes.
+// answers. It replaces the feed, or, in a wide sidenote chat, takes the right half beside it.
 import { isAnswered, type Model } from "../shared/model.ts";
 import { formatTime } from "../shared/text.ts";
 import type { Note } from "../shared/types.ts";

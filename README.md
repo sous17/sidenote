@@ -26,8 +26,8 @@ note on its own, and each answer lands in that note's thread.
 - **One window per session.** Each Claude Code session gets its own window, titled with the
   name you gave the session with `/rename` (or its project folder). Notes always go back to
   the session they were written on.
-- **Or stay in the terminal.** `sidenote tui` shows the same feed, notes and threads in a
-  terminal pane next to Claude Code.
+- **Or stay in the terminal.** `sidenote tui` shows the same feed, notes and threads in any
+  terminal window you run it in.
 - **Or talk to Claude in sidenote itself** (preview). `sidenote chat` runs the Claude Code
   session for you: you type messages, watch Claude work, answer its permission prompts, and
   note its replies in the same window.
@@ -91,28 +91,16 @@ claude plugin install sidenote@sidenote
 
 | Command              | What it does                                                                     |
 | -------------------- | -------------------------------------------------------------------------------- |
-| `/sidenote:on`       | Turns sidenote on and opens this session's window. Add `terminal` or `browser`   |
+| `/sidenote:on`       | Turns sidenote on and opens this session's window                                |
 | `/sidenote:off`      | Turns it off for all sessions. Pending notes are kept for next time              |
-| `/sidenote:open`     | Reopens this session's window or terminal pane, for example after closing it     |
+| `/sidenote:open`     | Reopens this session's window, for example after closing it                      |
 | `/sidenote:status`   | Shows this session's window address, replies, pending notes, and Send now status |
 | `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too      |
 
 ### In the terminal
 
-If you'd rather not leave the terminal, turn sidenote on with:
-
-```
-/sidenote:on terminal
-```
-
-From then on, each session opens in a terminal pane beside Claude Code instead of a browser
-window, and Claude's pane keeps the focus. `/sidenote:on browser` switches back; the choice is
-remembered for all sessions.
-
-sidenote opens the pane itself in **tmux**, **WezTerm**, **iTerm2**, and **kitty** (with
-[remote control](https://sw.kovidgoyal.net/kitty/remote-control/) on and `listen_on` set, and
-the `splits` layout for a side-by-side pane). In other terminals, it tells you once per session
-the command to run in a pane you open yourself; `/sidenote:status` prints it too, on its
+If you'd rather not leave the terminal, read replies and leave notes with `sidenote tui`, in any
+terminal window or tab. `/sidenote:status` prints the command for this session on its
 `terminal:` line:
 
 ```shell
@@ -120,8 +108,9 @@ the command to run in a pane you open yourself; `/sidenote:status` prints it too
 ```
 
 Run without a session id, it shows the most recently active session in the folder it was
-started in, and waits for one if there is none yet. The browser window and the terminal pane
-can be open at the same time; they show the same notes.
+started in, and waits for one if there is none yet. The browser window and `sidenote tui` can
+be open at the same time; they show the same notes. To talk to Claude from sidenote itself,
+without a Claude Code window, see `sidenote chat` below.
 
 | Key                  | What it does                                                     |
 | -------------------- | ---------------------------------------------------------------- |
@@ -138,7 +127,7 @@ can be open at the same time; they show the same notes.
 In the note editor, **Enter** sends now (or saves, when Claude isn't listening), **Ctrl+S**
 saves for your next prompt, **Alt+Enter** starts a new line, **Ctrl+E** opens `$EDITOR`, and
 **Esc** closes it, keeping what you wrote for next time. A thread replaces the feed in the
-pane: `r` replies, `f` shows the note's block in the feed, and `Esc` goes back.
+window: `r` replies, `f` shows the note's block in the feed, and `Esc` goes back.
 
 Wider than 110 columns, notes sit in a margin beside the text they are about; narrower, under
 it. Colors come from your terminal's own theme, `NO_COLOR` turns them off, and links are

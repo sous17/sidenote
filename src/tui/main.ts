@@ -5,7 +5,6 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { SidenoteClient } from "../cli/client.ts";
-import { claimPane } from "../cli/panes.ts";
 import { paths } from "../node/paths.ts";
 import { SESSION_ID_PATTERN } from "../shared/types.ts";
 import type { AnsiOptions } from "./ansi.ts";
@@ -42,7 +41,6 @@ export async function runTui(args: string[]): Promise<void> {
   if (requested === false) return;
 
   const { client } = await SidenoteClient.ensure();
-  let releasePane = (): void => {};
   const { app, running } = startScreen(
     (terminal) =>
       new App({
@@ -52,17 +50,10 @@ export async function runTui(args: string[]): Promise<void> {
         cwd: process.cwd(),
         terminal,
       }),
-    () => releasePane(),
+    () => {},
   );
-  let claimed: string | null = null;
   while (running()) {
     await app.refresh();
-    // Once the session is known, record this pane, so sidenote doesn't open a second one for it.
-    if (app.sessionId && app.sessionId !== claimed) {
-      releasePane();
-      releasePane = claimPane(app.sessionId);
-      claimed = app.sessionId;
-    }
     await sleep(POLL_INTERVAL_MS);
   }
 }

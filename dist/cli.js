@@ -28,10 +28,6 @@ var init_paths = __esm({
       portFile: () => join(stateDir(), "port"),
       logFile: () => join(stateDir(), "server.log"),
       enabledFlag: () => join(stateDir(), "enabled"),
-      /** Whether sessions open in the browser or a terminal pane. */
-      configFile: () => join(stateDir(), "config.json"),
-      /** One file per running sidenote tui, holding its pid, so a second pane isn't opened. */
-      panesDir: () => join(stateDir(), "panes"),
       transcriptsDir: () => join(homedir(), ".claude", "projects")
     };
   }
@@ -162,164 +158,6 @@ var init_client = __esm({
         return text ? JSON.parse(text) : null;
       }
     };
-  }
-});
-
-// src/cli/panes.ts
-import { spawn as spawn2 } from "node:child_process";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, join as join3 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-function shellQuote(text) {
-  return `'${text.replace(/'/g, `'\\''`)}'`;
-}
-function tuiCommand(sessionId) {
-  return [LAUNCHER, "tui", ...sessionId ? [sessionId] : []];
-}
-function panePlan(env, command2, cwd) {
-  const tmuxPane = env["TMUX_PANE"] ?? "";
-  if (env["TMUX"] && /^%\d+$/.test(tmuxPane)) {
-    const directory = cwd ? ["-c", cwd] : [];
-    const split = ["split-window", "-h", "-d", "-l", `${PANE_PERCENT}%`, "-t", tmuxPane, ...directory, ...command2];
-    return { terminal: "tmux", steps: [{ command: "tmux", args: split }] };
-  }
-  const wezPane = env["WEZTERM_PANE"] ?? "";
-  if (/^\d+$/.test(wezPane)) {
-    const directory = cwd ? ["--cwd", cwd] : [];
-    const split = ["cli", "split-pane", "--pane-id", wezPane, "--right", "--percent", `${PANE_PERCENT}`, ...directory];
-    return {
-      terminal: "WezTerm",
-      steps: [
-        { command: "wezterm", args: [...split, "--", ...command2] },
-        // The docs don't promise where focus goes after a split, so give it back to Claude.
-        { command: "wezterm", args: ["cli", "activate-pane", "--pane-id", wezPane] }
-      ]
-    };
-  }
-  const kittyWindow = env["KITTY_WINDOW_ID"] ?? "";
-  if (env["KITTY_LISTEN_ON"] && /^\d+$/.test(kittyWindow)) {
-    const launch = [
-      "@",
-      "launch",
-      "--type=window",
-      "--location=vsplit",
-      "--keep-focus",
-      `--bias=${PANE_PERCENT}`,
-      `--next-to=id:${kittyWindow}`,
-      ...cwd ? [`--cwd=${cwd}`] : [],
-      ...command2
-    ];
-    return { terminal: "kitty", steps: [{ command: "kitten", args: launch }] };
-  }
-  const iTermSession = ITERM_SESSION.exec(env["ITERM_SESSION_ID"] ?? "");
-  if (env["TERM_PROGRAM"] === "iTerm.app" && iTermSession) {
-    const line = command2.map(shellQuote).join(" ");
-    const script = ITERM_SPLIT.flatMap((statement) => ["-e", statement]);
-    return { terminal: "iTerm2", steps: [{ command: "osascript", args: [...script, iTermSession[1], line] }] };
-  }
-  return null;
-}
-async function openPane(plan) {
-  const [split, ...rest] = plan.steps;
-  if (!split || !await run(split)) return false;
-  for (const step of rest) await run(step);
-  return true;
-}
-function run({ command: command2, args }) {
-  return new Promise((resolve) => {
-    const child = spawn2(command2, args, { stdio: "ignore" });
-    const timer = setTimeout(() => {
-      child.kill();
-      resolve(false);
-    }, SPLIT_TIMEOUT_MS);
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-    child.on("close", (code2) => {
-      clearTimeout(timer);
-      resolve(code2 === 0);
-    });
-  });
-}
-function paneFile(sessionId) {
-  return SESSION_ID_PATTERN.test(sessionId) ? join3(paths.panesDir(), `${sessionId}.pid`) : null;
-}
-function hasLivePane(sessionId) {
-  const file = paneFile(sessionId);
-  if (!file) return false;
-  let pid;
-  try {
-    pid = Number(readFileSync3(file, "utf8").trim());
-  } catch {
-    return false;
-  }
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function claimPane(sessionId) {
-  const file = paneFile(sessionId);
-  if (!file) return () => {
-  };
-  mkdirSync3(dirname2(file), { recursive: true, mode: 448 });
-  writeFileSync2(file, `${process.pid}
-`, { mode: 384 });
-  return () => {
-    try {
-      if (readFileSync3(file, "utf8").trim() === String(process.pid)) rmSync2(file, { force: true });
-    } catch {
-    }
-  };
-}
-async function openTerminal(sessionId, cwd, env) {
-  if (sessionId && hasLivePane(sessionId)) {
-    return { opened: true, message: "sidenote is already open in a terminal pane for this session." };
-  }
-  const command2 = tuiCommand(sessionId);
-  const plan = panePlan(env, command2, cwd);
-  if (plan && await openPane(plan)) {
-    return { opened: true, message: `Opened sidenote in a ${plan.terminal} pane beside this one.` };
-  }
-  return {
-    opened: false,
-    message: `To read replies and leave notes in the terminal, run this in another pane: ${command2.map((part, i) => i ? part : shellQuote(part)).join(" ")} (sidenote opens the pane itself in tmux, WezTerm, iTerm2, or kitty with remote control.)`
-  };
-}
-var LAUNCHER, PANE_PERCENT, ITERM_SESSION, ITERM_SPLIT, SPLIT_TIMEOUT_MS;
-var init_panes = __esm({
-  "src/cli/panes.ts"() {
-    "use strict";
-    init_paths();
-    init_types();
-    LAUNCHER = join3(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
-    PANE_PERCENT = 45;
-    ITERM_SESSION = /^w\d+t\d+p\d+:([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})$/;
-    ITERM_SPLIT = [
-      "on run argv",
-      "set targetId to item 1 of argv",
-      "set paneCommand to item 2 of argv",
-      'tell application id "com.googlecode.iterm2"',
-      "repeat with aWindow in windows",
-      "repeat with aTab in tabs of aWindow",
-      "repeat with aSession in sessions of aTab",
-      "if (id of aSession) is targetId then",
-      "tell aSession to split vertically with default profile command paneCommand",
-      "tell aSession to select",
-      "return",
-      "end if",
-      "end repeat",
-      "end repeat",
-      "end repeat",
-      "end tell",
-      'error "sidenote: iTerm2 session not found"',
-      "end run"
-    ];
-    SPLIT_TIMEOUT_MS = 5e3;
   }
 });
 
@@ -869,27 +707,27 @@ function addReply(model, response, view, layout) {
     if (line.block >= 0) lastLine.set(line.block, i);
   });
   const firstRow = /* @__PURE__ */ new Map();
-  let run2 = null;
+  let run = null;
   const runCounts = /* @__PURE__ */ new Map();
   const closeRun = () => {
-    if (!run2) return;
-    const id = `${response.id}:${run2.block}:${run2.file ?? ""}`;
+    if (!run) return;
+    const id = `${response.id}:${run.block}:${run.file ?? ""}`;
     const count = runCounts.get(id) ?? 0;
     runCounts.set(id, count + 1);
-    const info = rendered.blocks[run2.block];
+    const info = rendered.blocks[run.block];
     targets.push({
       key: `b:${id}:${count}`,
       kind: "block",
       responseId: response.id,
-      block: run2.block,
-      ...run2.file !== void 0 && rendered.foldable ? { file: run2.file } : {},
-      start: run2.start,
+      block: run.block,
+      ...run.file !== void 0 && rendered.foldable ? { file: run.file } : {},
+      start: run.start,
       end: rows.length,
       side: "left",
       code: info.code,
-      quote: info.code ? run2.rows.map(codeQuoteLine).join("\n") : info.quote
+      quote: info.code ? run.rows.map(codeQuoteLine).join("\n") : info.quote
     });
-    run2 = null;
+    run = null;
   };
   let file;
   let previousBlock = -1;
@@ -898,12 +736,12 @@ function addReply(model, response, view, layout) {
     previousBlock = line.block;
     if (line.file !== void 0) file = line.file;
     if (line.block < 0) closeRun();
-    else if (!run2 || run2.block !== line.block || run2.file !== file) {
+    else if (!run || run.block !== line.block || run.file !== file) {
       closeRun();
-      run2 = { block: line.block, file, start: rows.length, rows: [] };
+      run = { block: line.block, file, start: rows.length, rows: [] };
     }
     if (line.block >= 0 && !firstRow.has(line.block)) firstRow.set(line.block, rows.length);
-    run2?.rows.push(line.spans.map((span) => span.text).join(""));
+    run?.rows.push(line.spans.map((span) => span.text).join(""));
     rows.push({ left: line.spans, right: [] });
     if (!layout.margin && line.block >= 0 && lastLine.get(line.block) === i && byBlock.has(line.block)) {
       closeRun();
@@ -3259,27 +3097,27 @@ var init_conversation = __esm({
           if (line.block >= 0) lastLine.set(line.block, i);
         });
         const firstRow = /* @__PURE__ */ new Map();
-        let run2 = null;
+        let run = null;
         const runCounts = /* @__PURE__ */ new Map();
         const closeRun = () => {
-          if (!run2) return;
-          const id = `${response.id}:${run2.block}:${run2.file ?? ""}`;
+          if (!run) return;
+          const id = `${response.id}:${run.block}:${run.file ?? ""}`;
           const count = runCounts.get(id) ?? 0;
           runCounts.set(id, count + 1);
-          const info = rendered.blocks[run2.block];
+          const info = rendered.blocks[run.block];
           targets.push({
             key: `b:${id}:${count}`,
             kind: "block",
             responseId: response.id,
-            block: run2.block,
-            ...run2.file !== void 0 && rendered.foldable ? { file: run2.file } : {},
-            start: run2.start,
+            block: run.block,
+            ...run.file !== void 0 && rendered.foldable ? { file: run.file } : {},
+            start: run.start,
             end: rows.length,
             side: "left",
             code: info.code,
-            quote: info.code ? run2.rows.map(codeQuoteLine).join("\n") : info.quote
+            quote: info.code ? run.rows.map(codeQuoteLine).join("\n") : info.quote
           });
-          run2 = null;
+          run = null;
         };
         let file;
         let previousBlock = -1;
@@ -3288,12 +3126,12 @@ var init_conversation = __esm({
           previousBlock = line.block;
           if (line.file !== void 0) file = line.file;
           if (line.block < 0) closeRun();
-          else if (!run2 || run2.block !== line.block || run2.file !== file) {
+          else if (!run || run.block !== line.block || run.file !== file) {
             closeRun();
-            run2 = { block: line.block, file, start: rows.length, rows: [] };
+            run = { block: line.block, file, start: rows.length, rows: [] };
           }
           if (line.block >= 0 && !firstRow.has(line.block)) firstRow.set(line.block, rows.length);
-          run2?.rows.push(line.spans.map((span) => span.text).join(""));
+          run?.rows.push(line.spans.map((span) => span.text).join(""));
           this.#push(line.spans);
           const endsBlock = line.block >= 0 && lastLine.get(line.block) === i;
           const inlineNotes = !this.#layout.margin && byBlock.has(line.block);
@@ -4578,10 +4416,10 @@ var init_screen = __esm({
         this.#previous = rows;
       }
       /** Lends the terminal to another program, such as $EDITOR, then takes it back. */
-      suspend(run2) {
+      suspend(run) {
         this.stop();
         try {
-          return run2();
+          return run();
         } finally {
           this.#input.resume();
           this.#enter();
@@ -4606,9 +4444,9 @@ __export(main_exports, {
   terminalOptions: () => terminalOptions
 });
 import { spawnSync } from "node:child_process";
-import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync6, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join4 } from "node:path";
 import { setTimeout as sleep3 } from "node:timers/promises";
 function supportsHyperlinks(env) {
   if (env["SIDENOTE_HYPERLINKS"] === "0") return false;
@@ -4629,8 +4467,6 @@ async function runTui(args) {
   const requested = sessionArgument(args);
   if (requested === false) return;
   const { client } = await SidenoteClient.ensure();
-  let releasePane = () => {
-  };
   const { app, running } = startScreen(
     (terminal) => new App({
       api: new ClientApi(client),
@@ -4639,16 +4475,11 @@ async function runTui(args) {
       cwd: process.cwd(),
       terminal
     }),
-    () => releasePane()
+    () => {
+    }
   );
-  let claimed = null;
   while (running()) {
     await app.refresh();
-    if (app.sessionId && app.sessionId !== claimed) {
-      releasePane();
-      releasePane = claimPane(app.sessionId);
-      claimed = app.sessionId;
-    }
     await sleep3(POLL_INTERVAL_MS);
   }
 }
@@ -4730,16 +4561,16 @@ function startScreen(create, onExit) {
 }
 function editInEditor(text) {
   const editor = (process.env["VISUAL"] || process.env["EDITOR"] || "vi").trim().split(/\s+/);
-  const dir = mkdtempSync(join5(tmpdir(), "sidenote-note-"));
-  const file = join5(dir, "note.md");
+  const dir = mkdtempSync(join4(tmpdir(), "sidenote-note-"));
+  const file = join4(dir, "note.md");
   try {
-    writeFileSync3(file, text, { mode: 384 });
+    writeFileSync(file, text, { mode: 384 });
     const result = spawnSync(editor[0], [...editor.slice(1), file], { stdio: "inherit" });
-    return result.status === 0 ? readFileSync6(file, "utf8") : null;
+    return result.status === 0 ? readFileSync4(file, "utf8") : null;
   } catch {
     return null;
   } finally {
-    rmSync3(dir, { recursive: true, force: true });
+    rmSync2(dir, { recursive: true, force: true });
   }
 }
 var POLL_INTERVAL_MS;
@@ -4747,7 +4578,6 @@ var init_main = __esm({
   "src/tui/main.ts"() {
     "use strict";
     init_client();
-    init_panes();
     init_paths();
     init_types();
     init_api();
@@ -4758,7 +4588,9 @@ var init_main = __esm({
 });
 
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync4, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2, join as join5 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/agent/claude.ts
 var HEADLESS_ENV = "SIDENOTE_HEADLESS";
@@ -4767,30 +4599,10 @@ var HEADLESS_ENV = "SIDENOTE_HEADLESS";
 init_paths();
 init_client();
 
-// src/cli/config.ts
-init_paths();
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "node:fs";
-function isUi(value) {
-  return value === "browser" || value === "terminal";
-}
-function readUi() {
-  try {
-    const config = JSON.parse(readFileSync2(paths.configFile(), "utf8"));
-    return config.ui === "terminal" ? "terminal" : "browser";
-  } catch {
-    return "browser";
-  }
-}
-function writeUi(ui) {
-  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
-  writeFileSync(paths.configFile(), `${JSON.stringify({ ui })}
-`, { mode: 384 });
-}
-
 // src/cli/hooks.ts
 init_client();
 import { randomBytes } from "node:crypto";
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
 
 // src/shared/format.ts
@@ -4848,17 +4660,14 @@ function clockTime(epochSeconds) {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-// src/cli/hooks.ts
-init_panes();
-
 // src/cli/transcript.ts
-import { existsSync, readdirSync, readFileSync as readFileSync4 } from "node:fs";
-import { join as join4 } from "node:path";
+import { existsSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
 var QUESTION_TOOLS = /* @__PURE__ */ new Set(["AskUserQuestion", "ExitPlanMode"]);
 function findTranscript(transcriptsDir, sessionId) {
   if (!existsSync(transcriptsDir)) return null;
   for (const project of readdirSync(transcriptsDir)) {
-    const file = join4(transcriptsDir, project, `${sessionId}.jsonl`);
+    const file = join3(transcriptsDir, project, `${sessionId}.jsonl`);
     if (existsSync(file)) return file;
   }
   return null;
@@ -4924,7 +4733,7 @@ function cwdFromTranscript(transcript) {
   return "";
 }
 function readTranscript(file) {
-  return readFileSync4(file, "utf8");
+  return readFileSync2(file, "utf8");
 }
 function isUserPrompt(entry2) {
   if (entry2.isMeta) return false;
@@ -4938,7 +4747,7 @@ var WAITER_POLL_MS = 1e3;
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
-    return sessionNameFromTranscript(readFileSync5(transcriptPath, "utf8"));
+    return sessionNameFromTranscript(readFileSync3(transcriptPath, "utf8"));
   } catch {
     return "";
   }
@@ -4956,13 +4765,7 @@ async function hookStop(input) {
   };
   const result = await client.post("/api/responses", reply);
   if (!started && !result.new_session) return;
-  if (readUi() === "browser") {
-    openBrowser(await client.windowUrl(sessionId));
-    return;
-  }
-  const pane = await openTerminal(sessionId, input.cwd ?? "", process.env);
-  if (!pane.opened) process.stdout.write(`${JSON.stringify({ systemMessage: pane.message })}
-`);
+  openBrowser(await client.windowUrl(sessionId));
 }
 async function hookSession() {
   const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
@@ -5012,12 +4815,9 @@ async function connectWithin(timeoutMs) {
 }
 
 // src/cli/main.ts
-init_panes();
 var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser or terminal.
 
-  sidenote on [session] [terminal|browser]
-                               turn sidenote on and open the session's window, in the browser
-                               or in a terminal pane; the choice is remembered
+  sidenote on [session]        turn sidenote on and open the session's window in the browser
   sidenote chat [session]      talk to Claude Code here: sidenote runs the session, and you
                                note its replies as it works; without a session, a new one
                                starts in this folder
@@ -5035,6 +4835,10 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
 var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+var LAUNCHER = join5(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
+function shellQuote(text) {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
 var isEnabled = () => existsSync3(paths.enabledFlag());
 function sessionArgument2() {
   const value = process.argv[3]?.trim();
@@ -5056,36 +4860,23 @@ async function touchSession(client, sessionId) {
     cwd: cwdFromTranscript(transcript)
   });
 }
-function uiArgument() {
-  const value = process.argv[4]?.trim().toLowerCase();
-  if (!value || value.includes("$")) return void 0;
-  if (isUi(value)) return value;
-  throw new UsageError(`"${value}" isn't a choice: use /sidenote:on terminal or /sidenote:on browser.`);
-}
-var UsageError = class extends Error {
-};
 async function show(client, requested) {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? await latestSession(client);
   const { session } = await fetchState(client, sessionId);
-  if (readUi() === "terminal") {
-    return (await openTerminal(sessionId, session?.cwd || process.cwd(), process.env)).message;
-  }
   openBrowser(await client.windowUrl(sessionId));
   const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
   return `Opened the ${label} window in your browser (${client.origin}).`;
 }
 var commands = {
   async on() {
-    mkdirSync4(paths.stateDir(), { recursive: true, mode: 448 });
-    const ui = uiArgument();
-    writeFileSync4(paths.enabledFlag(), "");
-    if (ui) writeUi(ui);
+    mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
+    writeFileSync2(paths.enabledFlag(), "");
     const { client } = await SidenoteClient.ensure();
     console.log(`sidenote is on. ${await show(client, sessionArgument2())}`);
   },
   async off() {
-    rmSync4(paths.enabledFlag(), { force: true });
+    rmSync3(paths.enabledFlag(), { force: true });
     const pid = serverPid();
     if (pid) {
       try {
@@ -5101,7 +4892,6 @@ var commands = {
   },
   async status() {
     console.log(`enabled: ${isEnabled() ? "yes" : "no"}`);
-    console.log(`shows in: ${readUi()}`);
     const client = await SidenoteClient.connect();
     if (!client) {
       console.log("server:  not running");
@@ -5120,9 +4910,7 @@ var commands = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c2) => c2.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
-    console.log(
-      `terminal: ${tuiCommand(session.id).map((part, i) => i ? part : shellQuote(part)).join(" ")}`
-    );
+    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
   },
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {
@@ -5177,7 +4965,7 @@ async function runHook(handler) {
     for await (const chunk of process.stdin) chunks.push(chunk);
     await handler(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
   } catch (error) {
-    mkdirSync4(paths.stateDir(), { recursive: true, mode: 448 });
+    mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
     appendFileSync(paths.logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${handler.name} failed: ${String(error)}
 `, {
       mode: 384
@@ -5186,13 +4974,7 @@ async function runHook(handler) {
 }
 var command = commands[process.argv[2] ?? "status"];
 if (command) {
-  try {
-    await command();
-  } catch (error) {
-    if (!(error instanceof UsageError)) throw error;
-    console.log(error.message);
-    process.exitCode = 2;
-  }
+  await command();
 } else {
   console.log(USAGE);
   process.exitCode = 2;

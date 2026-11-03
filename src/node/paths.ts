@@ -12,9 +12,5 @@ export const paths = {
   portFile: (): string => join(stateDir(), "port"),
   logFile: (): string => join(stateDir(), "server.log"),
   enabledFlag: (): string => join(stateDir(), "enabled"),
-  /** Whether sessions open in the browser or a terminal pane. */
-  configFile: (): string => join(stateDir(), "config.json"),
-  /** One file per running sidenote tui, holding its pid, so a second pane isn't opened. */
-  panesDir: (): string => join(stateDir(), "panes"),
   transcriptsDir: (): string => join(homedir(), ".claude", "projects"),
 };
