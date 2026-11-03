@@ -1,7 +1,7 @@
 // sidenote tui: a session's replies in this terminal, to leave notes without a browser.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { SidenoteClient } from "../cli/client.ts";
@@ -82,9 +82,19 @@ export async function runChat(args: string[]): Promise<void> {
   const sessionId = await api.startConversation(process.cwd(), requested);
   const { app, running } = startScreen(
     (terminal) =>
-      new App({ api, chat: api, ansi: terminalOptions(process.env), sessionId, cwd: process.cwd(), terminal }),
+      new App({
+        api,
+        chat: api,
+        ansi: terminalOptions(process.env),
+        sessionId,
+        cwd: process.cwd(),
+        home: homedir(),
+        terminal,
+      }),
     () => process.stderr.write(`To continue this session: sidenote chat ${sessionId}\n`),
   );
+  // The working timer in the top line moves on even while nothing else changes.
+  setInterval(() => app.render(), 1000).unref();
   // Two long polls: one for replies and notes, one for the turn in progress.
   const poll = async (step: () => Promise<void>): Promise<void> => {
     while (running()) {

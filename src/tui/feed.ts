@@ -2,11 +2,10 @@
 // margin beside them when the pane is wide, and the targets the cursor moves between.
 import { answeredNoteIds, isAnswered, type Model } from "../shared/model.ts";
 import { formatTime, plainText, plural } from "../shared/text.ts";
-import type { Note, StoredResponse, TurnStep } from "../shared/types.ts";
+import type { Note, StoredResponse } from "../shared/types.ts";
 import { PLAIN, type Span, type Style } from "./lines.ts";
 import type { RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
-import { endedRows, promptRows, stepRow } from "./turn.ts";
 import { graphemes, graphemeWidth } from "./width.ts";
 import { spansWidth, wrapSpans } from "./wrap.ts";
 
@@ -43,6 +42,8 @@ export interface Target {
 }
 
 export interface FeedRow {
+  /** Drawn before the cursor's column: the conversation's speaker and time. */
+  lead?: Span[];
   left: Span[];
   right: Span[];
 }
@@ -54,6 +55,10 @@ export interface FeedView {
   /** The first row of each reply. */
   replyStarts: Map<number, number>;
   leftWidth: number;
+  /** Columns of each row's lead; 0 without one. */
+  leadWidth?: number;
+  /** Draw a rule between the text and the margin, on every row. */
+  marginRule?: boolean;
 }
 
 export interface FeedOptions {
@@ -69,12 +74,6 @@ export function buildFeed(model: Model, options: FeedOptions): FeedView {
   for (const response of model.responses) {
     if (view.rows.length) view.rows.push(emptyRow());
     view.replyStarts.set(response.id, view.rows.length);
-    // Turns sidenote ran start with what the user typed.
-    if (response.prompt !== undefined) {
-      for (const spans of promptRows(response.prompt, response.notes_sent ?? 0, options.width)) {
-        view.rows.push({ left: spans, right: [] });
-      }
-    }
     const onlyAnswers = !response.text.trim() && Object.keys(response.note_answers).length > 0;
     if (onlyAnswers) addAnswered(model, response, view, `${formatTime(response.created_at)} `);
     else addReply(model, response, view, { ...options, margin, leftWidth });
@@ -111,18 +110,6 @@ function addReply(model: Model, response: StoredResponse, view: FeedView, layout
     code: false,
     quote: "",
   });
-
-  // Each tool call follows the block of text it came after; ones past the end go last.
-  const stepsAfter = new Map<number, TurnStep[]>();
-  for (const step of response.steps ?? []) {
-    const block = Math.min(step.after_block, rendered.blocks.length - 1);
-    stepsAfter.set(block, [...(stepsAfter.get(block) ?? []), step]);
-  }
-  const addSteps = (block: number): void => {
-    for (const step of stepsAfter.get(block) ?? []) rows.push({ left: stepRow(step), right: [] });
-    stepsAfter.delete(block);
-  };
-  addSteps(-1);
 
   const lastLine = new Map<number, number>();
   rendered.lines.forEach((line, i) => {
@@ -166,17 +153,12 @@ function addReply(model: Model, response: StoredResponse, view: FeedView, layout
     if (line.block >= 0 && !firstRow.has(line.block)) firstRow.set(line.block, rows.length);
     run?.rows.push(line.spans.map((span) => span.text).join(""));
     rows.push({ left: line.spans, right: [] });
-    const endsBlock = line.block >= 0 && lastLine.get(line.block) === i;
-    const inlineNotes = !layout.margin && byBlock.has(line.block);
-    if (endsBlock && (stepsAfter.has(line.block) || inlineNotes)) {
+    if (!layout.margin && line.block >= 0 && lastLine.get(line.block) === i && byBlock.has(line.block)) {
       closeRun();
-      addSteps(line.block);
-      if (inlineNotes) for (const root of byBlock.get(line.block)!) addInlineNote(model, root, view, layout);
+      for (const root of byBlock.get(line.block)!) addInlineNote(model, root, view, layout);
     }
   });
   closeRun();
-  for (const block of [...stepsAfter.keys()].sort((a, b) => a - b)) addSteps(block);
-  for (const spans of endedRows(response, layout.leftWidth)) rows.push({ left: spans, right: [] });
 
   if (layout.margin) {
     // Each note level with its block; notes that would overlap stack downwards, as on the page.
@@ -229,7 +211,7 @@ function noteTarget(
 }
 
 /** "↳ Claude answered 2 notes", then a row per thread that opens it. */
-function addAnswered(model: Model, response: StoredResponse, view: FeedView, prefix: string): void {
+export function addAnswered(model: Model, response: StoredResponse, view: FeedView, prefix: string): void {
   const rootIds = new Set<number>();
   const noteIds = answeredNoteIds(model, response);
   for (const id of noteIds) {
@@ -320,11 +302,11 @@ function emptyRow(): FeedRow {
 }
 
 /** The first row of wrapped text, with "…" when there was more. */
-function oneLine(spans: Span[], width: number): Span[] {
+export function oneLine(spans: Span[], width: number): Span[] {
   return limitRows(wrapSpans(spans, width), 1, width)[0] ?? [];
 }
 
-function limitRows(rows: Span[][], max: number, width: number): Span[][] {
+export function limitRows(rows: Span[][], max: number, width: number): Span[][] {
   if (rows.length <= max) return rows;
   const kept = rows.slice(0, max);
   const last = kept[max - 1]!;
@@ -342,6 +324,6 @@ function limitRows(rows: Span[][], max: number, width: number): Span[][] {
 }
 
 /** A code or diff row as a note quotes it: without the gutter or fold arrow drawn around it. */
-function codeQuoteLine(row: string): string {
+export function codeQuoteLine(row: string): string {
   return row.replace(/^(?:[│┆] |[▾▸] )/, "");
 }

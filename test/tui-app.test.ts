@@ -413,18 +413,37 @@ async function startChat(api: FakeApi, chat = new FakeChat(), terminal = new Fak
     terminal,
     ansi: { color: true, hyperlinks: true },
     sessionId: SESSION,
-    cwd: "/w/demo",
+    cwd: "/home/me/w/demo",
+    home: "/home/me",
+    now: () => 1_000,
   });
   await app.refresh();
   await app.refreshConversation();
   return { app, chat, terminal };
 }
 
+/** Rows without trailing spaces or the margin rule, so the conversation column reads plainly. */
+function conversationRows(terminal: FakeTerminal): string[] {
+  return terminal.text.map((row) => row.replace(/ *│.*$/, "").trimEnd());
+}
+
+/** Rows the cursor is on, in the conversation column after the speaker column. */
+function picked(terminal: FakeTerminal): string[] {
+  return conversationRows(terminal)
+    .filter((row) => row.slice(10, 12) === "▌ ")
+    .map((row) => row.slice(12));
+}
+
 test("chat: a new session opens on the prompt line, and Enter sends the message", async () => {
   const api = new FakeApi([]);
+  api.snapshot.session!.cwd = "/home/me/w/demo";
   const { app, chat, terminal } = await startChat(api);
-  assert.match(terminal.text[0]!, /^sidenote · auth-refactor · Claude Code · claude-test +13% context · ● ready$/);
+  assert.match(
+    terminal.text[0]!,
+    /^\[sidenote\] {2}auth-refactor {2}~\/w\/demo · Claude Code · claude-test +● your turn {3}context 13%$/,
+  );
   assert.ok(terminal.has("A new session in demo. Type a message for Claude below."));
+  assert.match(terminal.text.at(-3)!, /^─+$/);
   assert.equal(terminal.text.at(-2), "you › Message Claude…");
   assert.deepEqual(terminal.cursor, { row: terminal.frame.length - 2, column: 6 }, "the cursor waits on the prompt");
 
@@ -438,7 +457,7 @@ test("chat: a new session opens on the prompt line, and Enter sends the message"
   assert.deepEqual(chat.messages, ["Hello"]);
 });
 
-test("chat: the turn in progress streams in under the conversation, and Esc interrupts it", async () => {
+test("chat: the turn in progress streams in at the bottom, and Esc interrupts it", async () => {
   const api = new FakeApi([reply(1, REPLY_ONE)]);
   const { app, chat, terminal } = await startChat(api);
   chat.change({
@@ -446,24 +465,30 @@ test("chat: the turn in progress streams in under the conversation, and Esc inte
     live: {
       prompt: "Fix the tests",
       notes_sent: 2,
-      started_at: 0,
+      started_at: 993,
       parts: [
+        { kind: "tool", id: "t0", tool: "Read", summary: "a.test.ts", failed: false },
         { kind: "text", text: "Looking at the **tests**." },
         { kind: "tool", id: "t1", tool: "Bash", summary: "npm test", failed: null },
+        { kind: "tool", id: "t2", tool: "Edit", summary: "a.ts", failed: true },
       ],
     },
     queued: ["And the docs"],
   });
   await app.refreshConversation();
-  assert.match(terminal.text[0]!, /◐ working$/);
-  const rows = terminal.text.map((row) => row.trimEnd());
-  const at = rows.indexOf("  you › Fix the tests  + 2 notes");
-  assert.ok(at > 0, "the prompt shows above the turn, with the notes that rode along");
-  assert.match(rows[at + 1]!, /^ {2}── Claude Code ─+$/);
-  assert.equal(rows[at + 2], "  Looking at the tests.");
-  assert.equal(rows[at + 3], "    ◌ Bash npm test");
-  assert.equal(rows[at + 4], "    …");
-  assert.equal(rows[at + 5], "  queued › And the docs");
+  assert.match(terminal.text[0]!, /◐ working 0:07 {3}context 13%$/);
+  const rows = conversationRows(terminal);
+  const at = rows.indexOf("     you    › Fix the tests  + 2 notes");
+  assert.ok(at > 0, "you, then the prompt, with the notes that rode along");
+  assert.deepEqual(rows.slice(at + 1, at + 8), [
+    "     now",
+    "  claude    ✓ read a.test.ts",
+    "     now    Looking at the tests.",
+    "            ◐ npm test   ✗ edit a.ts",
+    "            …",
+    "            queued › And the docs",
+    "",
+  ]);
   assert.match(terminal.text.at(-1)!, /esc interrupt/);
 
   chat.queuedOnInterrupt = ["And the docs"];
@@ -481,7 +506,7 @@ test("chat: y, a and n answer a permission prompt, even from the prompt line", a
     permission: { request_id: "p1", tool: "Edit", summary: "a.ts", detail: "a.ts\n- old\n+ new" },
   });
   await app.refreshConversation();
-  assert.match(terminal.text[0]!, /◆ needs your answer$/);
+  assert.match(terminal.text[0]!, /◆ needs your answer {3}context 13%$/);
   assert.ok(terminal.has("┃ Allow Edit?"));
   assert.ok(terminal.has("┃ - old"));
   assert.ok(terminal.has("┃ y allow  a always allow this  n deny"));
@@ -493,44 +518,72 @@ test("chat: y, a and n answer a permission prompt, even from the prompt line", a
   assert.equal(terminal.text.at(-2), "you › y", "with no prompt waiting, y is just a letter");
 });
 
-test("chat: stored turns show what the user typed, their tool calls and how they ended", async () => {
+test("chat: stored turns show who spoke, the tool calls between the text, and how they ended", async () => {
   const api = new FakeApi([
     reply(1, "Looked.\n\nChanged it.", {
       prompt: "Change it",
       notes_sent: 1,
       steps: [
         { tool: "Read", summary: "a.ts", after_block: -1, failed: false },
+        { tool: "Grep", summary: "TODO", after_block: -1, failed: false },
         { tool: "Edit", summary: "a.ts", after_block: 0, failed: true },
       ],
       ended: "interrupted",
     }),
   ]);
   const { terminal } = await startChat(api);
-  const rows = terminal.text.map((row) => row.trimEnd()).filter(Boolean);
-  const at = rows.indexOf("  you › Change it  + 1 note");
-  assert.ok(at > 0);
-  assert.match(rows[at + 1]!, /^ {2}── /);
-  assert.deepEqual(rows.slice(at + 2, at + 7), [
-    "    ⏺ Read a.ts",
-    "  Looked.",
-    "    ✗ Edit a.ts",
-    "  Changed it.",
-    "    ⏹ Interrupted",
+  const rows = conversationRows(terminal);
+  const at = rows.findIndex((row) => row.includes("› Change it"));
+  assert.deepEqual(rows.slice(at, at + 9), [
+    "     you    › Change it  + 1 note",
+    rows[at + 1], // the time, in the local format
+    "  claude    ✓ read a.ts   ✓ grep TODO",
+    "            Looked.",
+    "            ✗ edit a.ts",
+    "",
+    "            Changed it.",
+    "            ⏹ interrupted",
+    "",
   ]);
+  assert.match(rows[at + 1]!, /^ *\d{1,2}[:.]\d\d/);
 });
 
-test("chat: notes wait for the next message, and Tab moves between the prompt and the conversation", async () => {
-  const api = new FakeApi([reply(2, REPLY_TWO)]);
+test("chat: notes sit in the margin beside their block, and wait for the next message", async () => {
+  const api = new FakeApi([reply(2, REPLY_TWO)], [note({ id: 7, body: "Why constant time?", block_index: 2 })]);
   const { app, terminal } = await startChat(api);
-  assert.deepEqual(terminal.selected, [], "no cursor in the conversation while typing");
+  const row = terminal.text.find(
+    (text) => text.includes("- it compares in constant time") || text.includes("• it compares"),
+  )!;
+  assert.match(row, /it compares in constant time +│ ◆ Why constant time\?$/, "level with its block");
+  assert.ok(terminal.has("│   waits for your next message"));
+  assert.match(terminal.text.at(-2)!, /^you › Message Claude… +1 note rides along$/);
+
+  assert.deepEqual(picked(terminal), [], "no cursor in the conversation while typing");
   await press(app, "\t");
   assert.equal(terminal.cursor, null);
-  assert.ok(terminal.selected.length > 0, "the cursor starts at the bottom of what is in view");
+  assert.ok(picked(terminal).length > 0, "the cursor starts at the bottom of what is in view");
   assert.match(terminal.text.at(-1)!, /tab message/);
   await press(app, "gnLooks good\r");
   assert.equal(api.sends, 0, "Enter saves the note; it doesn't send it on its own");
   assert.ok(terminal.has("Saved. It goes with your next message, or press S to send it now"));
-  assert.match(terminal.text.at(-2)!, /^you › Message Claude… {3}1 note rides along$/);
   await press(app, "i");
   assert.notEqual(terminal.cursor, null, "i goes back to the prompt");
+});
+
+test("chat: under 120 columns notes go under their block, and under 60 the speaker gets its own row", async () => {
+  const api = new FakeApi(
+    [reply(2, REPLY_TWO, { prompt: "Check it" })],
+    [note({ id: 7, body: "Why?", block_index: 0 })],
+  );
+  const { terminal } = await startChat(api, new FakeChat(), new FakeTerminal(90, 30));
+  const rows = conversationRows(terminal);
+  const at = rows.findIndex((row) => row.includes("I moved the check"));
+  assert.equal(rows[at + 1], "              ◆ Why?");
+  assert.ok(!terminal.has("│ ◆"), "no margin");
+
+  const narrow = await startChat(api, new FakeChat(), new FakeTerminal(50, 30));
+  const small = conversationRows(narrow.terminal);
+  const you = small.findIndex((row) => /^ {2}you · /.test(row));
+  assert.equal(small[you + 1], "  › Check it");
+  assert.equal(small[you + 3], "  claude");
 });

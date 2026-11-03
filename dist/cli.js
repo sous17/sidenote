@@ -828,117 +828,6 @@ var init_wrap = __esm({
   }
 });
 
-// src/tui/turn.ts
-function promptRows(prompt, notesSent, width) {
-  const notes = notesSent ? `+ ${plural(notesSent, "note", "notes")}` : "";
-  const text = terminalSafe(prompt).trim();
-  if (!text && !notes) return [];
-  const indent = { text: " ".repeat(YOU.length), style: PLAIN };
-  const body = text ? wrapSpans([{ text, style: { bold: true } }], Math.max(10, width - YOU.length)) : [[]];
-  const rows = body.map((spans, i) => [i ? indent : { text: YOU, style: { ...ACCENT, bold: true } }, ...spans]);
-  if (notes) {
-    const last = rows.at(-1);
-    if (text && spansWidth(last) + notes.length + 2 <= width) last.push({ text: `  ${notes}`, style: MUTED });
-    else rows.push([text ? indent : { text: YOU, style: { ...ACCENT, bold: true } }, { text: notes, style: MUTED }]);
-  }
-  return rows;
-}
-function stepRow(step) {
-  const mark = step.failed === null ? { text: "  \u25CC ", style: ACCENT } : step.failed ? { text: "  \u2717 ", style: { tone: "del" } } : { text: "  \u23FA ", style: MUTED };
-  const spans = [mark, { text: terminalSafe(step.tool), style: { tone: "muted", bold: true } }];
-  if (step.summary) spans.push({ text: ` ${terminalSafe(step.summary).replace(/\s+/g, " ")}`, style: MUTED });
-  return spans;
-}
-function endedRows(response, width) {
-  if (response.ended === "interrupted") return [[{ text: "  \u23F9 Interrupted", style: MUTED }]];
-  if (response.ended !== "error") return [];
-  const text = `  \u2717 ${terminalSafe(response.error ?? "").replace(/\s+/g, " ") || "The turn failed"}`;
-  return wrapSpans([{ text, style: { tone: "del" } }], width);
-}
-function permissionRows(permission, width) {
-  const bar = { text: "\u2503 ", style: { tone: "accent", bold: true } };
-  const inner = Math.max(10, width - 2);
-  const rows = [
-    [
-      bar,
-      { text: "Allow ", style: { bold: true } },
-      { text: terminalSafe(permission.tool), style: { ...ACCENT, bold: true } },
-      { text: "?", style: { bold: true } }
-    ]
-  ];
-  const detail = terminalSafe(permission.detail).split("\n");
-  for (const line of detail.slice(0, PERMISSION_DETAIL_ROWS)) {
-    const tone = line.startsWith("+ ") ? "add" : line.startsWith("- ") ? "del" : "code";
-    for (const spans of wrapSpans([{ text: line || " ", style: { tone } }], inner, "anywhere"))
-      rows.push([bar, ...spans]);
-  }
-  if (detail.length > PERMISSION_DETAIL_ROWS) {
-    rows.push([bar, { text: `\u2026 ${detail.length - PERMISSION_DETAIL_ROWS} more lines`, style: MUTED }]);
-  }
-  rows.push([
-    bar,
-    { text: "y", style: { ...ACCENT, bold: true } },
-    { text: " allow  ", style: PLAIN },
-    { text: "a", style: { ...ACCENT, bold: true } },
-    { text: " always allow this  ", style: PLAIN },
-    { text: "n", style: { ...ACCENT, bold: true } },
-    { text: " deny", style: PLAIN }
-  ]);
-  return rows;
-}
-function liveRows(view, options) {
-  const { width } = options;
-  const rows = [];
-  const live = view.live;
-  if (live) {
-    rows.push(...promptRows(live.prompt, live.notes_sent, width));
-    rows.push(rule(view.agent, width));
-    rows.push(...partRows(live.parts, options));
-    if (view.state === "working" && live.parts.at(-1)?.kind !== "text") {
-      rows.push([{ text: "  \u2026", style: MUTED }]);
-    }
-  }
-  if (view.permission) {
-    rows.push([], ...permissionRows(view.permission, width));
-  }
-  for (const text of view.queued) {
-    rows.push([
-      { text: "queued \u203A ", style: MUTED },
-      { text: terminalSafe(text).replace(/\s+/g, " ") || "notes (Send now)", style: MUTED }
-    ]);
-  }
-  if (!live && view.error) {
-    rows.push(...wrapSpans([{ text: terminalSafe(view.error), style: { tone: "del" } }], width));
-  }
-  return rows;
-}
-function partRows(parts, options) {
-  const rows = [];
-  for (const part of parts) {
-    if (part.kind === "tool") rows.push(stepRow(part));
-    else if (part.text.trim()) rows.push(...options.render(part.text, options.width).lines.map((line) => line.spans));
-  }
-  return rows;
-}
-function rule(label, width) {
-  const head = `\u2500\u2500 ${label} `;
-  return [{ text: head + "\u2500".repeat(Math.max(0, width - head.length)), style: MUTED }];
-}
-var MUTED, ACCENT, YOU, PERMISSION_DETAIL_ROWS;
-var init_turn = __esm({
-  "src/tui/turn.ts"() {
-    "use strict";
-    init_text();
-    init_lines();
-    init_sanitize();
-    init_wrap();
-    MUTED = { tone: "muted" };
-    ACCENT = { tone: "accent" };
-    YOU = "you \u203A ";
-    PERMISSION_DETAIL_ROWS = 12;
-  }
-});
-
 // src/tui/feed.ts
 function buildFeed(model, options) {
   const margin = options.width >= MARGIN_MIN_WIDTH;
@@ -947,11 +836,6 @@ function buildFeed(model, options) {
   for (const response of model.responses) {
     if (view.rows.length) view.rows.push(emptyRow());
     view.replyStarts.set(response.id, view.rows.length);
-    if (response.prompt !== void 0) {
-      for (const spans of promptRows(response.prompt, response.notes_sent ?? 0, options.width)) {
-        view.rows.push({ left: spans, right: [] });
-      }
-    }
     const onlyAnswers = !response.text.trim() && Object.keys(response.note_answers).length > 0;
     if (onlyAnswers) addAnswered(model, response, view, `${formatTime(response.created_at)} `);
     else addReply(model, response, view, { ...options, margin, leftWidth });
@@ -980,16 +864,6 @@ function addReply(model, response, view, layout) {
     code: false,
     quote: ""
   });
-  const stepsAfter = /* @__PURE__ */ new Map();
-  for (const step of response.steps ?? []) {
-    const block = Math.min(step.after_block, rendered.blocks.length - 1);
-    stepsAfter.set(block, [...stepsAfter.get(block) ?? [], step]);
-  }
-  const addSteps = (block) => {
-    for (const step of stepsAfter.get(block) ?? []) rows.push({ left: stepRow(step), right: [] });
-    stepsAfter.delete(block);
-  };
-  addSteps(-1);
   const lastLine = /* @__PURE__ */ new Map();
   rendered.lines.forEach((line, i) => {
     if (line.block >= 0) lastLine.set(line.block, i);
@@ -1031,17 +905,12 @@ function addReply(model, response, view, layout) {
     if (line.block >= 0 && !firstRow.has(line.block)) firstRow.set(line.block, rows.length);
     run2?.rows.push(line.spans.map((span) => span.text).join(""));
     rows.push({ left: line.spans, right: [] });
-    const endsBlock = line.block >= 0 && lastLine.get(line.block) === i;
-    const inlineNotes = !layout.margin && byBlock.has(line.block);
-    if (endsBlock && (stepsAfter.has(line.block) || inlineNotes)) {
+    if (!layout.margin && line.block >= 0 && lastLine.get(line.block) === i && byBlock.has(line.block)) {
       closeRun();
-      addSteps(line.block);
-      if (inlineNotes) for (const root of byBlock.get(line.block)) addInlineNote(model, root, view, layout);
+      for (const root of byBlock.get(line.block)) addInlineNote(model, root, view, layout);
     }
   });
   closeRun();
-  for (const block of [...stepsAfter.keys()].sort((a3, b) => a3 - b)) addSteps(block);
-  for (const spans of endedRows(response, layout.leftWidth)) rows.push({ left: spans, right: [] });
   if (layout.margin) {
     let nextFree = headerRow;
     const placed = roots.map((root) => ({ root, wanted: blockOf(root) < 0 ? headerRow : firstRow.get(blockOf(root)) ?? headerRow })).sort((a3, b) => a3.wanted - b.wanted || a3.root.created_at - b.root.created_at);
@@ -1089,7 +958,7 @@ function addAnswered(model, response, view, prefix) {
   }
   if (!rootIds.size) return;
   view.rows.push({
-    left: [{ text: `${prefix}\u21B3 Claude answered ${plural(noteIds.size, "note", "notes")}`, style: MUTED2 }],
+    left: [{ text: `${prefix}\u21B3 Claude answered ${plural(noteIds.size, "note", "notes")}`, style: MUTED }],
     right: []
   });
   for (const rootId of rootIds) {
@@ -1098,7 +967,7 @@ function addAnswered(model, response, view, prefix) {
     view.rows.push({
       left: oneLine(
         [
-          { text: "  \u203A ", style: MUTED2 },
+          { text: "  \u203A ", style: MUTED },
           { text: body, style: PLAIN }
         ],
         view.leftWidth
@@ -1121,11 +990,11 @@ function addAnswered(model, response, view, prefix) {
 }
 function replyHeader(response, notes, roots, width) {
   const pending = notes.filter((note) => note.delivered_at === null).length;
-  const spans = [{ text: `\u2500\u2500 ${formatTime(response.created_at)}`, style: MUTED2 }];
-  if (roots) spans.push({ text: ` \xB7 ${plural(roots, "note", "notes")}`, style: MUTED2 });
+  const spans = [{ text: `\u2500\u2500 ${formatTime(response.created_at)}`, style: MUTED }];
+  if (roots) spans.push({ text: ` \xB7 ${plural(roots, "note", "notes")}`, style: MUTED });
   if (pending) spans.push({ text: ` \xB7 ${pending} pending`, style: { tone: "accent" } });
   const used = spansWidth(spans) + 1;
-  if (used < width) spans.push({ text: ` ${"\u2500".repeat(width - used)}`, style: MUTED2 });
+  if (used < width) spans.push({ text: ` ${"\u2500".repeat(width - used)}`, style: MUTED });
   return spans;
 }
 function noteBox(model, root, width, selected) {
@@ -1143,7 +1012,7 @@ function noteBox(model, root, width, selected) {
   if (answer2) {
     const snippet = [
       { text: "Claude ", style: { bold: true } },
-      { text: terminalSafe(plainText(answer2)), style: MUTED2 }
+      { text: terminalSafe(plainText(answer2)), style: MUTED }
     ];
     rows.push(...limitRows(wrapSpans(snippet, inner), NOTE_ANSWER_ROWS, inner));
   }
@@ -1152,7 +1021,7 @@ function noteBox(model, root, width, selected) {
   const status = queued ? "Sending\u2026" : pending ? "Pending" : `Sent ${formatTime(lastSent)}`;
   const replies = new Set(thread.filter(isAnswered).map((note) => note.answered_by)).size + thread.length - 1;
   const footer = replies ? `${status} \xB7 ${plural(replies, "reply", "replies")}` : status;
-  rows.push([{ text: footer, style: pending ? { tone: "accent" } : MUTED2 }]);
+  rows.push([{ text: footer, style: pending ? { tone: "accent" } : MUTED }]);
   const bar = {
     text: selected ? "\u2503 " : "\u2502 ",
     style: selected ? { tone: "accent", bold: true } : { tone: pending ? "accent" : "muted" }
@@ -1183,7 +1052,7 @@ function limitRows(rows, max, width) {
 function codeQuoteLine(row) {
   return row.replace(/^(?:[│┆] |[▾▸] )/, "");
 }
-var MARGIN_MIN_WIDTH, MARGIN_WIDTH, MARGIN_GAP, INLINE_INDENT, NOTE_BODY_ROWS, NOTE_ANSWER_ROWS, MUTED2;
+var MARGIN_MIN_WIDTH, MARGIN_WIDTH, MARGIN_GAP, INLINE_INDENT, NOTE_BODY_ROWS, NOTE_ANSWER_ROWS, MUTED;
 var init_feed = __esm({
   "src/tui/feed.ts"() {
     "use strict";
@@ -1191,7 +1060,6 @@ var init_feed = __esm({
     init_text();
     init_lines();
     init_sanitize();
-    init_turn();
     init_width();
     init_wrap();
     MARGIN_MIN_WIDTH = 110;
@@ -1200,7 +1068,7 @@ var init_feed = __esm({
     INLINE_INDENT = 2;
     NOTE_BODY_ROWS = 4;
     NOTE_ANSWER_ROWS = 2;
-    MUTED2 = { tone: "muted" };
+    MUTED = { tone: "muted" };
   }
 });
 
@@ -2718,10 +2586,10 @@ function prefixed(lines, first, rest) {
 function code(token, width, block) {
   const out = [];
   const language = languageOf(token);
-  if (language) out.push({ spans: [{ text: language, style: MUTED3 }], block });
+  if (language) out.push({ spans: [{ text: language, style: MUTED2 }], block });
   for (const raw of terminalSafe(token.text).split("\n")) {
     const chunks = wrapSpans([plain(raw.replace(/\t/g, TAB))], width - 2, "anywhere");
-    chunks.forEach((spans, i) => out.push({ spans: [{ text: i ? "\u2506 " : "\u2502 ", style: MUTED3 }, ...spans], block }));
+    chunks.forEach((spans, i) => out.push({ spans: [{ text: i ? "\u2506 " : "\u2502 ", style: MUTED2 }, ...spans], block }));
   }
   return out;
 }
@@ -2777,13 +2645,13 @@ function tableRow(cells, widths, aligns, block) {
   const height = Math.max(...wrapped.map((lines) => lines.length));
   const out = [];
   for (let k = 0; k < height; k++) {
-    const spans = [{ text: "\u2502 ", style: MUTED3 }];
+    const spans = [{ text: "\u2502 ", style: MUTED2 }];
     widths.forEach((w2, c2) => {
       const content = wrapped[c2][k] ?? [];
       const pad = w2 - spansWidth(content);
       const left = aligns[c2] === "right" ? pad : aligns[c2] === "center" ? Math.floor(pad / 2) : 0;
       spans.push(plain(" ".repeat(left)), ...content, plain(" ".repeat(pad - left)));
-      spans.push({ text: c2 === widths.length - 1 ? " \u2502" : " \u2502 ", style: MUTED3 });
+      spans.push({ text: c2 === widths.length - 1 ? " \u2502" : " \u2502 ", style: MUTED2 });
     });
     out.push({ spans, block });
   }
@@ -2795,7 +2663,7 @@ function stackedTable(header, rows, width, block) {
     if (out.length) out.push({ spans: [], block });
     header.forEach((title, c2) => {
       const label = title.map((span) => span.text).join("");
-      const spans = [{ text: `${label}: `, style: { ...MUTED3, bold: true } }, ...row[c2] ?? []];
+      const spans = [{ text: `${label}: `, style: { ...MUTED2, bold: true } }, ...row[c2] ?? []];
       out.push(...prose(spans, width, block));
     });
   }
@@ -2811,7 +2679,7 @@ function decodeEntities(text) {
   });
   return decoded;
 }
-var MIN_WIDTH, MIN_TABLE_COLUMN, TAB, BULLETS, DIFF_LANGUAGES, DIFF_SIGNS, DIFF_TONES, MUTED3, BOLD, HEADINGS, ENTITIES, ReplyRenderer;
+var MIN_WIDTH, MIN_TABLE_COLUMN, TAB, BULLETS, DIFF_LANGUAGES, DIFF_SIGNS, DIFF_TONES, MUTED2, BOLD, HEADINGS, ENTITIES, ReplyRenderer;
 var init_render = __esm({
   "src/tui/render.ts"() {
     "use strict";
@@ -2828,7 +2696,7 @@ var init_render = __esm({
     DIFF_LANGUAGES = /* @__PURE__ */ new Set(["diff", "patch"]);
     DIFF_SIGNS = { add: "+ ", del: "\u2212 ", context: "  " };
     DIFF_TONES = { add: ["add", "addMark"], del: ["del", "delMark"] };
-    MUTED3 = { tone: "muted" };
+    MUTED2 = { tone: "muted" };
     BOLD = { bold: true };
     HEADINGS = [
       { bold: true, underline: true, tone: "accent" },
@@ -2883,14 +2751,14 @@ var init_render = __esm({
           }
           case "blockquote": {
             const inner = this.blocks(token.tokens ?? [], width - 2, block, depth, true);
-            return prefixed(inner, [{ text: "\u258C ", style: MUTED3 }]);
+            return prefixed(inner, [{ text: "\u258C ", style: MUTED2 }]);
           }
           case "list":
             return this.#list(token, width, depth);
           case "table":
             return this.#table(token, width, block);
           case "hr":
-            return [{ spans: [{ text: "\u2500".repeat(width), style: MUTED3 }], block }];
+            return [{ spans: [{ text: "\u2500".repeat(width), style: MUTED2 }], block }];
           case "html":
             return prose([{ text: token.text.replace(/\n+$/, ""), style: PLAIN }], width, block);
           default:
@@ -2910,7 +2778,7 @@ var init_render = __esm({
           const children = item.tokens.filter((child) => child.type !== "checkbox");
           const body = this.blocks(children, width - indent, block, depth + 1, item.loose);
           if (list.loose && out.length) out.push({ spans: [], block: -1 });
-          const first = [{ text: `${marker} `, style: list.ordered ? PLAIN : MUTED3 }];
+          const first = [{ text: `${marker} `, style: list.ordered ? PLAIN : MUTED2 }];
           out.push(...prefixed(body.length ? body : [{ spans: [], block }], first, [plain(" ".repeat(indent))]));
         });
         return out;
@@ -2921,7 +2789,7 @@ var init_render = __esm({
           const number = this.#nextFile++;
           const open = !this.foldable || this.#isFileOpen(number);
           const header = [
-            ...this.foldable ? [{ text: open ? "\u25BE " : "\u25B8 ", style: MUTED3 }] : [],
+            ...this.foldable ? [{ text: open ? "\u25BE " : "\u25B8 ", style: MUTED2 }] : [],
             { text: file.path || "Change", style: BOLD },
             plain("  "),
             { text: `+${file.additions}`, style: { tone: "add" } },
@@ -2942,7 +2810,7 @@ var init_render = __esm({
         const widths = shrink(natural, width - (3 * columns + 1));
         if (!widths) return stackedTable(header, rows, width, block);
         const border = (left, middle, right) => ({
-          spans: [{ text: left + widths.map((w2) => "\u2500".repeat(w2 + 2)).join(middle) + right, style: MUTED3 }],
+          spans: [{ text: left + widths.map((w2) => "\u2500".repeat(w2 + 2)).join(middle) + right, style: MUTED2 }],
           block
         });
         const aligns = table.align;
@@ -3020,13 +2888,13 @@ function buildThread(model, rootId, width) {
   };
   rows.push([
     { text: "Thread", style: { bold: true } },
-    { text: ` \xB7 on the reply from ${formatTime(response.created_at)}`, style: MUTED4 }
+    { text: ` \xB7 on the reply from ${formatTime(response.created_at)}`, style: MUTED3 }
   ]);
   blank();
   if (root.quote) {
     const quote = wrapSpans([{ text: terminalSafe(root.quote), style: { tone: "muted", italic: true } }], width - 2);
-    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "\u258C ", style: MUTED4 }, ...spans]);
-    if (quote.length > QUOTE_ROWS) rows.push([{ text: "\u258C \u2026", style: MUTED4 }]);
+    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "\u258C ", style: MUTED3 }, ...spans]);
+    if (quote.length > QUOTE_ROWS) rows.push([{ text: "\u258C \u2026", style: MUTED3 }]);
   } else {
     rows.push([{ text: "On the whole reply", style: { tone: "muted", italic: true } }]);
   }
@@ -3041,7 +2909,7 @@ function buildThread(model, rootId, width) {
       rows.push(...answer(model, note.answered_by, group, width));
     } else if (note.delivered_at !== null && note.answered_by === null && !next) {
       blank();
-      rows.push([{ text: "Sent. Claude's reply will appear here.", style: MUTED4 }]);
+      rows.push([{ text: "Sent. Claude's reply will appear here.", style: MUTED3 }]);
     }
   });
   return rows;
@@ -3050,7 +2918,7 @@ function entry(model, note, width) {
   const status = note.delivered_at !== null ? `Sent ${formatTime(note.delivered_at)}` : model.isQueued(note) ? "Sending\u2026" : "Pending";
   const head = [
     { text: note.parent_id === null ? "Your note" : "Your follow-up", style: { bold: true } },
-    { text: ` \xB7 ${status}`, style: note.delivered_at === null ? { tone: "accent" } : MUTED4 }
+    { text: ` \xB7 ${status}`, style: note.delivered_at === null ? { tone: "accent" } : MUTED3 }
   ];
   const body = wrapSpans([{ text: terminalSafe(note.body), style: PLAIN }], width - 2);
   return [head, ...body.map((spans) => [INDENT, ...spans])];
@@ -3058,10 +2926,10 @@ function entry(model, note, width) {
 function answer(model, responseId, group, width) {
   const response = model.response(responseId);
   const head = [{ text: "Claude", style: { bold: true, tone: "accent" } }];
-  if (!response) return [[...head, { text: " \xB7 answered in a reply that is no longer stored", style: MUTED4 }]];
-  head.push({ text: ` \xB7 ${formatTime(response.created_at)}`, style: MUTED4 });
+  if (!response) return [[...head, { text: " \xB7 answered in a reply that is no longer stored", style: MUTED3 }]];
+  head.push({ text: ` \xB7 ${formatTime(response.created_at)}`, style: MUTED3 });
   const texts = [...new Set(group.map((note) => model.answerText(note)).filter(Boolean))];
-  if (!texts.length) return [head, [INDENT, { text: "Answered in the reply in the feed: f shows it", style: MUTED4 }]];
+  if (!texts.length) return [head, [INDENT, { text: "Answered in the reply in the feed: f shows it", style: MUTED3 }]];
   const rows = [head];
   texts.forEach((text, i) => {
     if (i) rows.push([]);
@@ -3070,7 +2938,7 @@ function answer(model, responseId, group, width) {
   });
   return rows;
 }
-var MUTED4, INDENT, QUOTE_ROWS;
+var MUTED3, INDENT, QUOTE_ROWS;
 var init_thread = __esm({
   "src/tui/thread.ts"() {
     "use strict";
@@ -3080,23 +2948,418 @@ var init_thread = __esm({
     init_render();
     init_sanitize();
     init_wrap();
-    MUTED4 = { tone: "muted" };
+    MUTED3 = { tone: "muted" };
     INDENT = { text: "  ", style: PLAIN };
     QUOTE_ROWS = 6;
   }
 });
 
+// src/tui/turn.ts
+function promptRows(prompt, notesSent, width) {
+  const notes = notesSent ? `+ ${plural(notesSent, "note", "notes")}` : "";
+  const text = terminalSafe(prompt).trim();
+  if (!text && !notes) return [];
+  const mark = { text: PROMPT_MARK, style: { tone: "link", bold: true } };
+  const indent = { text: " ".repeat(PROMPT_MARK.length), style: PLAIN };
+  const body = text ? wrapSpans([{ text, style: { tone: "link" } }], Math.max(10, width - PROMPT_MARK.length)) : [[]];
+  const rows = body.map((spans, i) => [i ? indent : mark, ...spans]);
+  if (notes) {
+    const last = rows.at(-1);
+    if (text && spansWidth(last) + notes.length + 2 <= width) last.push({ text: `  ${notes}`, style: MUTED4 });
+    else rows.push([text ? indent : mark, { text: notes, style: MUTED4 }]);
+  }
+  return rows;
+}
+function stepRows(steps, width) {
+  const spans = [];
+  steps.forEach((step, i) => {
+    if (i) spans.push({ text: STEP_GAP, style: PLAIN });
+    const mark = step.failed === null ? { text: "\u25D0 ", style: ACCENT } : step.failed ? { text: "\u2717 ", style: { tone: "del" } } : { text: "\u2713 ", style: MUTED4 };
+    spans.push(mark, { text: stepLabel(step).replace(/ /g, "\xA0"), style: step.failed ? { tone: "del" } : MUTED4 });
+  });
+  return wrapSpans(spans, width).map((row) => row.map((span) => ({ ...span, text: span.text.replace(/ /g, " ") })));
+}
+function stepLabel(step) {
+  const summary = terminalSafe(step.summary).replace(/\s+/g, " ");
+  if (step.tool === "Bash" && summary) return summary;
+  const tool = terminalSafe(step.tool);
+  const name = /^[A-Z][a-z]+$/.test(tool) ? tool.toLowerCase() : tool;
+  return summary ? `${name} ${summary}` : name;
+}
+function endedRows(response, width) {
+  if (response.ended === "interrupted") return [[{ text: "\u23F9 interrupted", style: MUTED4 }]];
+  if (response.ended !== "error") return [];
+  const text = `\u2717 ${terminalSafe(response.error ?? "").replace(/\s+/g, " ") || "The turn failed"}`;
+  return wrapSpans([{ text, style: { tone: "del" } }], width);
+}
+function permissionRows(permission, width) {
+  const bar = { text: "\u2503 ", style: { tone: "accent", bold: true } };
+  const inner = Math.max(10, width - 2);
+  const rows = [
+    [
+      bar,
+      { text: "Allow ", style: { bold: true } },
+      { text: terminalSafe(permission.tool), style: { ...ACCENT, bold: true } },
+      { text: "?", style: { bold: true } }
+    ]
+  ];
+  const detail = terminalSafe(permission.detail).split("\n");
+  for (const line of detail.slice(0, PERMISSION_DETAIL_ROWS)) {
+    const tone = line.startsWith("+ ") ? "add" : line.startsWith("- ") ? "del" : "code";
+    for (const spans of wrapSpans([{ text: line || " ", style: { tone } }], inner, "anywhere"))
+      rows.push([bar, ...spans]);
+  }
+  if (detail.length > PERMISSION_DETAIL_ROWS) {
+    rows.push([bar, { text: `\u2026 ${detail.length - PERMISSION_DETAIL_ROWS} more lines`, style: MUTED4 }]);
+  }
+  rows.push([
+    bar,
+    { text: "y", style: { ...ACCENT, bold: true } },
+    { text: " allow  ", style: PLAIN },
+    { text: "a", style: { ...ACCENT, bold: true } },
+    { text: " always allow this  ", style: PLAIN },
+    { text: "n", style: { ...ACCENT, bold: true } },
+    { text: " deny", style: PLAIN }
+  ]);
+  return rows;
+}
+var MUTED4, ACCENT, PROMPT_MARK, PERMISSION_DETAIL_ROWS, STEP_GAP;
+var init_turn = __esm({
+  "src/tui/turn.ts"() {
+    "use strict";
+    init_text();
+    init_lines();
+    init_sanitize();
+    init_wrap();
+    MUTED4 = { tone: "muted" };
+    ACCENT = { tone: "accent" };
+    PROMPT_MARK = "\u203A ";
+    PERMISSION_DETAIL_ROWS = 12;
+    STEP_GAP = "   ";
+  }
+});
+
+// src/tui/conversation.ts
+function conversationLayout(width) {
+  const lead = width >= LEAD_MIN_WIDTH ? LEAD_WIDTH : 0;
+  const margin = width >= CONVERSATION_MARGIN_MIN_WIDTH;
+  return { lead, margin, text: width - lead - CURSOR_WIDTH - (margin ? MARGIN_GAP2 + MARGIN_WIDTH2 : 0) };
+}
+function buildConversation(model, options) {
+  const layout = conversationLayout(options.width);
+  const view = {
+    rows: [],
+    targets: [],
+    replyStarts: /* @__PURE__ */ new Map(),
+    leftWidth: layout.text,
+    leadWidth: layout.lead,
+    marginRule: layout.margin
+  };
+  const builder = new Builder(model, view, layout, options);
+  for (const response of model.responses) builder.turn(response);
+  if (options.live) builder.live(options.live);
+  view.targets.sort((a3, b) => a3.start - b.start || (a3.side === "left" ? -1 : 1));
+  return view;
+}
+function noteTarget2(root, responseId, block, start, end, side) {
+  return {
+    key: `n:${root.id}`,
+    kind: "note",
+    responseId,
+    block,
+    rootId: root.id,
+    start,
+    end,
+    side,
+    code: false,
+    quote: root.quote
+  };
+}
+function marginNote(model, root, width, selected) {
+  const thread = model.thread(root.id);
+  const pending = thread.some((note) => note.delivered_at === null);
+  const inner = Math.max(8, width - 2);
+  const marker = {
+    text: pending ? "\u25C6 " : "\u25C7 ",
+    style: selected ? { tone: "accent", bold: true } : pending ? ACCENT2 : MUTED5
+  };
+  const indent = { text: "  ", style: PLAIN };
+  const bodyStyle = selected ? { bold: true, ...pending ? ACCENT2 : {} } : pending ? ACCENT2 : PLAIN;
+  const body = limitRows(
+    wrapSpans([{ text: terminalSafe(root.body), style: bodyStyle }], inner),
+    NOTE_BODY_ROWS2,
+    inner
+  );
+  const rows = body.map((spans, i) => [i ? indent : marker, ...spans]);
+  const answer2 = thread.map((note) => model.answerText(note)).findLast(Boolean);
+  if (answer2) {
+    const snippet = wrapSpans([{ text: `\u21B3 ${terminalSafe(plainText(answer2))}`, style: MUTED5 }], inner);
+    for (const spans of limitRows(snippet, NOTE_ANSWER_ROWS2, inner)) rows.push([indent, ...spans]);
+  }
+  const replies = new Set(thread.filter(isAnswered).map((note) => note.answered_by)).size + thread.length - 1;
+  const status = thread.some((note) => model.isQueued(note)) ? "sending\u2026" : pending ? "waits for your next message" : thread.some((note) => note.answered_by === null) ? "sent, waiting for Claude" : "";
+  const footer = [status, replies ? plural(replies, "reply", "replies") : "", selected ? "\u23CE open" : ""].filter(Boolean);
+  if (footer.length) rows.push([indent, { text: footer.join(" \xB7 "), style: MUTED5 }]);
+  return rows;
+}
+var CONVERSATION_MARGIN_MIN_WIDTH, LEAD_MIN_WIDTH, LEAD_WIDTH, CURSOR_WIDTH, MARGIN_WIDTH2, MARGIN_GAP2, INLINE_INDENT2, NOTE_BODY_ROWS2, NOTE_ANSWER_ROWS2, MUTED5, ACCENT2, Builder;
+var init_conversation = __esm({
+  "src/tui/conversation.ts"() {
+    "use strict";
+    init_model();
+    init_text();
+    init_feed();
+    init_lines();
+    init_sanitize();
+    init_turn();
+    init_wrap();
+    CONVERSATION_MARGIN_MIN_WIDTH = 120;
+    LEAD_MIN_WIDTH = 60;
+    LEAD_WIDTH = 10;
+    CURSOR_WIDTH = 2;
+    MARGIN_WIDTH2 = 36;
+    MARGIN_GAP2 = 3;
+    INLINE_INDENT2 = 2;
+    NOTE_BODY_ROWS2 = 4;
+    NOTE_ANSWER_ROWS2 = 2;
+    MUTED5 = { tone: "muted" };
+    ACCENT2 = { tone: "accent" };
+    Builder = class {
+      #model;
+      #view;
+      #layout;
+      #options;
+      constructor(model, view, layout, options) {
+        this.#model = model;
+        this.#view = view;
+        this.#layout = layout;
+        this.#options = options;
+      }
+      get #rows() {
+        return this.#view.rows;
+      }
+      /** One stored turn: what the user typed, then the reply with its tool calls and notes. */
+      turn(response) {
+        this.#gap();
+        this.#view.replyStarts.set(response.id, this.#rows.length);
+        if (response.prompt !== void 0 && this.#prompt(response.prompt, response.notes_sent ?? 0, response.created_at)) {
+          this.#push([]);
+        }
+        const onlyAnswers = !response.text.trim() && Object.keys(response.note_answers).length > 0;
+        this.#speaker("claude", response.prompt === void 0 ? formatTime(response.created_at) : "");
+        if (onlyAnswers) {
+          addAnswered(this.#model, response, this.#view, "");
+          return;
+        }
+        this.#reply(response);
+      }
+      /** The turn in progress, then a permission prompt, queued messages, or why the agent stopped. */
+      live(view) {
+        const width = this.#layout.text;
+        const turn = view.live;
+        if (turn) {
+          this.#gap();
+          if (this.#prompt(turn.prompt, turn.notes_sent, null)) this.#push([]);
+          this.#speaker("claude", "now");
+          const start = this.#rows.length;
+          this.#parts(turn.parts);
+          if (view.state === "working" && turn.parts.at(-1)?.kind !== "text") this.#push([{ text: "\u2026", style: MUTED5 }]);
+          if (this.#rows.length === start) this.#push([]);
+        }
+        if (view.permission) {
+          this.#push([]);
+          for (const spans of permissionRows(view.permission, width)) this.#push(spans);
+        }
+        for (const text of view.queued) {
+          const label = terminalSafe(text).replace(/\s+/g, " ") || "notes (Send now)";
+          this.#push([{ text: `queued \u203A ${label}`, style: MUTED5 }]);
+        }
+        if (!turn && view.error) {
+          this.#gap();
+          for (const spans of wrapSpans([{ text: terminalSafe(view.error), style: { tone: "del" } }], width)) {
+            this.#push(spans);
+          }
+        }
+      }
+      #parts(parts) {
+        let tools = [];
+        const flush = () => {
+          if (tools.length) for (const spans of stepRows(tools, this.#layout.text)) this.#push(spans);
+          tools = [];
+        };
+        for (const part of parts) {
+          if (part.kind === "tool") {
+            tools.push(part);
+            continue;
+          }
+          if (!part.text.trim()) continue;
+          flush();
+          for (const line of this.#options.renderMarkdown(part.text, this.#layout.text).lines) this.#push(line.spans);
+        }
+        flush();
+      }
+      /** The user's message, with "you" and its time beside it. False when there is nothing to show. */
+      #prompt(prompt, notesSent, at2) {
+        const rows = promptRows(prompt, notesSent, this.#layout.text);
+        if (!rows.length) return false;
+        this.#speaker("you", at2 === null ? "now" : formatTime(at2));
+        for (const spans of rows) this.#push(spans);
+        return true;
+      }
+      /**
+       * Names who speaks from the next row: in the speaker column, with the time on the row under
+       * it, or, with no speaker column, on a row of its own.
+       */
+      #speaker(name, time) {
+        const style = { tone: name === "you" ? "link" : "accent", bold: true };
+        if (!this.#layout.lead) {
+          this.#rows.push({
+            left: [{ text: name, style }, ...time ? [{ text: ` \xB7 ${time}`, style: MUTED5 }] : []],
+            right: []
+          });
+          return;
+        }
+        this.#leads.set(this.#rows.length, [{ text: name, style }]);
+        if (time) this.#leads.set(this.#rows.length + 1, [{ text: time, style: MUTED5 }]);
+      }
+      /** Speaker column contents, by row. */
+      #leads = /* @__PURE__ */ new Map();
+      #push(spans, right = []) {
+        const lead = this.#leads.get(this.#rows.length);
+        this.#leads.delete(this.#rows.length);
+        this.#rows.push(lead ? { lead, left: spans, right } : { left: spans, right });
+      }
+      #gap() {
+        if (this.#rows.length) this.#push([]);
+      }
+      /** The reply's blocks, its tool calls between them, and its notes in the margin or inline. */
+      #reply(response) {
+        const model = this.#model;
+        const rows = this.#rows;
+        const targets = this.#view.targets;
+        const rendered = this.#options.render(response, this.#layout.text);
+        const roots = model.notes.filter((note) => note.response_id === response.id && note.parent_id === null).sort((a3, b) => a3.created_at - b.created_at);
+        const blockOf = (note) => note.block_index < rendered.blocks.length ? note.block_index : -1;
+        const byBlock = /* @__PURE__ */ new Map();
+        for (const root of roots) byBlock.set(blockOf(root), [...byBlock.get(blockOf(root)) ?? [], root]);
+        const stepsAfter = /* @__PURE__ */ new Map();
+        for (const step of response.steps ?? []) {
+          const block = Math.min(step.after_block, rendered.blocks.length - 1);
+          stepsAfter.set(block, [...stepsAfter.get(block) ?? [], step]);
+        }
+        const addSteps = (block) => {
+          const steps = stepsAfter.get(block);
+          stepsAfter.delete(block);
+          if (steps) for (const spans of stepRows(steps, this.#layout.text)) this.#push(spans);
+        };
+        const replyStart = rows.length;
+        addSteps(-1);
+        const lastLine = /* @__PURE__ */ new Map();
+        rendered.lines.forEach((line, i) => {
+          if (line.block >= 0) lastLine.set(line.block, i);
+        });
+        const firstRow = /* @__PURE__ */ new Map();
+        let run2 = null;
+        const runCounts = /* @__PURE__ */ new Map();
+        const closeRun = () => {
+          if (!run2) return;
+          const id = `${response.id}:${run2.block}:${run2.file ?? ""}`;
+          const count = runCounts.get(id) ?? 0;
+          runCounts.set(id, count + 1);
+          const info = rendered.blocks[run2.block];
+          targets.push({
+            key: `b:${id}:${count}`,
+            kind: "block",
+            responseId: response.id,
+            block: run2.block,
+            ...run2.file !== void 0 && rendered.foldable ? { file: run2.file } : {},
+            start: run2.start,
+            end: rows.length,
+            side: "left",
+            code: info.code,
+            quote: info.code ? run2.rows.map(codeQuoteLine).join("\n") : info.quote
+          });
+          run2 = null;
+        };
+        let file;
+        let previousBlock = -1;
+        rendered.lines.forEach((line, i) => {
+          if (line.block !== previousBlock) file = void 0;
+          previousBlock = line.block;
+          if (line.file !== void 0) file = line.file;
+          if (line.block < 0) closeRun();
+          else if (!run2 || run2.block !== line.block || run2.file !== file) {
+            closeRun();
+            run2 = { block: line.block, file, start: rows.length, rows: [] };
+          }
+          if (line.block >= 0 && !firstRow.has(line.block)) firstRow.set(line.block, rows.length);
+          run2?.rows.push(line.spans.map((span) => span.text).join(""));
+          this.#push(line.spans);
+          const endsBlock = line.block >= 0 && lastLine.get(line.block) === i;
+          const inlineNotes = !this.#layout.margin && byBlock.has(line.block);
+          if (endsBlock && (stepsAfter.has(line.block) || inlineNotes)) {
+            closeRun();
+            addSteps(line.block);
+            if (inlineNotes) for (const root of byBlock.get(line.block)) this.#inlineNote(root);
+          }
+        });
+        closeRun();
+        for (const block of [...stepsAfter.keys()].sort((a3, b) => a3 - b)) addSteps(block);
+        for (const spans of endedRows(response, this.#layout.text)) this.#push(spans);
+        if (rows.length === replyStart) this.#push([]);
+        if (this.#layout.margin) {
+          let nextFree = replyStart;
+          const placed = roots.map((root) => ({ root, wanted: blockOf(root) < 0 ? replyStart : firstRow.get(blockOf(root)) ?? replyStart })).sort((a3, b) => a3.wanted - b.wanted || a3.root.created_at - b.root.created_at);
+          for (const { root, wanted } of placed) {
+            const at2 = Math.max(wanted, nextFree);
+            const box = marginNote(model, root, MARGIN_WIDTH2, `n:${root.id}` === this.#options.selectedKey);
+            while (rows.length < at2 + box.length) this.#push([]);
+            box.forEach((spans, k) => rows[at2 + k].right = spans);
+            targets.push(noteTarget2(root, response.id, blockOf(root), at2, at2 + box.length, "right"));
+            nextFree = at2 + box.length + 1;
+          }
+        } else {
+          for (const root of byBlock.get(-1) ?? []) this.#inlineNote(root);
+        }
+        addAnswered(model, response, this.#view, "");
+      }
+      #inlineNote(root) {
+        const width = this.#layout.text - INLINE_INDENT2;
+        const box = marginNote(this.#model, root, width, `n:${root.id}` === this.#options.selectedKey);
+        const start = this.#rows.length;
+        for (const spans of box) this.#push([{ text: " ".repeat(INLINE_INDENT2), style: PLAIN }, ...spans]);
+        this.#view.targets.push(noteTarget2(root, root.response_id, root.block_index, start, this.#rows.length, "left"));
+      }
+    };
+  }
+});
+
 // src/tui/app.ts
+function leadSpans(lead, width) {
+  if (!width) return [];
+  const clipped = clipSpans(lead, width - 2);
+  return [
+    { text: " ".repeat(width - 2 - spansWidth(clipped)), style: PLAIN },
+    ...clipped,
+    { text: "  ", style: PLAIN }
+  ];
+}
+function duration(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const [h, m2, s] = [Math.floor(total / 3600), Math.floor(total % 3600 / 60), total % 60];
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m2)}:${pad(s)}` : `${m2}:${pad(s)}`;
+}
 function emptyState(text, height) {
   const rows = Array.from({ length: height }, () => []);
-  rows[Math.min(1, height - 1)] = [{ text: `  ${text}`, style: MUTED5 }];
+  rows[Math.min(1, height - 1)] = [{ text: `  ${text}`, style: MUTED6 }];
   return rows;
 }
 function errorText(error) {
   const text = error instanceof Error ? error.message : String(error);
   return `Couldn't do that: ${text.replace(/\s+/g, " ")}`;
 }
-var MAX_QUOTE_CHARS, GUTTER, EDITOR_MAX_ROWS, PROMPT_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED5, ACCENT2, App;
+var MAX_QUOTE_CHARS, GUTTER, EDITOR_MAX_ROWS, PROMPT_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED6, ACCENT3, App;
 var init_app = __esm({
   "src/tui/app.ts"() {
     "use strict";
@@ -3109,7 +3372,7 @@ var init_app = __esm({
     init_render();
     init_sanitize();
     init_thread();
-    init_turn();
+    init_conversation();
     init_wrap();
     MAX_QUOTE_CHARS = 600;
     GUTTER = 2;
@@ -3117,14 +3380,16 @@ var init_app = __esm({
     PROMPT_LABEL = "you \u203A ";
     MIN_COLUMNS = 30;
     MIN_ROWS = 8;
-    MUTED5 = { tone: "muted" };
-    ACCENT2 = { tone: "accent" };
+    MUTED6 = { tone: "muted" };
+    ACCENT3 = { tone: "accent" };
     App = class {
       #api;
       #terminal;
       #ansi;
       #cwd;
       #chat;
+      #home;
+      #now;
       #model = null;
       #reachable = true;
       #conversation = null;
@@ -3162,6 +3427,8 @@ var init_app = __esm({
         this.#ansi = options.ansi;
         this.#cwd = options.cwd;
         this.#chat = options.chat ?? null;
+        this.#home = options.home ?? "";
+        this.#now = options.now ?? (() => Date.now() / 1e3);
         if (options.sessionId) this.#model = new Model(options.sessionId);
       }
       get sessionId() {
@@ -3302,7 +3569,7 @@ var init_app = __esm({
           case "v":
             if (!target) return;
             if (target.kind === "block" && target.code) this.#lines = [target.start, target.start];
-            else this.#message = { text: "Line notes are for code and diffs; n notes the whole block", style: MUTED5 };
+            else this.#message = { text: "Line notes are for code and diffs; n notes the whole block", style: MUTED6 };
             return;
           case "x":
             if (target?.kind === "note") await this.#deleteNote(target.rootId, confirming);
@@ -3365,7 +3632,7 @@ var init_app = __esm({
           case "x": {
             const pending = this.#model?.thread(this.#threadRoot).findLast((note) => note.delivered_at === null);
             if (pending) await this.#deleteNote(pending.id, confirming);
-            else this.#message = { text: "Nothing unsent in this thread to delete", style: MUTED5 };
+            else this.#message = { text: "Nothing unsent in this thread to delete", style: MUTED6 };
             return;
           }
           case "f":
@@ -3410,7 +3677,7 @@ var init_app = __esm({
         await this.#chat.answer(this.#model.sessionId, permission.request_id, decision);
         this.#message = {
           text: decision === "deny" ? `Denied ${permission.tool}` : `Allowed ${permission.tool}`,
-          style: MUTED5
+          style: MUTED6
         };
         this.#follow = true;
         await this.refreshConversation();
@@ -3447,7 +3714,7 @@ var init_app = __esm({
         const model = this.#model;
         if (!this.#chat || !model) return;
         if (this.#prompt.isBlank && !model.pendingCount()) {
-          this.#message = { text: "Type a message for Claude first", style: MUTED5 };
+          this.#message = { text: "Type a message for Claude first", style: MUTED6 };
           return;
         }
         await this.#chat.message(model.sessionId, this.#prompt.isBlank ? "" : this.#prompt.text);
@@ -3466,7 +3733,7 @@ var init_app = __esm({
         }
         this.#message = {
           text: queued.length ? "Interrupted. Queued messages are back in the prompt" : "Interrupted",
-          style: MUTED5
+          style: MUTED6
         };
         await this.refreshConversation();
       }
@@ -3541,14 +3808,14 @@ var init_app = __esm({
           this.#drafts.delete(editing.draftKey);
         } else {
           this.#drafts.set(editing.draftKey, editing.text.text);
-          this.#message = { text: "Draft kept: open the note again to finish it", style: MUTED5 };
+          this.#message = { text: "Draft kept: open the note again to finish it", style: MUTED6 };
         }
       }
       async #submit(editing, sendNow) {
         const model = this.#model;
         if (!model) return;
         if (editing.text.isBlank) {
-          this.#message = { text: "Write something first, or press Esc", style: MUTED5 };
+          this.#message = { text: "Write something first, or press Esc", style: MUTED6 };
           return;
         }
         await this.#api.addNote({ ...editing.request, body: editing.text.text });
@@ -3556,11 +3823,11 @@ var init_app = __esm({
         this.#editor = null;
         if (sendNow) {
           await this.#api.send(model.sessionId);
-          this.#message = model.sendStatus().status === "busy" ? { text: "Saved. Claude is working; it goes as soon as it finishes", style: ACCENT2 } : { text: "Sent to Claude", style: ACCENT2 };
+          this.#message = model.sendStatus().status === "busy" ? { text: "Saved. Claude is working; it goes as soon as it finishes", style: ACCENT3 } : { text: "Sent to Claude", style: ACCENT3 };
         } else if (this.#chat) {
-          this.#message = { text: "Saved. It goes with your next message, or press S to send it now", style: MUTED5 };
+          this.#message = { text: "Saved. It goes with your next message, or press S to send it now", style: MUTED6 };
         } else {
-          this.#message = model.canSend() ? { text: "Saved. It goes with your next prompt, or press S to send now", style: MUTED5 } : { text: "Saved. Claude isn't listening here, so it goes with your next prompt", style: MUTED5 };
+          this.#message = model.canSend() ? { text: "Saved. It goes with your next prompt, or press S to send now", style: MUTED6 } : { text: "Saved. Claude isn't listening here, so it goes with your next prompt", style: MUTED6 };
         }
         await this.refresh();
       }
@@ -3569,12 +3836,12 @@ var init_app = __esm({
         if (!model) return;
         const pending = model.pendingCount();
         if (!pending) {
-          this.#message = { text: "No pending notes to send", style: MUTED5 };
+          this.#message = { text: "No pending notes to send", style: MUTED6 };
         } else if (!model.canSend()) {
-          this.#message = { text: "Claude isn't listening: pending notes go with your next prompt there", style: MUTED5 };
+          this.#message = { text: "Claude isn't listening: pending notes go with your next prompt there", style: MUTED6 };
         } else {
           await this.#api.send(model.sessionId);
-          this.#message = { text: `Sending ${plural(pending, "note", "notes")} to Claude`, style: ACCENT2 };
+          this.#message = { text: `Sending ${plural(pending, "note", "notes")} to Claude`, style: ACCENT3 };
           await this.refresh();
         }
       }
@@ -3582,7 +3849,7 @@ var init_app = __esm({
         const note = this.#model?.note(noteId);
         if (!note) return;
         if (note.delivered_at !== null) {
-          this.#message = { text: "Only notes that haven't been sent can be deleted", style: MUTED5 };
+          this.#message = { text: "Only notes that haven't been sent can be deleted", style: MUTED6 };
           return;
         }
         if (confirming !== noteId) {
@@ -3591,7 +3858,7 @@ var init_app = __esm({
           return;
         }
         await this.#api.deleteNote(noteId);
-        this.#message = { text: "Note deleted", style: MUTED5 };
+        this.#message = { text: "Note deleted", style: MUTED6 };
         await this.refresh();
       }
       #openThread(rootId) {
@@ -3620,7 +3887,7 @@ var init_app = __esm({
         const { columns, rows } = this.#terminal.size();
         if (columns < MIN_COLUMNS || rows < MIN_ROWS) {
           this.#terminal.draw(
-            [this.#ansiRow(clipSpans([{ text: "Make this pane larger for sidenote", style: MUTED5 }], columns))],
+            [this.#ansiRow(clipSpans([{ text: "Make this pane larger for sidenote", style: MUTED6 }], columns))],
             null
           );
           return;
@@ -3641,11 +3908,20 @@ var init_app = __esm({
         if (!this.#chat) return { rows: [hint], cursor: null };
         const prompt = this.#promptRows(columns);
         const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines;
-        return { rows: [...prompt.rows, hint], cursor: focused ? prompt.cursor : null };
+        const rule = [{ text: "\u2500".repeat(columns), style: MUTED6 }];
+        const cursor = prompt.cursor && { row: prompt.cursor.row + 1, column: prompt.cursor.column };
+        return { rows: [rule, ...prompt.rows, hint], cursor: focused ? cursor : null };
       }
       #bodyHeight() {
         const { columns, rows } = this.#terminal.size();
         return Math.max(1, rows - 1 - this.#bottom(columns).rows.length);
+      }
+      /** The session's folder, with the home folder as ~. */
+      #folder(cwd) {
+        let folder = this.#home && cwd.startsWith(`${this.#home}/`) ? `~${cwd.slice(this.#home.length)}` : cwd;
+        const parts = folder.split("/");
+        if (folder.length > 40 && parts.length > 3) folder = `\u2026/${parts.slice(-2).join("/")}`;
+        return terminalSafe(folder);
       }
       #promptRows(columns) {
         const width = this.#promptWidth();
@@ -3653,7 +3929,7 @@ var init_app = __esm({
         const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
         this.#promptScroll = Math.min(Math.max(this.#promptScroll, layout.cursorRow - visible + 1), layout.cursorRow);
         const focused = this.#focus === "prompt" && this.#view === "feed";
-        const label = { text: PROMPT_LABEL, style: focused ? { tone: "accent", bold: true } : MUTED5 };
+        const label = { text: PROMPT_LABEL, style: focused ? { tone: "accent", bold: true } : MUTED6 };
         const indent = { text: " ".repeat(PROMPT_LABEL.length), style: PLAIN };
         const rows = [];
         for (let i = 0; i < visible; i++) {
@@ -3662,8 +3938,10 @@ var init_app = __esm({
         if (this.#prompt.text === "") {
           const pending = this.#model?.pendingCount() ?? 0;
           const placeholder = this.#working ? "Message Claude; it goes when this turn ends\u2026" : "Message Claude\u2026";
-          rows[0] = [label, { text: placeholder, style: MUTED5 }];
-          if (pending) rows[0].push({ text: `   ${plural(pending, "note rides", "notes ride")} along`, style: ACCENT2 });
+          rows[0] = [label, { text: placeholder, style: MUTED6 }];
+          const along = `${plural(pending, "note rides", "notes ride")} along`;
+          const gap = columns - spansWidth(rows[0]) - along.length;
+          if (pending && gap >= 3) rows[0].push({ text: " ".repeat(gap), style: PLAIN }, { text: along, style: ACCENT3 });
         }
         return {
           rows: rows.map((spans) => clipSpans(spans, columns)),
@@ -3677,35 +3955,37 @@ var init_app = __esm({
         const model = this.#model;
         const session = model?.snapshot.session;
         const name = terminalSafe(session ? session.name || projectName(session.cwd) : projectName(this.#cwd));
-        const left = [
+        const conversation = this.#conversation;
+        const left = conversation ? [
+          { text: "[", style: { tone: "accent", bold: true } },
           { text: "sidenote", style: { bold: true } },
-          { text: " \xB7 ", style: MUTED5 },
+          { text: "]", style: { tone: "accent", bold: true } },
+          { text: `  ${name}`, style: PLAIN },
+          { text: `  ${this.#folder(session?.cwd ?? this.#cwd)} \xB7 ${conversation.agent}`, style: MUTED6 },
+          ...conversation.model ? [{ text: ` \xB7 ${terminalSafe(conversation.model)}`, style: MUTED6 }] : []
+        ] : [
+          { text: "sidenote", style: { bold: true } },
+          { text: " \xB7 ", style: MUTED6 },
           { text: name, style: PLAIN }
         ];
         const right = [];
-        const conversation = this.#conversation;
-        if (conversation) {
-          left.push({ text: ` \xB7 ${conversation.agent}`, style: MUTED5 });
-          if (conversation.model) left.push({ text: ` \xB7 ${terminalSafe(conversation.model)}`, style: MUTED5 });
-        }
         if (!this.#reachable) {
           right.push({ text: "can't reach sidenote, retrying", style: { tone: "del" } });
         } else if (conversation) {
-          const pending = model?.pendingCount() ?? 0;
-          if (pending) right.push({ text: `${plural(pending, "note", "notes")} pending \xB7 `, style: ACCENT2 });
+          const elapsed = conversation.live ? ` ${duration(this.#now() - conversation.live.started_at)}` : "";
+          right.push(
+            conversation.state === "working" ? { text: `\u25D0 working${elapsed}`, style: ACCENT3 } : conversation.state === "waiting" ? { text: "\u25C6 needs your answer", style: { tone: "accent", bold: true } } : conversation.state === "stopped" ? { text: "\u25CB stopped", style: MUTED6 } : { text: "\u25CF your turn", style: { tone: "add" } }
+          );
           if (conversation.context) {
             const percent = Math.round(100 * conversation.context.used / conversation.context.limit);
-            right.push({ text: `${percent}% context \xB7 `, style: MUTED5 });
+            right.push({ text: `   context ${percent}%`, style: MUTED6 });
           }
-          right.push(
-            conversation.state === "working" ? { text: "\u25D0 working", style: ACCENT2 } : conversation.state === "waiting" ? { text: "\u25C6 needs your answer", style: { tone: "accent", bold: true } } : conversation.state === "stopped" ? { text: "\u25CB stopped", style: MUTED5 } : { text: "\u25CF ready", style: { tone: "add" } }
-          );
         } else if (model && session) {
           const pending = model.pendingCount();
           const { status, send_requested: queued } = model.sendStatus();
-          if (pending) right.push({ text: queued ? `${pending} sending\u2026 \xB7 ` : `${pending} pending \xB7 `, style: ACCENT2 });
+          if (pending) right.push({ text: queued ? `${pending} sending\u2026 \xB7 ` : `${pending} pending \xB7 `, style: ACCENT3 });
           right.push(
-            status === "listening" ? { text: "\u25CF listening", style: { tone: "add" } } : status === "busy" ? { text: "\u25D0 Claude is working", style: ACCENT2 } : { text: "\u25CB not listening", style: MUTED5 }
+            status === "listening" ? { text: "\u25CF listening", style: { tone: "add" } } : status === "busy" ? { text: "\u25D0 Claude is working", style: ACCENT3 } : { text: "\u25CB not listening", style: MUTED6 }
           );
         }
         const rightWidth = spansWidth(right);
@@ -3715,17 +3995,22 @@ var init_app = __esm({
       }
       #feedBody(columns, height) {
         const model = this.#model;
-        const width = columns - GUTTER;
-        const live = this.#conversation ? liveRows(this.#conversation, { width, render: (markdown, w2) => renderReply(markdown, { width: w2 }) }) : [];
-        if (!model || !model.responses.length && !live.length) return emptyState(this.#emptyText(), height);
-        if (width !== this.#renderWidth) {
+        const conversation = this.#conversation;
+        const waiting = conversation && (conversation.live || conversation.permission || conversation.error);
+        if (!model || !model.responses.length && !waiting) return emptyState(this.#emptyText(), height);
+        if (columns !== this.#renderWidth) {
           this.#renders.clear();
-          this.#renderWidth = width;
+          this.#renderWidth = columns;
         }
         const before = this.#selectedTarget();
-        const feed = buildFeed(model, { width, selectedKey: this.#selected, render: (r, w2) => this.#render(r, w2) });
-        if (live.length && feed.rows.length) feed.rows.push({ left: [], right: [] });
-        for (const spans of live) feed.rows.push({ left: spans, right: [] });
+        const render = (response, width) => this.#render(response, width);
+        const feed = this.#chat ? buildConversation(model, {
+          width: columns,
+          selectedKey: this.#selected,
+          render,
+          renderMarkdown: (markdown, width) => renderReply(markdown, { width }),
+          live: conversation
+        }) : buildFeed(model, { width: columns - GUTTER, selectedKey: this.#selected, render });
         this.#feed = feed;
         if (this.#showReply !== null && feed.replyStarts.has(this.#showReply)) {
           const id = this.#showReply;
@@ -3761,9 +4046,17 @@ var init_app = __esm({
           }
           const cursorShown = !this.#chat || this.#focus === "feed";
           const onTarget = cursorShown && target?.side === "left" && row >= target.start && row < target.end;
-          const gutter = row >= lineFrom && row <= lineTo ? { text: "\u2503 ", style: { tone: "accent", bold: true } } : onTarget && !lines ? { text: "\u258C ", style: ACCENT2 } : { text: "  ", style: PLAIN };
-          const spans = [gutter, ...content.left];
-          if (content.right.length) {
+          const gutter = row >= lineFrom && row <= lineTo ? { text: "\u2503 ", style: { tone: "accent", bold: true } } : onTarget && !lines ? { text: "\u258C ", style: ACCENT3 } : { text: "  ", style: PLAIN };
+          const leadWidth = feed.leadWidth ?? 0;
+          const spans = [...leadSpans(content.lead ?? [], leadWidth), gutter, ...content.left];
+          if (feed.marginRule) {
+            const pad = leadWidth + GUTTER + feed.leftWidth + 1 - spansWidth(spans);
+            spans.push(
+              { text: " ".repeat(Math.max(1, pad)), style: PLAIN },
+              { text: "\u2502 ", style: MUTED6 },
+              ...content.right
+            );
+          } else if (content.right.length) {
             const pad = GUTTER + feed.leftWidth + 3 - spansWidth(spans);
             spans.push({ text: " ".repeat(Math.max(1, pad)), style: PLAIN }, ...content.right);
           }
@@ -3788,9 +4081,9 @@ var init_app = __esm({
         const layout = editing.text.layout(width);
         const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
         editing.scroll = Math.min(Math.max(editing.scroll, layout.cursorRow - visible + 1), layout.cursorRow);
-        const title = clipSpans([{ text: `\u2500\u2500 ${terminalSafe(editing.title)} `, style: MUTED5 }], columns);
-        const rule2 = Math.max(0, columns - spansWidth(title));
-        const rows = [[...title, { text: "\u2500".repeat(rule2), style: MUTED5 }]];
+        const title = clipSpans([{ text: `\u2500\u2500 ${terminalSafe(editing.title)} `, style: MUTED6 }], columns);
+        const rule = Math.max(0, columns - spansWidth(title));
+        const rows = [[...title, { text: "\u2500".repeat(rule), style: MUTED6 }]];
         for (let i = 0; i < visible; i++) {
           const text = layout.rows[editing.scroll + i] ?? "";
           rows.push([
@@ -3802,13 +4095,13 @@ var init_app = __esm({
           const placeholder = "parent_id" in editing.request ? "Your follow-up for Claude\u2026" : "Your note for Claude\u2026";
           rows[1] = [
             { text: "  ", style: PLAIN },
-            { text: placeholder, style: MUTED5 }
+            { text: placeholder, style: MUTED6 }
           ];
         }
         const canSend = this.#model?.canSend() ?? false;
         const hint = this.#chat ? "\u23CE save: it goes with your next message \xB7 \u2325\u23CE new line \xB7 ^E $EDITOR \xB7 esc close" : canSend ? "\u23CE send now \xB7 ^S save for later \xB7 \u2325\u23CE new line \xB7 ^E $EDITOR \xB7 esc close" : "\u23CE save: Claude isn't listening, so it goes with your next prompt \xB7 \u2325\u23CE new line \xB7 esc close";
         rows.push(
-          this.#message ? [{ text: this.#message.text, style: this.#message.style }] : [{ text: hint, style: MUTED5 }]
+          this.#message ? [{ text: this.#message.text, style: this.#message.style }] : [{ text: hint, style: MUTED6 }]
         );
         return {
           rows: rows.map((spans) => clipSpans(spans, columns)),
@@ -3830,7 +4123,7 @@ var init_app = __esm({
           parts.push("tab conversation");
           if (this.#model?.pendingCount()) parts.push("notes go with your message");
           parts.push("^C quit");
-          return [{ text: parts.join(" \xB7 "), style: MUTED5 }];
+          return [{ text: parts.join(" \xB7 "), style: MUTED6 }];
         }
         if (this.#lines) {
           parts.push("j/k pick lines", "n note on these lines", "esc cancel");
@@ -3851,8 +4144,8 @@ var init_app = __esm({
         if (this.#model?.pendingCount() && this.#model.canSend()) parts.push("S send now");
         parts.push("q quit");
         const spans = [];
-        if (this.#newBelow) spans.push({ text: this.#chat ? "\u2193 more below: G \xB7 " : "\u2193 new reply: G \xB7 ", style: ACCENT2 });
-        spans.push({ text: parts.join(" \xB7 "), style: MUTED5 });
+        if (this.#newBelow) spans.push({ text: this.#chat ? "\u2193 more below: G \xB7 " : "\u2193 new reply: G \xB7 ", style: ACCENT3 });
+        spans.push({ text: parts.join(" \xB7 "), style: MUTED6 });
         return spans;
       }
       #emptyText() {
@@ -4086,7 +4379,7 @@ __export(main_exports, {
 });
 import { spawnSync } from "node:child_process";
 import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync6, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir as homedir2, tmpdir } from "node:os";
 import { join as join5 } from "node:path";
 import { setTimeout as sleep3 } from "node:timers/promises";
 function supportsHyperlinks(env) {
@@ -4139,10 +4432,19 @@ async function runChat(args) {
   const api = new ClientApi(client, { startServer: true });
   const sessionId = await api.startConversation(process.cwd(), requested);
   const { app, running } = startScreen(
-    (terminal) => new App({ api, chat: api, ansi: terminalOptions(process.env), sessionId, cwd: process.cwd(), terminal }),
+    (terminal) => new App({
+      api,
+      chat: api,
+      ansi: terminalOptions(process.env),
+      sessionId,
+      cwd: process.cwd(),
+      home: homedir2(),
+      terminal
+    }),
     () => process.stderr.write(`To continue this session: sidenote chat ${sessionId}
 `)
   );
+  setInterval(() => app.render(), 1e3).unref();
   const poll = async (step) => {
     while (running()) {
       try {

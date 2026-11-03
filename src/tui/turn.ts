@@ -1,51 +1,72 @@
-// Rows for the parts of a turn sidenote ran: what the user typed, one-line tool calls, the
-// permission prompt, and the turn still in progress at the bottom of the conversation.
+// Rows for the parts of a turn sidenote ran: what the user typed, the tool calls, the
+// permission prompt, and how a turn ended. src/tui/conversation.ts lays them out.
 import { plural } from "../shared/text.ts";
-import type { ConversationView, LivePart, PermissionPrompt, StoredResponse, TurnStep } from "../shared/types.ts";
+import type { PermissionPrompt, StoredResponse } from "../shared/types.ts";
 import { PLAIN, type Span, type Style } from "./lines.ts";
-import type { RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { spansWidth, wrapSpans } from "./wrap.ts";
 
 const MUTED: Style = { tone: "muted" };
 const ACCENT: Style = { tone: "accent" };
-const YOU = "you › ";
+const PROMPT_MARK = "› ";
 const PERMISSION_DETAIL_ROWS = 12;
+const STEP_GAP = "   ";
 
-/** "you › Fix the failing test", wrapped under itself, with the notes that rode along. */
+/** "› Fix the failing test", wrapped under itself, with the notes that rode along. */
 export function promptRows(prompt: string, notesSent: number, width: number): Span[][] {
   const notes = notesSent ? `+ ${plural(notesSent, "note", "notes")}` : "";
   const text = terminalSafe(prompt).trim();
   if (!text && !notes) return [];
-  const indent = { text: " ".repeat(YOU.length), style: PLAIN };
-  const body = text ? wrapSpans([{ text, style: { bold: true } }], Math.max(10, width - YOU.length)) : [[]];
-  const rows = body.map((spans, i) => [i ? indent : { text: YOU, style: { ...ACCENT, bold: true } }, ...spans]);
+  const mark: Span = { text: PROMPT_MARK, style: { tone: "link", bold: true } };
+  const indent: Span = { text: " ".repeat(PROMPT_MARK.length), style: PLAIN };
+  const body = text ? wrapSpans([{ text, style: { tone: "link" } }], Math.max(10, width - PROMPT_MARK.length)) : [[]];
+  const rows = body.map((spans, i) => [i ? indent : mark, ...spans]);
   if (notes) {
     const last = rows.at(-1)!;
     if (text && spansWidth(last) + notes.length + 2 <= width) last.push({ text: `  ${notes}`, style: MUTED });
-    else rows.push([text ? indent : { text: YOU, style: { ...ACCENT, bold: true } }, { text: notes, style: MUTED }]);
+    else rows.push([text ? indent : mark, { text: notes, style: MUTED }]);
   }
   return rows;
 }
 
-/** "  ⏺ Edit src/app.ts", with ✗ when the call failed and ◌ while it runs. */
-export function stepRow(step: Pick<TurnStep, "tool" | "summary"> & { failed: boolean | null }): Span[] {
-  const mark: Span =
-    step.failed === null
-      ? { text: "  ◌ ", style: ACCENT }
-      : step.failed
-        ? { text: "  ✗ ", style: { tone: "del" } }
-        : { text: "  ⏺ ", style: MUTED };
-  const spans: Span[] = [mark, { text: terminalSafe(step.tool), style: { tone: "muted", bold: true } }];
-  if (step.summary) spans.push({ text: ` ${terminalSafe(step.summary).replace(/\s+/g, " ")}`, style: MUTED });
-  return spans;
+/** A tool call: done (failed false), failed, or still running (failed null). */
+export interface StepView {
+  tool: string;
+  summary: string;
+  failed: boolean | null;
+}
+
+/** Tool calls in a row, wrapped: "✓ read app.py   ✓ npm test   ◐ edit app.py". */
+export function stepRows(steps: readonly StepView[], width: number): Span[][] {
+  const spans: Span[] = [];
+  steps.forEach((step, i) => {
+    if (i) spans.push({ text: STEP_GAP, style: PLAIN });
+    const mark =
+      step.failed === null
+        ? { text: "◐ ", style: ACCENT }
+        : step.failed
+          ? { text: "✗ ", style: { tone: "del" as const } }
+          : { text: "✓ ", style: MUTED };
+    spans.push(mark, { text: stepLabel(step).replace(/ /g, " "), style: step.failed ? { tone: "del" } : MUTED });
+  });
+  // Each call is kept whole on a row (no-break spaces), unless it is wider than a row by itself.
+  return wrapSpans(spans, width).map((row) => row.map((span) => ({ ...span, text: span.text.replace(/ /g, " ") })));
+}
+
+/** "npm test" for a command, "edit src/app.ts" for the rest. */
+function stepLabel(step: StepView): string {
+  const summary = terminalSafe(step.summary).replace(/\s+/g, " ");
+  if (step.tool === "Bash" && summary) return summary;
+  const tool = terminalSafe(step.tool);
+  const name = /^[A-Z][a-z]+$/.test(tool) ? tool.toLowerCase() : tool;
+  return summary ? `${name} ${summary}` : name;
 }
 
 /** How a turn that didn't finish ended, or nothing. */
 export function endedRows(response: Pick<StoredResponse, "ended" | "error">, width: number): Span[][] {
-  if (response.ended === "interrupted") return [[{ text: "  ⏹ Interrupted", style: MUTED }]];
+  if (response.ended === "interrupted") return [[{ text: "⏹ interrupted", style: MUTED }]];
   if (response.ended !== "error") return [];
-  const text = `  ✗ ${terminalSafe(response.error ?? "").replace(/\s+/g, " ") || "The turn failed"}`;
+  const text = `✗ ${terminalSafe(response.error ?? "").replace(/\s+/g, " ") || "The turn failed"}`;
   return wrapSpans([{ text, style: { tone: "del" } }], width);
 }
 
@@ -80,51 +101,4 @@ export function permissionRows(permission: PermissionPrompt, width: number): Spa
     { text: " deny", style: PLAIN },
   ]);
   return rows;
-}
-
-export interface LiveOptions {
-  width: number;
-  render: (markdown: string, width: number) => RenderedReply;
-}
-
-/** The turn in progress, as it streams in, then what waits: a permission prompt, queued messages. */
-export function liveRows(view: ConversationView, options: LiveOptions): Span[][] {
-  const { width } = options;
-  const rows: Span[][] = [];
-  const live = view.live;
-  if (live) {
-    rows.push(...promptRows(live.prompt, live.notes_sent, width));
-    rows.push(rule(view.agent, width));
-    rows.push(...partRows(live.parts, options));
-    if (view.state === "working" && live.parts.at(-1)?.kind !== "text") {
-      rows.push([{ text: "  …", style: MUTED }]);
-    }
-  }
-  if (view.permission) {
-    rows.push([], ...permissionRows(view.permission, width));
-  }
-  for (const text of view.queued) {
-    rows.push([
-      { text: "queued › ", style: MUTED },
-      { text: terminalSafe(text).replace(/\s+/g, " ") || "notes (Send now)", style: MUTED },
-    ]);
-  }
-  if (!live && view.error) {
-    rows.push(...wrapSpans([{ text: terminalSafe(view.error), style: { tone: "del" } }], width));
-  }
-  return rows;
-}
-
-function partRows(parts: readonly LivePart[], options: LiveOptions): Span[][] {
-  const rows: Span[][] = [];
-  for (const part of parts) {
-    if (part.kind === "tool") rows.push(stepRow(part));
-    else if (part.text.trim()) rows.push(...options.render(part.text, options.width).lines.map((line) => line.spans));
-  }
-  return rows;
-}
-
-function rule(label: string, width: number): Span[] {
-  const head = `── ${label} `;
-  return [{ text: head + "─".repeat(Math.max(0, width - head.length)), style: MUTED }];
 }

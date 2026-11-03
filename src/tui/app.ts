@@ -21,7 +21,7 @@ import { PLAIN, type Span, type Style } from "./lines.ts";
 import { renderReply, type RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { buildThread } from "./thread.ts";
-import { liveRows } from "./turn.ts";
+import { buildConversation } from "./conversation.ts";
 import { clipSpans, spansWidth } from "./wrap.ts";
 
 export interface TuiApi {
@@ -61,6 +61,10 @@ export interface AppOptions {
   cwd: string;
   /** Set for a session sidenote runs, which the user messages from here. */
   chat?: ChatApi;
+  /** The home folder, shown as ~ in folder names. */
+  home?: string;
+  /** Seconds since the epoch; tests pass their own. */
+  now?: () => number;
 }
 
 /** Same limit as the page's editor: enough context for Claude without the whole reply. */
@@ -96,6 +100,8 @@ export class App {
   readonly #ansi: AnsiOptions;
   readonly #cwd: string;
   readonly #chat: ChatApi | null;
+  readonly #home: string;
+  readonly #now: () => number;
   #model: Model | null = null;
   #reachable = true;
 
@@ -139,6 +145,8 @@ export class App {
     this.#ansi = options.ansi;
     this.#cwd = options.cwd;
     this.#chat = options.chat ?? null;
+    this.#home = options.home ?? "";
+    this.#now = options.now ?? (() => Date.now() / 1000);
     if (options.sessionId) this.#model = new Model(options.sessionId);
   }
 
@@ -671,12 +679,23 @@ export class App {
     if (!this.#chat) return { rows: [hint], cursor: null };
     const prompt = this.#promptRows(columns);
     const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines;
-    return { rows: [...prompt.rows, hint], cursor: focused ? prompt.cursor : null };
+    const rule: Span[] = [{ text: "─".repeat(columns), style: MUTED }];
+    const cursor = prompt.cursor && { row: prompt.cursor.row + 1, column: prompt.cursor.column };
+    return { rows: [rule, ...prompt.rows, hint], cursor: focused ? cursor : null };
   }
 
   #bodyHeight(): number {
     const { columns, rows } = this.#terminal.size();
     return Math.max(1, rows - 1 - this.#bottom(columns).rows.length);
+  }
+
+  /** The session's folder, with the home folder as ~. */
+  #folder(cwd: string): string {
+    let folder = this.#home && cwd.startsWith(`${this.#home}/`) ? `~${cwd.slice(this.#home.length)}` : cwd;
+    // A deep folder keeps its last two names, so the agent and model still fit.
+    const parts = folder.split("/");
+    if (folder.length > 40 && parts.length > 3) folder = `…/${parts.slice(-2).join("/")}`;
+    return terminalSafe(folder);
   }
 
   #promptRows(columns: number): { rows: Span[][]; cursor: { row: number; column: number } } {
@@ -695,7 +714,9 @@ export class App {
       const pending = this.#model?.pendingCount() ?? 0;
       const placeholder = this.#working ? "Message Claude; it goes when this turn ends…" : "Message Claude…";
       rows[0] = [label, { text: placeholder, style: MUTED }];
-      if (pending) rows[0].push({ text: `   ${plural(pending, "note rides", "notes ride")} along`, style: ACCENT });
+      const along = `${plural(pending, "note rides", "notes ride")} along`;
+      const gap = columns - spansWidth(rows[0]) - along.length;
+      if (pending && gap >= 3) rows[0].push({ text: " ".repeat(gap), style: PLAIN }, { text: along, style: ACCENT });
     }
     return {
       rows: rows.map((spans) => clipSpans(spans, columns)),
@@ -711,35 +732,39 @@ export class App {
     const model = this.#model;
     const session = model?.snapshot.session;
     const name = terminalSafe(session ? session.name || projectName(session.cwd) : projectName(this.#cwd));
-    const left: Span[] = [
-      { text: "sidenote", style: { bold: true } },
-      { text: " · ", style: MUTED },
-      { text: name, style: PLAIN },
-    ];
-    const right: Span[] = [];
     const conversation = this.#conversation;
-    if (conversation) {
-      left.push({ text: ` · ${conversation.agent}`, style: MUTED });
-      if (conversation.model) left.push({ text: ` · ${terminalSafe(conversation.model)}`, style: MUTED });
-    }
+    const left: Span[] = conversation
+      ? [
+          { text: "[", style: { tone: "accent", bold: true } },
+          { text: "sidenote", style: { bold: true } },
+          { text: "]", style: { tone: "accent", bold: true } },
+          { text: `  ${name}`, style: PLAIN },
+          { text: `  ${this.#folder(session?.cwd ?? this.#cwd)} · ${conversation.agent}`, style: MUTED },
+          ...(conversation.model ? [{ text: ` · ${terminalSafe(conversation.model)}`, style: MUTED }] : []),
+        ]
+      : [
+          { text: "sidenote", style: { bold: true } },
+          { text: " · ", style: MUTED },
+          { text: name, style: PLAIN },
+        ];
+    const right: Span[] = [];
     if (!this.#reachable) {
       right.push({ text: "can't reach sidenote, retrying", style: { tone: "del" } });
     } else if (conversation) {
-      const pending = model?.pendingCount() ?? 0;
-      if (pending) right.push({ text: `${plural(pending, "note", "notes")} pending · `, style: ACCENT });
-      if (conversation.context) {
-        const percent = Math.round((100 * conversation.context.used) / conversation.context.limit);
-        right.push({ text: `${percent}% context · `, style: MUTED });
-      }
+      const elapsed = conversation.live ? ` ${duration(this.#now() - conversation.live.started_at)}` : "";
       right.push(
         conversation.state === "working"
-          ? { text: "◐ working", style: ACCENT }
+          ? { text: `◐ working${elapsed}`, style: ACCENT }
           : conversation.state === "waiting"
             ? { text: "◆ needs your answer", style: { tone: "accent", bold: true } }
             : conversation.state === "stopped"
               ? { text: "○ stopped", style: MUTED }
-              : { text: "● ready", style: { tone: "add" } },
+              : { text: "● your turn", style: { tone: "add" } },
       );
+      if (conversation.context) {
+        const percent = Math.round((100 * conversation.context.used) / conversation.context.limit);
+        right.push({ text: `   context ${percent}%`, style: MUTED });
+      }
     } else if (model && session) {
       const pending = model.pendingCount();
       const { status, send_requested: queued } = model.sendStatus();
@@ -760,20 +785,24 @@ export class App {
 
   #feedBody(columns: number, height: number): Span[][] {
     const model = this.#model;
-    const width = columns - GUTTER;
-    const live = this.#conversation
-      ? liveRows(this.#conversation, { width, render: (markdown, w) => renderReply(markdown, { width: w }) })
-      : [];
-    if (!model || (!model.responses.length && !live.length)) return emptyState(this.#emptyText(), height);
-    if (width !== this.#renderWidth) {
+    const conversation = this.#conversation;
+    const waiting = conversation && (conversation.live || conversation.permission || conversation.error);
+    if (!model || (!model.responses.length && !waiting)) return emptyState(this.#emptyText(), height);
+    if (columns !== this.#renderWidth) {
       this.#renders.clear();
-      this.#renderWidth = width;
+      this.#renderWidth = columns;
     }
     const before = this.#selectedTarget();
-    const feed = buildFeed(model, { width, selectedKey: this.#selected, render: (r, w) => this.#render(r, w) });
-    // The turn in progress goes under the stored ones; nothing in it takes notes until it ends.
-    if (live.length && feed.rows.length) feed.rows.push({ left: [], right: [] });
-    for (const spans of live) feed.rows.push({ left: spans, right: [] });
+    const render = (response: StoredResponse, width: number): RenderedReply => this.#render(response, width);
+    const feed = this.#chat
+      ? buildConversation(model, {
+          width: columns,
+          selectedKey: this.#selected,
+          render,
+          renderMarkdown: (markdown, width) => renderReply(markdown, { width }),
+          live: conversation,
+        })
+      : buildFeed(model, { width: columns - GUTTER, selectedKey: this.#selected, render });
     this.#feed = feed;
 
     if (this.#showReply !== null && feed.replyStarts.has(this.#showReply)) {
@@ -821,8 +850,16 @@ export class App {
           : onTarget && !lines
             ? { text: "▌ ", style: ACCENT }
             : { text: "  ", style: PLAIN };
-      const spans = [gutter, ...content.left];
-      if (content.right.length) {
+      const leadWidth = feed.leadWidth ?? 0;
+      const spans = [...leadSpans(content.lead ?? [], leadWidth), gutter, ...content.left];
+      if (feed.marginRule) {
+        const pad = leadWidth + GUTTER + feed.leftWidth + 1 - spansWidth(spans);
+        spans.push(
+          { text: " ".repeat(Math.max(1, pad)), style: PLAIN },
+          { text: "│ ", style: MUTED },
+          ...content.right,
+        );
+      } else if (content.right.length) {
         const pad = GUTTER + feed.leftWidth + 3 - spansWidth(spans);
         spans.push({ text: " ".repeat(Math.max(1, pad)), style: PLAIN }, ...content.right);
       }
@@ -975,6 +1012,25 @@ export class App {
   #ansiRow(spans: Span[]): string {
     return lineToAnsi({ spans, block: -1 }, this.#ansi);
   }
+}
+
+/** The speaker column: right-aligned, two columns short of its width. */
+function leadSpans(lead: Span[], width: number): Span[] {
+  if (!width) return [];
+  const clipped = clipSpans(lead, width - 2);
+  return [
+    { text: " ".repeat(width - 2 - spansWidth(clipped)), style: PLAIN },
+    ...clipped,
+    { text: "  ", style: PLAIN },
+  ];
+}
+
+/** "0:07", "12:30", "1:02:03". */
+export function duration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const [h, m, s] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
 function emptyState(text: string, height: number): Span[][] {
