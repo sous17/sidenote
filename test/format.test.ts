@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_CONTEXT_CHARS, formatNotesForClaude } from "../src/cli/format.ts";
+import { MAX_CONTEXT_CHARS, formatNotes } from "../src/cli/format.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
 function claimed(overrides: Partial<ClaimedNote> = {}): ClaimedNote {
@@ -21,7 +21,7 @@ function claimed(overrides: Partial<ClaimedNote> = {}): ClaimedNote {
 }
 
 test("asks for one marker per note, using a real note id in the example", () => {
-  const text = formatNotesForClaude([claimed(), claimed({ id: 43, parent_id: 41, root_body: "Why?", body: "And?" })]);
+  const text = formatNotes([claimed(), claimed({ id: 43, parent_id: 41, root_body: "Why?", body: "And?" })], "prompt");
   assert.match(text, /answer the user's message as usual/);
   assert.match(text, /\*\*↳ Re: note 41\*\*\nYour answer to note 41\./);
   assert.match(text, /Note 41, on your response from 14:05:\n> line one\n> line two\nWhy\?/);
@@ -32,18 +32,18 @@ test("asks for one marker per note, using a real note id in the example", () => 
 });
 
 test("Send now asks Claude to skip the main answer", () => {
-  const text = formatNotesForClaude([claimed()], { fromBrowser: true });
+  const text = formatNotes([claimed()], "send-now");
   assert.match(text, /clicked Send now/);
   assert.match(text, /skip any main answer/);
 });
 
 test("notes on the whole reply say so, and long context is truncated", () => {
-  assert.match(formatNotesForClaude([claimed({ quote: "" })]), /> \(whole response\)/);
-  const long = formatNotesForClaude([claimed({ body: "x".repeat(20_000) })]);
+  assert.match(formatNotes([claimed({ quote: "" })], "prompt"), /> \(whole response\)/);
+  const long = formatNotes([claimed({ body: "x".repeat(20_000) })], "prompt");
   assert.ok(long.length < MAX_CONTEXT_CHARS + 100);
   assert.match(long, /\[truncated/);
 });
 
 test("nothing to say about no notes", () => {
-  assert.equal(formatNotesForClaude([]), "");
+  assert.equal(formatNotes([], "prompt"), "");
 });

@@ -34,6 +34,7 @@ export function fixture(): { clock: FakeClock; store: Store; delivery: Delivery 
 export function reply(store: Store, text: string, overrides: Partial<NewReply> = {}) {
   return store.addResponse({
     sessionId: SESSION,
+    agent: "claude",
     cwd: "/w/shop-api",
     text,
     sessionName: "",

@@ -121,7 +121,7 @@ export class ThreadPane {
     entries.forEach((note, index) => {
       timeline.push(this.#entry(note));
       const next = entries[index + 1];
-      // One reply from Claude can answer several notes in a row; show it once, after the last.
+      // One reply can answer several notes in a row; show it once, after the last.
       if (isAnswered(note) && next?.answered_by !== note.answered_by) {
         timeline.push(
           this.#answer(
@@ -130,7 +130,7 @@ export class ThreadPane {
           ),
         );
       } else if (note.delivered_at !== null && note.answered_by === null && !next) {
-        timeline.push(el("div", "waiting", "Sent. Claude's reply will appear here."));
+        timeline.push(el("div", "waiting", `Sent. ${this.#model.agentName}'s reply will appear here.`));
       }
     });
     this.#timeline.replaceChildren(...timeline);
@@ -170,13 +170,13 @@ export class ThreadPane {
   }
 
   /**
-   * Claude's answer to a group of notes: the sections it wrote for them, or, when it wrote no
+   * The agent's answer to a group of notes: the sections it wrote for them, or, when it wrote no
    * marked sections, a link to the reply in the feed rather than a copy of it.
    */
   #answer(responseId: number, group: Note[]): HTMLElement {
     const element = el("div", "answer");
     const head = el("div", "entry-head");
-    head.append(el("b", "", "Claude"));
+    head.append(el("b", "", this.#model.agentName));
     element.append(head);
 
     const response = this.#model.response(responseId);

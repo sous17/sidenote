@@ -1,5 +1,12 @@
 // The page's state: the latest snapshot from the server, the open thread, and questions about them.
-import type { Note, SendStatus, StateSnapshot, StoredResponse } from "../shared/types.ts";
+import {
+  AGENTS,
+  type AgentId,
+  type Note,
+  type SendStatus,
+  type StateSnapshot,
+  type StoredResponse,
+} from "../shared/types.ts";
 
 export type AnsweredNote = Note & { answered_by: number };
 
@@ -11,6 +18,20 @@ export class Model {
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
+  }
+
+  get agent(): AgentId {
+    return this.snapshot.session?.agent ?? "claude";
+  }
+
+  /** The agent's name for people: "Claude", "Codex", … */
+  get agentName(): string {
+    return AGENTS[this.agent];
+  }
+
+  /** Only Claude Code can be woken from idle; other agents take Send now when their turn ends. */
+  get canWake(): boolean {
+    return this.agent === "claude";
   }
 
   get notes(): readonly Note[] {
@@ -36,7 +57,7 @@ export class Model {
       .sort((a, b) => a.created_at - b.created_at);
   }
 
-  /** What Claude wrote for this note under its marker, or "" if it didn't. */
+  /** What the agent wrote for this note under its marker, or "" if it didn't. */
   answerText(note: Note): string {
     if (!isAnswered(note)) return "";
     return this.response(note.answered_by)?.note_answers[String(note.id)] ?? "";

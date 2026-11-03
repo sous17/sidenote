@@ -134,7 +134,7 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
       needsToken: true,
       handle: ({ body }) => {
         const input = parseTouchSession(body);
-        store.touchSession(input.session_id, input.session_name, input.cwd);
+        store.touchSession(input.session_id, { agent: input.agent, name: input.session_name, cwd: input.cwd });
         return ok({ ok: true });
       },
     },
@@ -146,6 +146,7 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
         const input = parseNewResponse(body);
         const { response, newSession } = store.addResponse({
           sessionId: input.session_id,
+          agent: input.agent,
           sessionName: input.session_name,
           cwd: input.cwd,
           text: input.text,
@@ -179,6 +180,21 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
         delivery.markBusy(session_id);
         return ok({ comments: store.claimPending(session_id) } satisfies ClaimResult);
       },
+    },
+    {
+      method: "POST",
+      path: "/api/turns/start",
+      needsToken: true,
+      handle: ({ body }) => {
+        delivery.startTurn(parseClaim(body).session_id);
+        return ok({ ok: true });
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/turns/end",
+      needsToken: true,
+      handle: ({ body }) => ok({ comments: delivery.endTurn(parseClaim(body).session_id) } satisfies ClaimResult),
     },
     {
       method: "POST",

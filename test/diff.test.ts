@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CODE_CHANGE_RULE, formatNotesForClaude, sessionContext } from "../src/cli/format.ts";
+import { CODE_CHANGE_RULE, formatNotes, sessionContext } from "../src/cli/format.ts";
 import { editedParts, looksLikeDiff, parseUnifiedDiff } from "../src/shared/diff.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
@@ -87,8 +87,8 @@ test("the instructions sent with notes ask for code as diffs", () => {
     response_created_at: 0,
     root_body: null,
   };
-  assert.ok(formatNotesForClaude([note]).includes(CODE_CHANGE_RULE));
-  assert.ok(formatNotesForClaude([note], { fromBrowser: true }).includes(CODE_CHANGE_RULE));
+  assert.ok(formatNotes([note], "prompt").includes(CODE_CHANGE_RULE));
+  assert.ok(formatNotes([note], "send-now").includes(CODE_CHANGE_RULE));
   assert.match(CODE_CHANGE_RULE, /```diff/);
 });
 

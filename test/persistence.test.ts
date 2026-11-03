@@ -49,7 +49,14 @@ test("reads stores from older versions, prunes them, and saves them privately", 
   const saved = JSON.parse(readFileSync(file, "utf8"));
   assert.deepEqual(Object.keys(saved.sessions), [SESSION]);
   assert.equal(statSync(file).mode & 0o777, 0o600);
-  store.addResponse({ sessionId: SESSION, cwd: "/w", text: "new", sessionName: "", createdAt: undefined });
+  store.addResponse({
+    sessionId: SESSION,
+    agent: "claude",
+    cwd: "/w",
+    text: "new",
+    sessionName: "",
+    createdAt: undefined,
+  });
   assert.equal(new Store({ file }).sessionContent(SESSION).responses.length, 2);
 });
 
@@ -62,8 +69,9 @@ test("drops malformed session ids and repairs next_id", () => {
     ],
     comments: [],
     next_id: 3,
-  });
+  } as unknown as Parameters<typeof migrate>[0]);
   assert.deepEqual([...data.sessions.keys()], ["ok"]);
+  assert.equal(data.sessions.get("ok")?.agent, "claude", "sessions from before agents were tracked are Claude's");
   assert.deepEqual(
     data.responses.map((r) => r.id),
     [9],

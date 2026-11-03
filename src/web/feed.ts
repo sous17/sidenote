@@ -310,7 +310,11 @@ export class Feed {
       link.title = "Open this thread";
       return link;
     });
-    const label = el("span", "answered-label", `↳ Claude answered ${plural(noteIds.size, "note", "notes")}`);
+    const label = el(
+      "span",
+      "answered-label",
+      `↳ ${this.#model.agentName} answered ${plural(noteIds.size, "note", "notes")}`,
+    );
     card.answered.replaceChildren(label, ...links);
   }
 
@@ -328,7 +332,7 @@ export class Feed {
     const latestAnswer = entries.map((note) => this.#model.answerText(note)).findLast(Boolean);
     if (latestAnswer) {
       const snippet = el("div", "mnote-answer");
-      snippet.append(el("b", "", "Claude "), truncate(plainText(latestAnswer), 110));
+      snippet.append(el("b", "", `${this.#model.agentName} `), truncate(plainText(latestAnswer), 110));
       element.append(snippet);
     }
 

@@ -38,7 +38,7 @@ find_node() {
 
 if ! node=$(find_node); then
   case "$1" in
-    hook-*)
+    hook | hook-*)
       # A hook must never break the Claude session.
       mkdir -p "$HOME/.sidenote"
       echo "$(date) sidenote: Node.js not found; set SIDENOTE_NODE" >> "$HOME/.sidenote/server.log"

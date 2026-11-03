@@ -4,14 +4,25 @@ import type { NewNoteRequest, SessionState } from "../shared/types.ts";
 import type { Api } from "./api.ts";
 import type { Model } from "./model.ts";
 
-const HINTS: Readonly<Record<SessionState, string>> = {
-  listening: "⌘↵ send now · Save keeps it for your next prompt",
-  busy: "Claude is working: Send now goes as soon as it finishes",
-  offline: "Session not listening: saved notes go with your next prompt there",
-};
+function hintFor(status: SessionState, model: Model): string {
+  const agent = model.agentName;
+  switch (status) {
+    case "listening":
+      return "⌘↵ send now · Save keeps it for your next prompt";
+    case "busy":
+      return `${agent} is working: Send now goes as soon as it finishes`;
+    case "offline":
+      return model.canWake
+        ? "Session not listening: saved notes go with your next prompt there"
+        : `Saved notes go with your next prompt to ${agent}`;
+  }
+}
 
-const OFFLINE_TITLE =
-  "This Claude session isn't listening: it may be closed, or hasn't finished a reply since sidenote started";
+function offlineTitle(model: Model): string {
+  return model.canWake
+    ? `This ${model.agentName} session isn't listening: it may be closed, or hasn't finished a reply since sidenote started`
+    : `${model.agentName} can't be woken while idle: Send now works while it's working on a prompt`;
+}
 
 /** A Send now button and the hint beside it, in an editor or the reply box. */
 export interface SendControl {
@@ -53,7 +64,7 @@ export class Sending {
     return () => this.#controls.delete(control);
   }
 
-  /** Saves a note; with sendNow, also asks the session's Claude to answer right away. */
+  /** Saves a note; with sendNow, also asks the session's agent to answer right away. */
   async save(note: NewNoteRequest, sendNow: boolean): Promise<void> {
     await this.#api.addNote(note);
     if (sendNow) await this.#api.send(this.#model.sessionId);
@@ -73,8 +84,8 @@ export class Sending {
     this.#sendNow.disabled = false;
     this.#sendNow.title =
       status === "busy"
-        ? "Claude is working: your notes go as soon as it finishes"
-        : "Send pending notes to Claude now, without typing in the terminal";
+        ? `${this.#model.agentName} is working: your notes go as soon as it finishes`
+        : `Send pending notes to ${this.#model.agentName} now, without typing a prompt`;
     for (const control of this.#controls) this.#updateControl(control);
   }
 
@@ -86,8 +97,8 @@ export class Sending {
   #updateControl({ send, hint }: SendControl): void {
     const { status } = this.#model.sendStatus();
     send.disabled = status === "offline";
-    send.title = status === "offline" ? OFFLINE_TITLE : "";
-    hint.textContent = HINTS[status];
+    send.title = status === "offline" ? offlineTitle(this.#model) : "";
+    hint.textContent = hintFor(status, this.#model);
   }
 }
 

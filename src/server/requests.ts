@@ -2,6 +2,8 @@
 // throws BadRequest. Handlers never touch raw input.
 import {
   SESSION_ID_PATTERN,
+  isAgentId,
+  type AgentId,
   type ClaimRequest,
   type EpochSeconds,
   type NewResponseRequest,
@@ -61,6 +63,13 @@ function matching(body: JsonObject, key: string, pattern: RegExp): string {
   return value;
 }
 
+/** The agent a request comes from; hooks from before other agents were supported send none. */
+function agent(body: JsonObject): AgentId {
+  const value = body["agent"] ?? "claude";
+  if (!isAgentId(value)) throw new BadRequest("agent is not one sidenote supports");
+  return value;
+}
+
 export function sessionId(value: string): string {
   if (!SESSION_ID_PATTERN.test(value)) throw new BadRequest("session_id is malformed");
   return value;
@@ -81,6 +90,7 @@ export function parseNewResponse(input: unknown): Required<Omit<NewResponseReque
   }
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    agent: agent(body),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
     cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
     text: string(body, "text", LIMITS.replyText),
@@ -111,6 +121,7 @@ export function parseTouchSession(input: unknown): Required<TouchSessionRequest>
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    agent: agent(body),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
     cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
   };
