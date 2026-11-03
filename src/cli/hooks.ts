@@ -10,7 +10,7 @@ import type {
   WaiterRequest,
 } from "../shared/types.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
-import { formatNotesForClaude } from "./format.ts";
+import { formatNotesForClaude, sessionContext } from "./format.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
 const WAITER_POLL_MS = 1000;
@@ -47,6 +47,12 @@ export async function hookStop(input: HookInput): Promise<void> {
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
   if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
+}
+
+/** SessionStart: tells Claude how to show code changes so the window can draw them as diffs. */
+export async function hookSession(): Promise<void> {
+  const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
+  process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
 /** UserPromptSubmit: attaches the session's pending notes to the prompt as context. */

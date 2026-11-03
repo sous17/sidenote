@@ -4,15 +4,21 @@
 //
 // It runs after sanitizing and builds everything with DOM calls and textContent, so the diff's
 // text can never become markup.
-import { parseUnifiedDiff, type DiffFile, type DiffLine } from "../shared/diff.ts";
+import { looksLikeDiff, parseUnifiedDiff, type DiffFile, type DiffLine } from "../shared/diff.ts";
 import { el } from "./dom.ts";
 
-const DIFF_CODE = "pre > code.language-diff, pre > code.language-patch";
+/** Code blocks labeled as diffs are always drawn as diffs; unlabeled ones when they clearly are one. */
+const LABELED = "pre > code.language-diff, pre > code.language-patch";
+const UNLABELED = "pre > code:not([class])";
 const SIGNS: Readonly<Record<DiffLine["kind"], string>> = { add: "+", del: "−", context: " ", hunk: "" };
 
-/** Replaces each ```diff block under root with a rendered diff. */
+/** Replaces each diff block under root with a rendered diff. */
 export function renderDiffs(root: HTMLElement): void {
-  const blocks = [...root.querySelectorAll<HTMLElement>(DIFF_CODE)].flatMap((code) => {
+  // One query keeps document order, so "the first file starts open" means the first on the page.
+  const candidates = [...root.querySelectorAll<HTMLElement>(`${LABELED}, ${UNLABELED}`)].filter(
+    (code) => code.matches(LABELED) || looksLikeDiff(code.textContent ?? ""),
+  );
+  const blocks = candidates.flatMap((code) => {
     const pre = code.parentElement;
     const files = parseUnifiedDiff(code.textContent ?? "");
     return pre && files.length ? [{ pre, files }] : [];

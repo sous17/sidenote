@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CODE_CHANGE_RULE, formatNotesForClaude } from "../src/cli/format.ts";
-import { editedParts, parseUnifiedDiff } from "../src/shared/diff.ts";
+import { CODE_CHANGE_RULE, formatNotesForClaude, sessionContext } from "../src/cli/format.ts";
+import { editedParts, looksLikeDiff, parseUnifiedDiff } from "../src/shared/diff.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
 const TWO_FILES = `diff --git a/src/rateLimit.ts b/src/rateLimit.ts
@@ -90,4 +90,18 @@ test("the instructions sent with notes ask for code as diffs", () => {
   assert.ok(formatNotesForClaude([note]).includes(CODE_CHANGE_RULE));
   assert.ok(formatNotesForClaude([note], { fromBrowser: true }).includes(CODE_CHANGE_RULE));
   assert.match(CODE_CHANGE_RULE, /```diff/);
+});
+
+test("recognizes unlabeled diffs, and leaves plain code alone", () => {
+  assert.equal(looksLikeDiff("--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b"), true);
+  assert.equal(looksLikeDiff("@@ -3,2 +3,2 @@\n-old\n+new"), true);
+  assert.equal(looksLikeDiff("diff --git a/x b/x\n+added"), true);
+  assert.equal(looksLikeDiff("const a = 1;\n-x;\n+y;"), false, "no header: could be plain code");
+  assert.equal(looksLikeDiff("- item one\n- item two"), false, "a markdown list is not a diff");
+  assert.equal(looksLikeDiff("@@ -1 +1 @@\n unchanged only"), false, "a header with no changes");
+});
+
+test("every session is asked for diffs while sidenote is on", () => {
+  assert.ok(sessionContext().includes(CODE_CHANGE_RULE));
+  assert.match(CODE_CHANGE_RULE, /not only in command output/);
 });

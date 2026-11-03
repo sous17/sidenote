@@ -4,14 +4,24 @@ import type { ClaimedNote, EpochSeconds } from "../shared/types.ts";
 export const MAX_CONTEXT_CHARS = 9500;
 
 /**
- * Code in an answer should come as diffs, which the sidenote window draws step by step: each
+ * Code changes should come as diffs, which the sidenote window draws step by step: each
  * explanation, then the change it describes (see src/web/diffview.ts).
  */
 export const CODE_CHANGE_RULE =
-  "When a note asks to see, show or change code, show it as changes to the current code, not " +
-  "as whole files: for each change, a sentence or two on what it does and why, then a ```diff " +
-  "block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines " +
-  "and use @@ hunks with about three lines of context. Use one block per file or per step.";
+  "When you show a code change, or the user asks to see code or a diff, show it as changes to " +
+  "the current code, not as whole files: for each change, a sentence or two on what it does and " +
+  "why, then a ```diff block in unified diff format. Start each block with `--- a/<path>` and " +
+  "`+++ b/<path>` lines and use @@ hunks with about three lines of context. Use one block per " +
+  "file or per step. Put the diff in your reply itself, not only in command output such as " +
+  "`git diff`, because the sidenote window shows only your replies.";
+
+/** Added to every session while sidenote is on, so requests typed in the terminal follow it too. */
+export function sessionContext(): string {
+  return (
+    "The user follows this session in the sidenote browser window, which shows your replies and draws ```diff blocks as diffs. " +
+    CODE_CHANGE_RULE
+  );
+}
 
 /**
  * Describes delivered notes for Claude, and asks it to answer each under a marker line

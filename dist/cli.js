@@ -133,7 +133,10 @@ import { setTimeout as sleep2 } from "node:timers/promises";
 
 // src/cli/format.ts
 var MAX_CONTEXT_CHARS = 9500;
-var CODE_CHANGE_RULE = "When a note asks to see, show or change code, show it as changes to the current code, not as whole files: for each change, a sentence or two on what it does and why, then a ```diff block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines and use @@ hunks with about three lines of context. Use one block per file or per step.";
+var CODE_CHANGE_RULE = "When you show a code change, or the user asks to see code or a diff, show it as changes to the current code, not as whole files: for each change, a sentence or two on what it does and why, then a ```diff block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines and use @@ hunks with about three lines of context. Use one block per file or per step. Put the diff in your reply itself, not only in command output such as `git diff`, because the sidenote window shows only your replies.";
+function sessionContext() {
+  return "The user follows this session in the sidenote browser window, which shows your replies and draws ```diff blocks as diffs. " + CODE_CHANGE_RULE;
+}
 function formatNotesForClaude(notes, options = {}) {
   const first = notes[0];
   if (!first) return "";
@@ -289,6 +292,11 @@ async function hookStop(input) {
   const result = await client.post("/api/responses", reply);
   if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
 }
+async function hookSession() {
+  const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
+  process.stdout.write(`${JSON.stringify(output)}
+`);
+}
 async function hookPrompt(input) {
   const client = await SidenoteClient.connect();
   if (!client || !input.session_id) return;
@@ -339,6 +347,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
+  sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
@@ -451,6 +460,7 @@ var commands = {
     }
     console.log(`Imported ${imported} earlier replies of this session.`);
   },
+  "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-wait": () => runHook(hookWait)

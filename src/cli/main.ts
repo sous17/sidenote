@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "no
 import { paths } from "../node/paths.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
-import { hookPrompt, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import { hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -19,6 +19,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
+  sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
@@ -148,6 +149,7 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`Imported ${imported} earlier replies of this session.`);
   },
 
+  "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-wait": () => runHook(hookWait),

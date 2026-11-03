@@ -89,6 +89,7 @@ test("hooks do nothing while sidenote is off", async () => {
   const result = await run(["hook-stop"], hookInput({ last_assistant_message: "hi" }));
   assert.equal(result.code, 0);
   assert.equal(existsSync(join(home, ".sidenote", "server.json")), false);
+  assert.equal((await run(["hook-session"], hookInput({ source: "startup" }))).stdout, "");
 });
 
 test("windows open with a single-use launch code, never the token", async () => {
@@ -151,6 +152,15 @@ test("Stop, Send now waking Claude with exit code 2, and a terminal prompt inste
     .hookSpecificOutput.additionalContext;
   assert.match(context, /Their earlier note: Expand\nFollow-up: Shorter please/);
   assert.equal((await nextWaiter).code, 0);
+});
+
+test("while on, each session start asks Claude for code changes as diffs", async () => {
+  const result = await run(["hook-session"], hookInput({ source: "startup" }));
+  const output = JSON.parse(result.stdout) as {
+    hookSpecificOutput: { hookEventName: string; additionalContext: string };
+  };
+  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(output.hookSpecificOutput.additionalContext, /```diff block/);
 });
 
 test("status and open act on the session", async () => {

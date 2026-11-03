@@ -20,9 +20,9 @@ note on its own, and each answer lands in that note's thread.
   **Save** keeps a note until your next prompt instead.
 - **Threads.** Click a note to open its thread beside the feed: your note, Claude's answer,
   your follow-ups. Claude's answer appears only in the thread, never duplicated in the feed.
-- **Code changes as diffs.** When a note asks to see or change code, Claude explains each
-  change and shows it as a diff, with the edited words highlighted. Answers that touch several
-  files fold each file open from its header.
+- **Code changes as diffs.** When you ask Claude to see or change code, in a note or in the
+  terminal, it explains each change and shows it as a diff, with the edited words highlighted.
+  Answers that touch several files fold each file open from its header.
 - **One window per session.** Each Claude Code session gets its own window, titled with the
   name you gave the session with `/rename` (or its project folder). Notes always go back to
   the session they were written on.
@@ -129,13 +129,15 @@ the full path of your `node` binary. Problems are logged to `~/.sidenote/server.
 
 ## How it works
 
-Three hooks connect Claude Code to a small local server:
+Four hooks connect Claude Code to a small local server:
 
 - **Stop** (`hook-stop`) posts each finished reply to the server, starting it if needed, and
   opens the session's window the first time that session replies.
 - **Stop, in the background** (`hook-wait`, with `asyncRewake`) waits for **Send now**. When you
   click it, the hook prints your notes and exits with code 2, which wakes Claude to answer.
 - **UserPromptSubmit** (`hook-prompt`) attaches pending notes to the prompt you type.
+- **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
+  draw them. It applies to sessions started, resumed or cleared while sidenote is on.
 
 When notes reach Claude, it is asked to answer each one under a line like `**↳ Re: note 12**`.
 The server moves those sections out of the reply and into the notes' threads. If Claude leaves

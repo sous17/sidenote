@@ -23,6 +23,21 @@ const HUNK = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@ ?(.*)$/;
 const METADATA =
   /^(?:diff --git |index |new file mode |deleted file mode |similarity index |rename (?:from|to) |\\ No newline)/;
 
+/**
+ * Whether unlabeled text is clearly a unified diff: it has a git header, a ---/+++ file header
+ * or an @@ hunk header, and at least one changed line. Plain code never has those headers.
+ */
+export function looksLikeDiff(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  const hasHeader = lines.some(
+    (line, i) =>
+      line.startsWith("diff --git ") ||
+      HUNK.test(line) ||
+      (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ ")),
+  );
+  return hasHeader && lines.some((line) => /^[+-](?![+-]{2} )/.test(line));
+}
+
 /** Splits a unified diff into files; text before any file header belongs to an unnamed file. */
 export function parseUnifiedDiff(text: string): DiffFile[] {
   if (!text.trim()) return [];
