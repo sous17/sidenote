@@ -3826,9 +3826,14 @@ var init_main = __esm({
 });
 
 // src/cli/main.ts
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync4, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
+
+// src/agent/claude.ts
+var HEADLESS_ENV = "SIDENOTE_HEADLESS";
+
+// src/cli/main.ts
 init_paths();
 init_client();
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync4, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
 
 // src/cli/config.ts
 init_paths();
@@ -4227,7 +4232,7 @@ var commands = {
   "hook-wait": () => runHook(hookWait)
 };
 async function runHook(handler) {
-  if (!isEnabled()) return;
+  if (!isEnabled() || process.env[HEADLESS_ENV]) return;
   try {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);

@@ -33,7 +33,8 @@ const TERMINAL_VARIABLES = [
   "ITERM_SESSION_ID",
 ];
 
-function run(args: string[], stdin = "", terminal: Record<string, string> = {}): Promise<Run> {
+/** Runs the launcher; extra holds variables to set, such as a terminal's. */
+function run(args: string[], stdin = "", extra: Record<string, string> = {}): Promise<Run> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
@@ -41,7 +42,7 @@ function run(args: string[], stdin = "", terminal: Record<string, string> = {}):
     SIDENOTE_NODE: process.execPath,
   };
   for (const name of TERMINAL_VARIABLES) delete env[name];
-  const child = spawn(launcher, args, { env: { ...env, ...terminal } });
+  const child = spawn(launcher, args, { env: { ...env, ...extra } });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
@@ -127,6 +128,19 @@ test("windows open with a single-use launch code, never the token", async () => 
   // A placeholder that wasn't expanded falls back to the latest session (none yet).
   await run(["open", "${CLAUDE_SESSION_ID}"]);
   assert.equal((await lastOpened()).search, "");
+});
+
+test("hooks skip sessions sidenote runs headless", async () => {
+  const before = await api<StateSnapshot>("GET", `/api/state?v=-1&s=headless-session`);
+  assert.equal(before.session, null);
+  const input = JSON.stringify({ session_id: "headless-session", cwd: "/w/demo", last_assistant_message: "hi" });
+  const result = await run(["hook-stop"], input, { SIDENOTE_HEADLESS: "1" });
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, "");
+  const prompt = await run(["hook-session"], hookInput({ source: "startup" }), { SIDENOTE_HEADLESS: "1" });
+  assert.equal(prompt.stdout, "");
+  const after = await api<StateSnapshot>("GET", `/api/state?v=-1&s=headless-session`);
+  assert.equal(after.session, null);
 });
 
 test("Stop, Send now waking Claude with exit code 2, and a terminal prompt instead", async () => {

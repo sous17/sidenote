@@ -1,5 +1,6 @@
 // sidenote CLI: the /sidenote:* commands and the three Claude Code hooks.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { HEADLESS_ENV } from "../agent/claude.ts";
 import { paths } from "../node/paths.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
@@ -191,9 +192,12 @@ const commands: Record<string, () => Promise<void>> = {
   "hook-wait": () => runHook(hookWait),
 };
 
-/** A hook must never break the Claude session: failures go to the log, and it exits 0. */
+/**
+ * A hook must never break the Claude session: failures go to the log, and it exits 0. Sessions
+ * sidenote runs itself get their replies and notes from the session host, so hooks skip them.
+ */
 async function runHook(handler: (input: HookInput) => Promise<void>): Promise<void> {
-  if (!isEnabled()) return;
+  if (!isEnabled() || process.env[HEADLESS_ENV]) return;
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk);
