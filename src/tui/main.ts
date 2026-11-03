@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { SidenoteClient } from "../cli/client.ts";
+import { claimPane } from "../cli/panes.ts";
 import { paths } from "../node/paths.ts";
 import { SESSION_ID_PATTERN } from "../shared/types.ts";
 import type { AnsiOptions } from "./ansi.ts";
@@ -51,9 +52,11 @@ export async function runTui(args: string[]): Promise<void> {
   const { client } = await SidenoteClient.ensure();
   const screen = new Screen(process.stdin, process.stdout);
   let running = true;
+  let releasePane = (): void => {};
   const quit = (code = 0): never => {
     running = false;
     screen.stop();
+    releasePane();
     process.exit(code);
   };
   const app = new App({
@@ -72,6 +75,7 @@ export async function runTui(args: string[]): Promise<void> {
   for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => quit());
   process.on("uncaughtException", (error) => {
     screen.stop();
+    releasePane();
     console.error(`sidenote tui stopped: ${error.message}`);
     process.exit(1);
   });
@@ -84,8 +88,15 @@ export async function runTui(args: string[]): Promise<void> {
     },
     () => app.render(),
   );
+  let claimed: string | null = null;
   while (running) {
     await app.refresh();
+    // Once the session is known, record this pane, so sidenote doesn't open a second one for it.
+    if (app.sessionId && app.sessionId !== claimed) {
+      releasePane();
+      releasePane = claimPane(app.sessionId);
+      claimed = app.sessionId;
+    }
     await sleep(POLL_INTERVAL_MS);
   }
 }

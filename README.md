@@ -88,16 +88,29 @@ claude plugin install sidenote@sidenote
 
 | Command              | What it does                                                                     |
 | -------------------- | -------------------------------------------------------------------------------- |
-| `/sidenote:on`       | Turns sidenote on and opens this session's window                                |
+| `/sidenote:on`       | Turns sidenote on and opens this session's window. Add `terminal` or `browser`   |
 | `/sidenote:off`      | Turns it off for all sessions. Pending notes are kept for next time              |
-| `/sidenote:open`     | Reopens this session's window, for example after closing the tab                 |
+| `/sidenote:open`     | Reopens this session's window or terminal pane, for example after closing it     |
 | `/sidenote:status`   | Shows this session's window address, replies, pending notes, and Send now status |
 | `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too      |
 
 ### In the terminal
 
-If you'd rather not leave the terminal, open a second pane next to Claude Code and run the
-command `/sidenote:status` prints on its `terminal:` line:
+If you'd rather not leave the terminal, turn sidenote on with:
+
+```
+/sidenote:on terminal
+```
+
+From then on, each session opens in a terminal pane beside Claude Code instead of a browser
+window, and Claude's pane keeps the focus. `/sidenote:on browser` switches back; the choice is
+remembered for all sessions.
+
+sidenote opens the pane itself in **tmux**, **WezTerm**, and **kitty** (with
+[remote control](https://sw.kovidgoyal.net/kitty/remote-control/) on and `listen_on` set, and
+the `splits` layout for a side-by-side pane). In other terminals, it tells you once per session
+the command to run in a pane you open yourself; `/sidenote:status` prints it too, on its
+`terminal:` line:
 
 ```shell
 '…/sidenote/bin/sidenote' tui <session id>

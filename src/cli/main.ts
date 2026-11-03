@@ -1,11 +1,11 @@
 // sidenote CLI: the /sidenote:* commands and the three Claude Code hooks.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { paths } from "../node/paths.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
+import { isUi, readUi, writeUi, type Ui } from "./config.ts";
 import { hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import { openTerminal, shellQuote, tuiCommand } from "./panes.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -16,7 +16,9 @@ import {
 
 const USAGE = `sidenote: leave inline notes on Claude Code replies in your browser or terminal.
 
-  sidenote on [session]        turn sidenote on and open the session's window
+  sidenote on [session] [terminal|browser]
+                               turn sidenote on and open the session's window, in the browser
+                               or in a terminal pane; the choice is remembered
   sidenote tui [session]       show the session's replies in this terminal; without a session,
                                the latest one in this folder
   sidenote off                 turn sidenote off; unsent notes are kept
@@ -34,14 +36,6 @@ session is used.`;
 const NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
 
 const isEnabled = (): boolean => existsSync(paths.enabledFlag());
-
-/** The launcher, next to dist/: the plugin's bin/ isn't on the user's PATH. */
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "sidenote");
-
-/** Quoted for a POSIX shell, so a folder with spaces or quotes still pastes as one word. */
-function shellQuote(text: string): string {
-  return `'${text.replace(/'/g, `'\\''`)}'`;
-}
 
 /** The command's session argument, unless it is missing or an unexpanded placeholder. */
 function sessionArgument(): string | undefined {
@@ -69,12 +63,28 @@ async function touchSession(client: SidenoteClient, sessionId: string): Promise<
   });
 }
 
-/** Opens the window of the given session, or of the latest one, and says which. */
-async function openWindow(client: SidenoteClient, requested: string | undefined): Promise<string> {
+/** The way to show sessions this command asks for: "terminal" or "browser", or none. */
+function uiArgument(): Ui | undefined {
+  const value = process.argv[4]?.trim().toLowerCase();
+  if (!value || value.includes("$")) return undefined;
+  if (isUi(value)) return value;
+  throw new UsageError(`"${value}" isn't a choice: use /sidenote:on terminal or /sidenote:on browser.`);
+}
+
+class UsageError extends Error {}
+
+/**
+ * Shows the given session, or the latest one, the way the user chose: its browser window, or
+ * sidenote tui in a terminal pane beside Claude. Says what it did.
+ */
+async function show(client: SidenoteClient, requested: string | undefined): Promise<string> {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? (await latestSession(client));
-  openBrowser(await client.windowUrl(sessionId));
   const { session } = await fetchState(client, sessionId);
+  if (readUi() === "terminal") {
+    return (await openTerminal(sessionId, session?.cwd || process.cwd(), process.env)).message;
+  }
+  openBrowser(await client.windowUrl(sessionId));
   const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
   return `Opened the ${label} window in your browser (${client.origin}).`;
 }
@@ -82,9 +92,11 @@ async function openWindow(client: SidenoteClient, requested: string | undefined)
 const commands: Record<string, () => Promise<void>> = {
   async on() {
     mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
+    const ui = uiArgument();
     writeFileSync(paths.enabledFlag(), "");
+    if (ui) writeUi(ui);
     const { client } = await SidenoteClient.ensure();
-    console.log(`sidenote is on. ${await openWindow(client, sessionArgument())}`);
+    console.log(`sidenote is on. ${await show(client, sessionArgument())}`);
   },
 
   async off() {
@@ -102,11 +114,12 @@ const commands: Record<string, () => Promise<void>> = {
 
   async open() {
     const client = await SidenoteClient.connect();
-    console.log(client ? await openWindow(client, sessionArgument()) : NOT_RUNNING);
+    console.log(client ? await show(client, sessionArgument()) : NOT_RUNNING);
   },
 
   async status() {
     console.log(`enabled: ${isEnabled() ? "yes" : "no"}`);
+    console.log(`shows in: ${readUi()}`);
     const client = await SidenoteClient.connect();
     if (!client) {
       console.log("server:  not running");
@@ -125,7 +138,11 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
-    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
+    console.log(
+      `terminal: ${tuiCommand(session.id)
+        .map((part, i) => (i ? part : shellQuote(part)))
+        .join(" ")}`,
+    );
   },
 
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
@@ -191,7 +208,13 @@ async function runHook(handler: (input: HookInput) => Promise<void>): Promise<vo
 
 const command = commands[process.argv[2] ?? "status"];
 if (command) {
-  await command();
+  try {
+    await command();
+  } catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    console.log(error.message);
+    process.exitCode = 2;
+  }
 } else {
   console.log(USAGE);
   process.exitCode = 2;

@@ -16,6 +16,10 @@ var paths = {
   portFile: () => join(stateDir(), "port"),
   logFile: () => join(stateDir(), "server.log"),
   enabledFlag: () => join(stateDir(), "enabled"),
+  /** Whether sessions open in the browser or a terminal pane. */
+  configFile: () => join(stateDir(), "config.json"),
+  /** One file per running sidenote tui, holding its pid, so a second pane isn't opened. */
+  panesDir: () => join(stateDir(), "panes"),
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
 
