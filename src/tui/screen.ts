@@ -51,7 +51,9 @@ export class Screen {
     const count = Math.max(rows.length, this.#previous.length);
     for (let i = 0; i < count; i++) {
       const row = rows[i] ?? "";
-      if (row !== this.#previous[i]) out += `\x1b[${i + 1};1H\x1b[0m${row}\x1b[0m\x1b[K`;
+      // Clear the row before writing it: with autowrap off, a full row leaves the cursor on its
+      // last column, and clearing after the text would erase that column's character.
+      if (row !== this.#previous[i]) out += `\x1b[${i + 1};1H\x1b[0m\x1b[2K${row}\x1b[0m`;
     }
     if (cursor) out += `\x1b[${cursor.row + 1};${cursor.column + 1}H\x1b[?25h`;
     this.#output.write(out + SYNC_END);

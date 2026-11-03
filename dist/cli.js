@@ -3684,7 +3684,7 @@ var init_screen = __esm({
         const count = Math.max(rows.length, this.#previous.length);
         for (let i = 0; i < count; i++) {
           const row = rows[i] ?? "";
-          if (row !== this.#previous[i]) out += `\x1B[${i + 1};1H\x1B[0m${row}\x1B[0m\x1B[K`;
+          if (row !== this.#previous[i]) out += `\x1B[${i + 1};1H\x1B[0m\x1B[2K${row}\x1B[0m`;
         }
         if (cursor) out += `\x1B[${cursor.row + 1};${cursor.column + 1}H\x1B[?25h`;
         this.#output.write(out + SYNC_END);
