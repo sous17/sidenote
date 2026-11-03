@@ -324,23 +324,69 @@ var init_panes = __esm({
 });
 
 // src/tui/api.ts
-var ClientApi;
+var LONG_POLL_TIMEOUT_MS, ClientApi;
 var init_api = __esm({
   "src/tui/api.ts"() {
     "use strict";
     init_client();
+    LONG_POLL_TIMEOUT_MS = 35e3;
     ClientApi = class {
       #client;
-      constructor(client) {
+      /** The folder of the session this window runs, to start it again after a server restart. */
+      #chatCwd = "";
+      #startServer;
+      /** startServer: start the server again when it is gone, as sidenote chat needs it to run the session. */
+      constructor(client, options = {}) {
         this.#client = client;
+        this.#startServer = options.startServer ?? false;
+      }
+      /** Starts a session sidenote runs in cwd, or continues sessionId; resolves with its id. */
+      async startConversation(cwd, sessionId) {
+        this.#chatCwd = cwd;
+        const request = sessionId ? { cwd, session_id: sessionId } : { cwd };
+        const result = await this.#call((client) => client.post("/api/conversations", request));
+        return result.session_id;
+      }
+      async conversation(knownVersion, sessionId, wait) {
+        const path = (version2) => `/api/conversation?v=${version2}&s=${encodeURIComponent(sessionId)}${wait ? "&wait=1" : ""}`;
+        let version = knownVersion;
+        return this.#hosted(sessionId, (client) => {
+          const request = client.get(path(version), LONG_POLL_TIMEOUT_MS);
+          version = -1;
+          return request;
+        });
+      }
+      async message(sessionId, text) {
+        const request = { session_id: sessionId, text };
+        await this.#hosted(sessionId, (client) => client.post("/api/conversation/messages", request));
+      }
+      async interrupt(sessionId) {
+        const result = await this.#hosted(
+          sessionId,
+          (client) => client.post("/api/conversation/interrupt", { session_id: sessionId })
+        );
+        return result.queued;
+      }
+      async answer(sessionId, requestId, decision) {
+        const request = { session_id: sessionId, request_id: requestId, decision };
+        await this.#hosted(sessionId, (client) => client.post("/api/conversation/permission", request));
+      }
+      /** A request about the session this window runs. A restarted server doesn't run it yet: start it again. */
+      async #hosted(sessionId, request) {
+        try {
+          return await this.#call(request);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 404 || !this.#chatCwd) throw error;
+          await this.startConversation(this.#chatCwd, sessionId);
+          return this.#call(request);
+        }
       }
       async sessions() {
         return (await this.#call((client) => client.get("/api/sessions"))).sessions;
       }
-      state(knownVersion, sessionId) {
-        return this.#call(
-          (client) => client.get(`/api/state?v=${knownVersion}&s=${encodeURIComponent(sessionId)}`)
-        );
+      state(knownVersion, sessionId, wait = false) {
+        const path = `/api/state?v=${knownVersion}&s=${encodeURIComponent(sessionId)}${wait ? "&wait=1" : ""}`;
+        return this.#call((client) => client.get(path, LONG_POLL_TIMEOUT_MS));
       }
       async addNote(note) {
         await this.#call((client) => client.post("/api/comments", note));
@@ -359,7 +405,7 @@ var init_api = __esm({
             if (error instanceof ApiError) throw error;
           }
         }
-        this.#client = await SidenoteClient.connect();
+        this.#client = this.#startServer ? (await SidenoteClient.ensure()).client : await SidenoteClient.connect();
         if (!this.#client) throw new Error("the sidenote server isn't running");
         return request(this.#client);
       }
@@ -782,6 +828,117 @@ var init_wrap = __esm({
   }
 });
 
+// src/tui/turn.ts
+function promptRows(prompt, notesSent, width) {
+  const notes = notesSent ? `+ ${plural(notesSent, "note", "notes")}` : "";
+  const text = terminalSafe(prompt).trim();
+  if (!text && !notes) return [];
+  const indent = { text: " ".repeat(YOU.length), style: PLAIN };
+  const body = text ? wrapSpans([{ text, style: { bold: true } }], Math.max(10, width - YOU.length)) : [[]];
+  const rows = body.map((spans, i) => [i ? indent : { text: YOU, style: { ...ACCENT, bold: true } }, ...spans]);
+  if (notes) {
+    const last = rows.at(-1);
+    if (text && spansWidth(last) + notes.length + 2 <= width) last.push({ text: `  ${notes}`, style: MUTED });
+    else rows.push([text ? indent : { text: YOU, style: { ...ACCENT, bold: true } }, { text: notes, style: MUTED }]);
+  }
+  return rows;
+}
+function stepRow(step) {
+  const mark = step.failed === null ? { text: "  \u25CC ", style: ACCENT } : step.failed ? { text: "  \u2717 ", style: { tone: "del" } } : { text: "  \u23FA ", style: MUTED };
+  const spans = [mark, { text: terminalSafe(step.tool), style: { tone: "muted", bold: true } }];
+  if (step.summary) spans.push({ text: ` ${terminalSafe(step.summary).replace(/\s+/g, " ")}`, style: MUTED });
+  return spans;
+}
+function endedRows(response, width) {
+  if (response.ended === "interrupted") return [[{ text: "  \u23F9 Interrupted", style: MUTED }]];
+  if (response.ended !== "error") return [];
+  const text = `  \u2717 ${terminalSafe(response.error ?? "").replace(/\s+/g, " ") || "The turn failed"}`;
+  return wrapSpans([{ text, style: { tone: "del" } }], width);
+}
+function permissionRows(permission, width) {
+  const bar = { text: "\u2503 ", style: { tone: "accent", bold: true } };
+  const inner = Math.max(10, width - 2);
+  const rows = [
+    [
+      bar,
+      { text: "Allow ", style: { bold: true } },
+      { text: terminalSafe(permission.tool), style: { ...ACCENT, bold: true } },
+      { text: "?", style: { bold: true } }
+    ]
+  ];
+  const detail = terminalSafe(permission.detail).split("\n");
+  for (const line of detail.slice(0, PERMISSION_DETAIL_ROWS)) {
+    const tone = line.startsWith("+ ") ? "add" : line.startsWith("- ") ? "del" : "code";
+    for (const spans of wrapSpans([{ text: line || " ", style: { tone } }], inner, "anywhere"))
+      rows.push([bar, ...spans]);
+  }
+  if (detail.length > PERMISSION_DETAIL_ROWS) {
+    rows.push([bar, { text: `\u2026 ${detail.length - PERMISSION_DETAIL_ROWS} more lines`, style: MUTED }]);
+  }
+  rows.push([
+    bar,
+    { text: "y", style: { ...ACCENT, bold: true } },
+    { text: " allow  ", style: PLAIN },
+    { text: "a", style: { ...ACCENT, bold: true } },
+    { text: " always allow this  ", style: PLAIN },
+    { text: "n", style: { ...ACCENT, bold: true } },
+    { text: " deny", style: PLAIN }
+  ]);
+  return rows;
+}
+function liveRows(view, options) {
+  const { width } = options;
+  const rows = [];
+  const live = view.live;
+  if (live) {
+    rows.push(...promptRows(live.prompt, live.notes_sent, width));
+    rows.push(rule(view.agent, width));
+    rows.push(...partRows(live.parts, options));
+    if (view.state === "working" && live.parts.at(-1)?.kind !== "text") {
+      rows.push([{ text: "  \u2026", style: MUTED }]);
+    }
+  }
+  if (view.permission) {
+    rows.push([], ...permissionRows(view.permission, width));
+  }
+  for (const text of view.queued) {
+    rows.push([
+      { text: "queued \u203A ", style: MUTED },
+      { text: terminalSafe(text).replace(/\s+/g, " ") || "notes (Send now)", style: MUTED }
+    ]);
+  }
+  if (!live && view.error) {
+    rows.push(...wrapSpans([{ text: terminalSafe(view.error), style: { tone: "del" } }], width));
+  }
+  return rows;
+}
+function partRows(parts, options) {
+  const rows = [];
+  for (const part of parts) {
+    if (part.kind === "tool") rows.push(stepRow(part));
+    else if (part.text.trim()) rows.push(...options.render(part.text, options.width).lines.map((line) => line.spans));
+  }
+  return rows;
+}
+function rule(label, width) {
+  const head = `\u2500\u2500 ${label} `;
+  return [{ text: head + "\u2500".repeat(Math.max(0, width - head.length)), style: MUTED }];
+}
+var MUTED, ACCENT, YOU, PERMISSION_DETAIL_ROWS;
+var init_turn = __esm({
+  "src/tui/turn.ts"() {
+    "use strict";
+    init_text();
+    init_lines();
+    init_sanitize();
+    init_wrap();
+    MUTED = { tone: "muted" };
+    ACCENT = { tone: "accent" };
+    YOU = "you \u203A ";
+    PERMISSION_DETAIL_ROWS = 12;
+  }
+});
+
 // src/tui/feed.ts
 function buildFeed(model, options) {
   const margin = options.width >= MARGIN_MIN_WIDTH;
@@ -790,6 +947,11 @@ function buildFeed(model, options) {
   for (const response of model.responses) {
     if (view.rows.length) view.rows.push(emptyRow());
     view.replyStarts.set(response.id, view.rows.length);
+    if (response.prompt !== void 0) {
+      for (const spans of promptRows(response.prompt, response.notes_sent ?? 0, options.width)) {
+        view.rows.push({ left: spans, right: [] });
+      }
+    }
     const onlyAnswers = !response.text.trim() && Object.keys(response.note_answers).length > 0;
     if (onlyAnswers) addAnswered(model, response, view, `${formatTime(response.created_at)} `);
     else addReply(model, response, view, { ...options, margin, leftWidth });
@@ -818,6 +980,16 @@ function addReply(model, response, view, layout) {
     code: false,
     quote: ""
   });
+  const stepsAfter = /* @__PURE__ */ new Map();
+  for (const step of response.steps ?? []) {
+    const block = Math.min(step.after_block, rendered.blocks.length - 1);
+    stepsAfter.set(block, [...stepsAfter.get(block) ?? [], step]);
+  }
+  const addSteps = (block) => {
+    for (const step of stepsAfter.get(block) ?? []) rows.push({ left: stepRow(step), right: [] });
+    stepsAfter.delete(block);
+  };
+  addSteps(-1);
   const lastLine = /* @__PURE__ */ new Map();
   rendered.lines.forEach((line, i) => {
     if (line.block >= 0) lastLine.set(line.block, i);
@@ -859,12 +1031,17 @@ function addReply(model, response, view, layout) {
     if (line.block >= 0 && !firstRow.has(line.block)) firstRow.set(line.block, rows.length);
     run2?.rows.push(line.spans.map((span) => span.text).join(""));
     rows.push({ left: line.spans, right: [] });
-    if (!layout.margin && line.block >= 0 && lastLine.get(line.block) === i && byBlock.has(line.block)) {
+    const endsBlock = line.block >= 0 && lastLine.get(line.block) === i;
+    const inlineNotes = !layout.margin && byBlock.has(line.block);
+    if (endsBlock && (stepsAfter.has(line.block) || inlineNotes)) {
       closeRun();
-      for (const root of byBlock.get(line.block)) addInlineNote(model, root, view, layout);
+      addSteps(line.block);
+      if (inlineNotes) for (const root of byBlock.get(line.block)) addInlineNote(model, root, view, layout);
     }
   });
   closeRun();
+  for (const block of [...stepsAfter.keys()].sort((a3, b) => a3 - b)) addSteps(block);
+  for (const spans of endedRows(response, layout.leftWidth)) rows.push({ left: spans, right: [] });
   if (layout.margin) {
     let nextFree = headerRow;
     const placed = roots.map((root) => ({ root, wanted: blockOf(root) < 0 ? headerRow : firstRow.get(blockOf(root)) ?? headerRow })).sort((a3, b) => a3.wanted - b.wanted || a3.root.created_at - b.root.created_at);
@@ -912,7 +1089,7 @@ function addAnswered(model, response, view, prefix) {
   }
   if (!rootIds.size) return;
   view.rows.push({
-    left: [{ text: `${prefix}\u21B3 Claude answered ${plural(noteIds.size, "note", "notes")}`, style: MUTED }],
+    left: [{ text: `${prefix}\u21B3 Claude answered ${plural(noteIds.size, "note", "notes")}`, style: MUTED2 }],
     right: []
   });
   for (const rootId of rootIds) {
@@ -921,7 +1098,7 @@ function addAnswered(model, response, view, prefix) {
     view.rows.push({
       left: oneLine(
         [
-          { text: "  \u203A ", style: MUTED },
+          { text: "  \u203A ", style: MUTED2 },
           { text: body, style: PLAIN }
         ],
         view.leftWidth
@@ -944,11 +1121,11 @@ function addAnswered(model, response, view, prefix) {
 }
 function replyHeader(response, notes, roots, width) {
   const pending = notes.filter((note) => note.delivered_at === null).length;
-  const spans = [{ text: `\u2500\u2500 ${formatTime(response.created_at)}`, style: MUTED }];
-  if (roots) spans.push({ text: ` \xB7 ${plural(roots, "note", "notes")}`, style: MUTED });
+  const spans = [{ text: `\u2500\u2500 ${formatTime(response.created_at)}`, style: MUTED2 }];
+  if (roots) spans.push({ text: ` \xB7 ${plural(roots, "note", "notes")}`, style: MUTED2 });
   if (pending) spans.push({ text: ` \xB7 ${pending} pending`, style: { tone: "accent" } });
   const used = spansWidth(spans) + 1;
-  if (used < width) spans.push({ text: ` ${"\u2500".repeat(width - used)}`, style: MUTED });
+  if (used < width) spans.push({ text: ` ${"\u2500".repeat(width - used)}`, style: MUTED2 });
   return spans;
 }
 function noteBox(model, root, width, selected) {
@@ -966,7 +1143,7 @@ function noteBox(model, root, width, selected) {
   if (answer2) {
     const snippet = [
       { text: "Claude ", style: { bold: true } },
-      { text: terminalSafe(plainText(answer2)), style: MUTED }
+      { text: terminalSafe(plainText(answer2)), style: MUTED2 }
     ];
     rows.push(...limitRows(wrapSpans(snippet, inner), NOTE_ANSWER_ROWS, inner));
   }
@@ -975,7 +1152,7 @@ function noteBox(model, root, width, selected) {
   const status = queued ? "Sending\u2026" : pending ? "Pending" : `Sent ${formatTime(lastSent)}`;
   const replies = new Set(thread.filter(isAnswered).map((note) => note.answered_by)).size + thread.length - 1;
   const footer = replies ? `${status} \xB7 ${plural(replies, "reply", "replies")}` : status;
-  rows.push([{ text: footer, style: pending ? { tone: "accent" } : MUTED }]);
+  rows.push([{ text: footer, style: pending ? { tone: "accent" } : MUTED2 }]);
   const bar = {
     text: selected ? "\u2503 " : "\u2502 ",
     style: selected ? { tone: "accent", bold: true } : { tone: pending ? "accent" : "muted" }
@@ -1006,7 +1183,7 @@ function limitRows(rows, max, width) {
 function codeQuoteLine(row) {
   return row.replace(/^(?:[│┆] |[▾▸] )/, "");
 }
-var MARGIN_MIN_WIDTH, MARGIN_WIDTH, MARGIN_GAP, INLINE_INDENT, NOTE_BODY_ROWS, NOTE_ANSWER_ROWS, MUTED;
+var MARGIN_MIN_WIDTH, MARGIN_WIDTH, MARGIN_GAP, INLINE_INDENT, NOTE_BODY_ROWS, NOTE_ANSWER_ROWS, MUTED2;
 var init_feed = __esm({
   "src/tui/feed.ts"() {
     "use strict";
@@ -1014,6 +1191,7 @@ var init_feed = __esm({
     init_text();
     init_lines();
     init_sanitize();
+    init_turn();
     init_width();
     init_wrap();
     MARGIN_MIN_WIDTH = 110;
@@ -1022,7 +1200,7 @@ var init_feed = __esm({
     INLINE_INDENT = 2;
     NOTE_BODY_ROWS = 4;
     NOTE_ANSWER_ROWS = 2;
-    MUTED = { tone: "muted" };
+    MUTED2 = { tone: "muted" };
   }
 });
 
@@ -2540,10 +2718,10 @@ function prefixed(lines, first, rest) {
 function code(token, width, block) {
   const out = [];
   const language = languageOf(token);
-  if (language) out.push({ spans: [{ text: language, style: MUTED2 }], block });
+  if (language) out.push({ spans: [{ text: language, style: MUTED3 }], block });
   for (const raw of terminalSafe(token.text).split("\n")) {
     const chunks = wrapSpans([plain(raw.replace(/\t/g, TAB))], width - 2, "anywhere");
-    chunks.forEach((spans, i) => out.push({ spans: [{ text: i ? "\u2506 " : "\u2502 ", style: MUTED2 }, ...spans], block }));
+    chunks.forEach((spans, i) => out.push({ spans: [{ text: i ? "\u2506 " : "\u2502 ", style: MUTED3 }, ...spans], block }));
   }
   return out;
 }
@@ -2599,13 +2777,13 @@ function tableRow(cells, widths, aligns, block) {
   const height = Math.max(...wrapped.map((lines) => lines.length));
   const out = [];
   for (let k = 0; k < height; k++) {
-    const spans = [{ text: "\u2502 ", style: MUTED2 }];
+    const spans = [{ text: "\u2502 ", style: MUTED3 }];
     widths.forEach((w2, c2) => {
       const content = wrapped[c2][k] ?? [];
       const pad = w2 - spansWidth(content);
       const left = aligns[c2] === "right" ? pad : aligns[c2] === "center" ? Math.floor(pad / 2) : 0;
       spans.push(plain(" ".repeat(left)), ...content, plain(" ".repeat(pad - left)));
-      spans.push({ text: c2 === widths.length - 1 ? " \u2502" : " \u2502 ", style: MUTED2 });
+      spans.push({ text: c2 === widths.length - 1 ? " \u2502" : " \u2502 ", style: MUTED3 });
     });
     out.push({ spans, block });
   }
@@ -2617,7 +2795,7 @@ function stackedTable(header, rows, width, block) {
     if (out.length) out.push({ spans: [], block });
     header.forEach((title, c2) => {
       const label = title.map((span) => span.text).join("");
-      const spans = [{ text: `${label}: `, style: { ...MUTED2, bold: true } }, ...row[c2] ?? []];
+      const spans = [{ text: `${label}: `, style: { ...MUTED3, bold: true } }, ...row[c2] ?? []];
       out.push(...prose(spans, width, block));
     });
   }
@@ -2633,7 +2811,7 @@ function decodeEntities(text) {
   });
   return decoded;
 }
-var MIN_WIDTH, MIN_TABLE_COLUMN, TAB, BULLETS, DIFF_LANGUAGES, DIFF_SIGNS, DIFF_TONES, MUTED2, BOLD, HEADINGS, ENTITIES, ReplyRenderer;
+var MIN_WIDTH, MIN_TABLE_COLUMN, TAB, BULLETS, DIFF_LANGUAGES, DIFF_SIGNS, DIFF_TONES, MUTED3, BOLD, HEADINGS, ENTITIES, ReplyRenderer;
 var init_render = __esm({
   "src/tui/render.ts"() {
     "use strict";
@@ -2650,7 +2828,7 @@ var init_render = __esm({
     DIFF_LANGUAGES = /* @__PURE__ */ new Set(["diff", "patch"]);
     DIFF_SIGNS = { add: "+ ", del: "\u2212 ", context: "  " };
     DIFF_TONES = { add: ["add", "addMark"], del: ["del", "delMark"] };
-    MUTED2 = { tone: "muted" };
+    MUTED3 = { tone: "muted" };
     BOLD = { bold: true };
     HEADINGS = [
       { bold: true, underline: true, tone: "accent" },
@@ -2705,14 +2883,14 @@ var init_render = __esm({
           }
           case "blockquote": {
             const inner = this.blocks(token.tokens ?? [], width - 2, block, depth, true);
-            return prefixed(inner, [{ text: "\u258C ", style: MUTED2 }]);
+            return prefixed(inner, [{ text: "\u258C ", style: MUTED3 }]);
           }
           case "list":
             return this.#list(token, width, depth);
           case "table":
             return this.#table(token, width, block);
           case "hr":
-            return [{ spans: [{ text: "\u2500".repeat(width), style: MUTED2 }], block }];
+            return [{ spans: [{ text: "\u2500".repeat(width), style: MUTED3 }], block }];
           case "html":
             return prose([{ text: token.text.replace(/\n+$/, ""), style: PLAIN }], width, block);
           default:
@@ -2732,7 +2910,7 @@ var init_render = __esm({
           const children = item.tokens.filter((child) => child.type !== "checkbox");
           const body = this.blocks(children, width - indent, block, depth + 1, item.loose);
           if (list.loose && out.length) out.push({ spans: [], block: -1 });
-          const first = [{ text: `${marker} `, style: list.ordered ? PLAIN : MUTED2 }];
+          const first = [{ text: `${marker} `, style: list.ordered ? PLAIN : MUTED3 }];
           out.push(...prefixed(body.length ? body : [{ spans: [], block }], first, [plain(" ".repeat(indent))]));
         });
         return out;
@@ -2743,7 +2921,7 @@ var init_render = __esm({
           const number = this.#nextFile++;
           const open = !this.foldable || this.#isFileOpen(number);
           const header = [
-            ...this.foldable ? [{ text: open ? "\u25BE " : "\u25B8 ", style: MUTED2 }] : [],
+            ...this.foldable ? [{ text: open ? "\u25BE " : "\u25B8 ", style: MUTED3 }] : [],
             { text: file.path || "Change", style: BOLD },
             plain("  "),
             { text: `+${file.additions}`, style: { tone: "add" } },
@@ -2764,7 +2942,7 @@ var init_render = __esm({
         const widths = shrink(natural, width - (3 * columns + 1));
         if (!widths) return stackedTable(header, rows, width, block);
         const border = (left, middle, right) => ({
-          spans: [{ text: left + widths.map((w2) => "\u2500".repeat(w2 + 2)).join(middle) + right, style: MUTED2 }],
+          spans: [{ text: left + widths.map((w2) => "\u2500".repeat(w2 + 2)).join(middle) + right, style: MUTED3 }],
           block
         });
         const aligns = table.align;
@@ -2842,13 +3020,13 @@ function buildThread(model, rootId, width) {
   };
   rows.push([
     { text: "Thread", style: { bold: true } },
-    { text: ` \xB7 on the reply from ${formatTime(response.created_at)}`, style: MUTED3 }
+    { text: ` \xB7 on the reply from ${formatTime(response.created_at)}`, style: MUTED4 }
   ]);
   blank();
   if (root.quote) {
     const quote = wrapSpans([{ text: terminalSafe(root.quote), style: { tone: "muted", italic: true } }], width - 2);
-    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "\u258C ", style: MUTED3 }, ...spans]);
-    if (quote.length > QUOTE_ROWS) rows.push([{ text: "\u258C \u2026", style: MUTED3 }]);
+    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "\u258C ", style: MUTED4 }, ...spans]);
+    if (quote.length > QUOTE_ROWS) rows.push([{ text: "\u258C \u2026", style: MUTED4 }]);
   } else {
     rows.push([{ text: "On the whole reply", style: { tone: "muted", italic: true } }]);
   }
@@ -2863,7 +3041,7 @@ function buildThread(model, rootId, width) {
       rows.push(...answer(model, note.answered_by, group, width));
     } else if (note.delivered_at !== null && note.answered_by === null && !next) {
       blank();
-      rows.push([{ text: "Sent. Claude's reply will appear here.", style: MUTED3 }]);
+      rows.push([{ text: "Sent. Claude's reply will appear here.", style: MUTED4 }]);
     }
   });
   return rows;
@@ -2872,7 +3050,7 @@ function entry(model, note, width) {
   const status = note.delivered_at !== null ? `Sent ${formatTime(note.delivered_at)}` : model.isQueued(note) ? "Sending\u2026" : "Pending";
   const head = [
     { text: note.parent_id === null ? "Your note" : "Your follow-up", style: { bold: true } },
-    { text: ` \xB7 ${status}`, style: note.delivered_at === null ? { tone: "accent" } : MUTED3 }
+    { text: ` \xB7 ${status}`, style: note.delivered_at === null ? { tone: "accent" } : MUTED4 }
   ];
   const body = wrapSpans([{ text: terminalSafe(note.body), style: PLAIN }], width - 2);
   return [head, ...body.map((spans) => [INDENT, ...spans])];
@@ -2880,10 +3058,10 @@ function entry(model, note, width) {
 function answer(model, responseId, group, width) {
   const response = model.response(responseId);
   const head = [{ text: "Claude", style: { bold: true, tone: "accent" } }];
-  if (!response) return [[...head, { text: " \xB7 answered in a reply that is no longer stored", style: MUTED3 }]];
-  head.push({ text: ` \xB7 ${formatTime(response.created_at)}`, style: MUTED3 });
+  if (!response) return [[...head, { text: " \xB7 answered in a reply that is no longer stored", style: MUTED4 }]];
+  head.push({ text: ` \xB7 ${formatTime(response.created_at)}`, style: MUTED4 });
   const texts = [...new Set(group.map((note) => model.answerText(note)).filter(Boolean))];
-  if (!texts.length) return [head, [INDENT, { text: "Answered in the reply in the feed: f shows it", style: MUTED3 }]];
+  if (!texts.length) return [head, [INDENT, { text: "Answered in the reply in the feed: f shows it", style: MUTED4 }]];
   const rows = [head];
   texts.forEach((text, i) => {
     if (i) rows.push([]);
@@ -2892,7 +3070,7 @@ function answer(model, responseId, group, width) {
   });
   return rows;
 }
-var MUTED3, INDENT, QUOTE_ROWS;
+var MUTED4, INDENT, QUOTE_ROWS;
 var init_thread = __esm({
   "src/tui/thread.ts"() {
     "use strict";
@@ -2902,7 +3080,7 @@ var init_thread = __esm({
     init_render();
     init_sanitize();
     init_wrap();
-    MUTED3 = { tone: "muted" };
+    MUTED4 = { tone: "muted" };
     INDENT = { text: "  ", style: PLAIN };
     QUOTE_ROWS = 6;
   }
@@ -2911,14 +3089,14 @@ var init_thread = __esm({
 // src/tui/app.ts
 function emptyState(text, height) {
   const rows = Array.from({ length: height }, () => []);
-  rows[Math.min(1, height - 1)] = [{ text: `  ${text}`, style: MUTED4 }];
+  rows[Math.min(1, height - 1)] = [{ text: `  ${text}`, style: MUTED5 }];
   return rows;
 }
 function errorText(error) {
   const text = error instanceof Error ? error.message : String(error);
   return `Couldn't do that: ${text.replace(/\s+/g, " ")}`;
 }
-var MAX_QUOTE_CHARS, GUTTER, EDITOR_MAX_ROWS, MIN_COLUMNS, MIN_ROWS, MUTED4, ACCENT, App;
+var MAX_QUOTE_CHARS, GUTTER, EDITOR_MAX_ROWS, PROMPT_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED5, ACCENT2, App;
 var init_app = __esm({
   "src/tui/app.ts"() {
     "use strict";
@@ -2931,21 +3109,32 @@ var init_app = __esm({
     init_render();
     init_sanitize();
     init_thread();
+    init_turn();
     init_wrap();
     MAX_QUOTE_CHARS = 600;
     GUTTER = 2;
     EDITOR_MAX_ROWS = 6;
+    PROMPT_LABEL = "you \u203A ";
     MIN_COLUMNS = 30;
     MIN_ROWS = 8;
-    MUTED4 = { tone: "muted" };
-    ACCENT = { tone: "accent" };
+    MUTED5 = { tone: "muted" };
+    ACCENT2 = { tone: "accent" };
     App = class {
       #api;
       #terminal;
       #ansi;
       #cwd;
+      #chat;
       #model = null;
       #reachable = true;
+      #conversation = null;
+      /** The message being typed. */
+      #prompt = new NoteText();
+      #promptScroll = 0;
+      /** In chat, keys go to the prompt line or to the conversation above it. */
+      #focus = "prompt";
+      /** Keep the bottom of the conversation in view as it grows. */
+      #follow = true;
       #view = "feed";
       #threadRoot = null;
       #threadScroll = 0;
@@ -2972,14 +3161,15 @@ var init_app = __esm({
         this.#terminal = options.terminal;
         this.#ansi = options.ansi;
         this.#cwd = options.cwd;
+        this.#chat = options.chat ?? null;
         if (options.sessionId) this.#model = new Model(options.sessionId);
       }
       get sessionId() {
         return this.#model?.sessionId ?? null;
       }
       // ---- Server ---------------------------------------------------------------------------
-      /** Fetches the latest state, then draws. Called once a second, and after every change. */
-      async refresh() {
+      /** Fetches the latest state, then draws. Called in a loop, and after every change. */
+      async refresh(options = {}) {
         try {
           if (!this.#model) {
             const sessions = await this.#api.sessions();
@@ -2987,14 +3177,33 @@ var init_app = __esm({
             if (here) this.#model = new Model(here.id);
           }
           if (this.#model) {
-            const snapshot = await this.#api.state(this.#model.snapshot.version, this.#model.sessionId);
+            const snapshot = await this.#api.state(this.#model.snapshot.version, this.#model.sessionId, options.wait);
             if (snapshot) this.#update(snapshot);
           }
           this.#reachable = true;
-        } catch {
+        } catch (error) {
           this.#reachable = false;
+          if (options.wait) throw error;
         }
         this.render();
+      }
+      /** Fetches the turn in progress of a session sidenote runs, then draws. */
+      async refreshConversation(options = {}) {
+        if (!this.#chat || !this.#model) return;
+        try {
+          const known = this.#conversation?.version ?? -1;
+          const view = await this.#chat.conversation(known, this.#model.sessionId, options.wait ?? false);
+          if (view) this.#conversation = view;
+          this.#reachable = true;
+        } catch (error) {
+          this.#reachable = false;
+          if (options.wait) throw error;
+        }
+        this.render();
+      }
+      get #working() {
+        const state = this.#conversation?.state;
+        return state === "working" || state === "waiting";
       }
       #update(snapshot) {
         const model = this.#model;
@@ -3005,7 +3214,9 @@ var init_app = __esm({
         model.snapshot = snapshot;
         const latest = model.responses.at(-1);
         if (!latest) return;
-        if (firstLoad) {
+        if (this.#chat) {
+          if (!firstLoad && !known.has(latest.id) && !this.#follow) this.#newBelow = true;
+        } else if (firstLoad) {
           this.#showReply = latest.id;
         } else if (!known.has(latest.id)) {
           if (followingLatest && !this.#editor && !this.#lines && this.#view === "feed") this.#showReply = latest.id;
@@ -3021,7 +3232,9 @@ var init_app = __esm({
         try {
           if (key2.ctrl && key2.name === "c") return this.#terminal.quit();
           if (this.#editor) await this.#editorKey(this.#editor, key2);
+          else if (await this.#permissionKey(key2)) return;
           else if (this.#lines) this.#linesKey(this.#lines, key2);
+          else if (this.#chat && this.#view === "feed" && this.#focus === "prompt") await this.#promptKey(key2);
           else if (this.#view === "thread") await this.#threadKey(key2, confirming);
           else await this.#feedKey(key2, confirming);
         } catch (error) {
@@ -3031,6 +3244,17 @@ var init_app = __esm({
       }
       async #feedKey(key2, confirming) {
         const target = this.#selectedTarget();
+        if (this.#chat && (key2.name === "tab" || key2.name === "i")) {
+          this.#focus = "prompt";
+          return;
+        }
+        if (this.#chat && key2.name === "escape") {
+          if (this.#working) return this.#interrupt();
+          this.#focus = "prompt";
+          return;
+        }
+        if (["j", "k", "up", "down", "g", "home", " ", "b", "pageup", "pagedown"].includes(key2.name)) this.#follow = false;
+        if (key2.ctrl && (key2.name === "d" || key2.name === "u")) this.#follow = false;
         switch (key2.name) {
           case "j":
           case "down":
@@ -3044,9 +3268,13 @@ var init_app = __esm({
             return;
           case "G":
           case "end": {
+            this.#newBelow = false;
+            if (this.#chat) {
+              this.#follow = true;
+              return;
+            }
             const latest = this.#model?.responses.at(-1);
             if (latest) this.#showReply = latest.id;
-            this.#newBelow = false;
             return;
           }
           case " ":
@@ -3074,7 +3302,7 @@ var init_app = __esm({
           case "v":
             if (!target) return;
             if (target.kind === "block" && target.code) this.#lines = [target.start, target.start];
-            else this.#message = { text: "Line notes are for code and diffs; n notes the whole block", style: MUTED4 };
+            else this.#message = { text: "Line notes are for code and diffs; n notes the whole block", style: MUTED5 };
             return;
           case "x":
             if (target?.kind === "note") await this.#deleteNote(target.rootId, confirming);
@@ -3137,7 +3365,7 @@ var init_app = __esm({
           case "x": {
             const pending = this.#model?.thread(this.#threadRoot).findLast((note) => note.delivered_at === null);
             if (pending) await this.#deleteNote(pending.id, confirming);
-            else this.#message = { text: "Nothing unsent in this thread to delete", style: MUTED4 };
+            else this.#message = { text: "Nothing unsent in this thread to delete", style: MUTED5 };
             return;
           }
           case "f":
@@ -3153,17 +3381,55 @@ var init_app = __esm({
         }
       }
       async #editorKey(editing, key2) {
-        const { text } = editing;
-        const width = this.#editorWidth();
         if (key2.name === "escape") return this.#closeEditor();
-        if (key2.name === "enter" && (key2.alt || key2.shift)) return text.insert("\n");
-        if (key2.name === "enter") return this.#submit(editing, this.#model?.canSend() ?? false);
+        if (key2.name === "enter" && !(key2.alt || key2.shift)) {
+          return this.#submit(editing, !this.#chat && (this.#model?.canSend() ?? false));
+        }
         if (key2.ctrl && key2.name === "s") return this.#submit(editing, false);
-        if (key2.ctrl && key2.name === "e") {
-          const edited = await this.#terminal.editText(text.text);
-          if (edited !== null) editing.text = new NoteText(edited.replace(/\n+$/, ""));
+        const edited = await this.#editText(editing.text, key2, this.#editorWidth());
+        if (edited) editing.text = edited;
+      }
+      /** Keys while the prompt line has focus: type, send with Enter, Esc to interrupt or leave. */
+      async #promptKey(key2) {
+        if (key2.name === "escape") {
+          if (this.#working) return this.#interrupt();
+          this.#focusFeed();
           return;
         }
+        if (key2.name === "tab") return this.#focusFeed();
+        if (key2.name === "enter" && !(key2.alt || key2.shift)) return this.#sendMessage();
+        const edited = await this.#editText(this.#prompt, key2, this.#promptWidth());
+        if (edited) this.#prompt = edited;
+      }
+      /** y, a or n answer a permission prompt, unless a note is being written. */
+      async #permissionKey(key2) {
+        const permission = this.#conversation?.permission;
+        if (!this.#chat || !permission || this.#view !== "feed" || key2.ctrl || key2.alt) return false;
+        const decision = { y: "allow", a: "always", n: "deny" }[key2.name];
+        if (!decision) return false;
+        await this.#chat.answer(this.#model.sessionId, permission.request_id, decision);
+        this.#message = {
+          text: decision === "deny" ? `Denied ${permission.tool}` : `Allowed ${permission.tool}`,
+          style: MUTED5
+        };
+        this.#follow = true;
+        await this.refreshConversation();
+        return true;
+      }
+      /** Editing keys shared by the note editor and the prompt line; a new text when $EDITOR replaced it. */
+      async #editText(text, key2, width) {
+        if (key2.name === "enter") {
+          text.insert("\n");
+          return null;
+        }
+        if (key2.ctrl && key2.name === "e") {
+          const edited = await this.#terminal.editText(text.text);
+          return edited === null ? null : new NoteText(edited.replace(/\n+$/, ""));
+        }
+        this.#editKey(text, key2, width);
+        return null;
+      }
+      #editKey(text, key2, width) {
         if (key2.name === "paste") return text.insert(key2.text);
         if (key2.name === "backspace") return key2.alt || key2.ctrl ? text.deleteWord() : text.backspace();
         if (key2.ctrl && key2.name === "w") return text.deleteWord();
@@ -3177,6 +3443,40 @@ var init_app = __esm({
         if (key2.text && !key2.ctrl && !key2.alt) text.insert(key2.text);
       }
       // ---- Actions --------------------------------------------------------------------------
+      async #sendMessage() {
+        const model = this.#model;
+        if (!this.#chat || !model) return;
+        if (this.#prompt.isBlank && !model.pendingCount()) {
+          this.#message = { text: "Type a message for Claude first", style: MUTED5 };
+          return;
+        }
+        await this.#chat.message(model.sessionId, this.#prompt.isBlank ? "" : this.#prompt.text);
+        this.#prompt = new NoteText();
+        this.#promptScroll = 0;
+        this.#follow = true;
+        this.#newBelow = false;
+        await this.refreshConversation();
+      }
+      async #interrupt() {
+        if (!this.#chat || !this.#model) return;
+        const queued = await this.#chat.interrupt(this.#model.sessionId);
+        if (queued.length && this.#prompt.isBlank) {
+          this.#prompt = new NoteText(queued.join("\n\n"));
+          this.#prompt.end();
+        }
+        this.#message = {
+          text: queued.length ? "Interrupted. Queued messages are back in the prompt" : "Interrupted",
+          style: MUTED5
+        };
+        await this.refreshConversation();
+      }
+      #focusFeed() {
+        this.#focus = "feed";
+        const height = this.#bodyHeight();
+        const visible = this.#feed?.targets.filter((t) => t.start < this.#scroll + height && t.end > this.#scroll);
+        const last = visible?.at(-1);
+        if (last && (this.#follow || !visible?.some((t) => t.key === this.#selected))) this.#selected = last.key;
+      }
       #move(direction) {
         const targets = this.#feed?.targets ?? [];
         const index = targets.findIndex((target) => target.key === this.#selected);
@@ -3241,14 +3541,14 @@ var init_app = __esm({
           this.#drafts.delete(editing.draftKey);
         } else {
           this.#drafts.set(editing.draftKey, editing.text.text);
-          this.#message = { text: "Draft kept: open the note again to finish it", style: MUTED4 };
+          this.#message = { text: "Draft kept: open the note again to finish it", style: MUTED5 };
         }
       }
       async #submit(editing, sendNow) {
         const model = this.#model;
         if (!model) return;
         if (editing.text.isBlank) {
-          this.#message = { text: "Write something first, or press Esc", style: MUTED4 };
+          this.#message = { text: "Write something first, or press Esc", style: MUTED5 };
           return;
         }
         await this.#api.addNote({ ...editing.request, body: editing.text.text });
@@ -3256,9 +3556,11 @@ var init_app = __esm({
         this.#editor = null;
         if (sendNow) {
           await this.#api.send(model.sessionId);
-          this.#message = model.sendStatus().status === "busy" ? { text: "Saved. Claude is working; it goes as soon as it finishes", style: ACCENT } : { text: "Sent to Claude", style: ACCENT };
+          this.#message = model.sendStatus().status === "busy" ? { text: "Saved. Claude is working; it goes as soon as it finishes", style: ACCENT2 } : { text: "Sent to Claude", style: ACCENT2 };
+        } else if (this.#chat) {
+          this.#message = { text: "Saved. It goes with your next message, or press S to send it now", style: MUTED5 };
         } else {
-          this.#message = model.canSend() ? { text: "Saved. It goes with your next prompt, or press S to send now", style: MUTED4 } : { text: "Saved. Claude isn't listening here, so it goes with your next prompt", style: MUTED4 };
+          this.#message = model.canSend() ? { text: "Saved. It goes with your next prompt, or press S to send now", style: MUTED5 } : { text: "Saved. Claude isn't listening here, so it goes with your next prompt", style: MUTED5 };
         }
         await this.refresh();
       }
@@ -3267,12 +3569,12 @@ var init_app = __esm({
         if (!model) return;
         const pending = model.pendingCount();
         if (!pending) {
-          this.#message = { text: "No pending notes to send", style: MUTED4 };
+          this.#message = { text: "No pending notes to send", style: MUTED5 };
         } else if (!model.canSend()) {
-          this.#message = { text: "Claude isn't listening: pending notes go with your next prompt there", style: MUTED4 };
+          this.#message = { text: "Claude isn't listening: pending notes go with your next prompt there", style: MUTED5 };
         } else {
           await this.#api.send(model.sessionId);
-          this.#message = { text: `Sending ${plural(pending, "note", "notes")} to Claude`, style: ACCENT };
+          this.#message = { text: `Sending ${plural(pending, "note", "notes")} to Claude`, style: ACCENT2 };
           await this.refresh();
         }
       }
@@ -3280,7 +3582,7 @@ var init_app = __esm({
         const note = this.#model?.note(noteId);
         if (!note) return;
         if (note.delivered_at !== null) {
-          this.#message = { text: "Only notes that haven't been sent can be deleted", style: MUTED4 };
+          this.#message = { text: "Only notes that haven't been sent can be deleted", style: MUTED5 };
           return;
         }
         if (confirming !== noteId) {
@@ -3289,7 +3591,7 @@ var init_app = __esm({
           return;
         }
         await this.#api.deleteNote(noteId);
-        this.#message = { text: "Note deleted", style: MUTED4 };
+        this.#message = { text: "Note deleted", style: MUTED5 };
         await this.refresh();
       }
       #openThread(rootId) {
@@ -3318,29 +3620,58 @@ var init_app = __esm({
         const { columns, rows } = this.#terminal.size();
         if (columns < MIN_COLUMNS || rows < MIN_ROWS) {
           this.#terminal.draw(
-            [this.#ansiRow(clipSpans([{ text: "Make this pane larger for sidenote", style: MUTED4 }], columns))],
+            [this.#ansiRow(clipSpans([{ text: "Make this pane larger for sidenote", style: MUTED5 }], columns))],
             null
           );
           return;
         }
         const frame = [this.#ansiRow(this.#topBar(columns))];
-        const bottom = this.#editor ? this.#editorRows(this.#editor, columns) : null;
         const height = this.#bodyHeight();
         const body = this.#view === "thread" ? this.#threadBody(columns, height) : this.#feedBody(columns, height);
         frame.push(...body.map((spans) => this.#ansiRow(clipSpans(spans, columns))));
-        let cursor = null;
-        if (bottom) {
-          cursor = { row: frame.length + bottom.cursor.row, column: bottom.cursor.column };
-          frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
-        } else {
-          frame.push(this.#ansiRow(clipSpans(this.#hint(), columns)));
-        }
+        const bottom = this.#bottom(columns);
+        const cursor = bottom.cursor && { row: frame.length + bottom.cursor.row, column: bottom.cursor.column };
+        frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
         this.#terminal.draw(frame, cursor);
+      }
+      /** The rows under the conversation: a note editor, or the prompt line, then the key hints. */
+      #bottom(columns) {
+        if (this.#editor) return this.#editorRows(this.#editor, columns);
+        const hint = clipSpans(this.#hint(), columns);
+        if (!this.#chat) return { rows: [hint], cursor: null };
+        const prompt = this.#promptRows(columns);
+        const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines;
+        return { rows: [...prompt.rows, hint], cursor: focused ? prompt.cursor : null };
       }
       #bodyHeight() {
         const { columns, rows } = this.#terminal.size();
-        const bottom = this.#editor ? this.#editorRows(this.#editor, columns).rows.length : 1;
-        return Math.max(1, rows - 1 - bottom);
+        return Math.max(1, rows - 1 - this.#bottom(columns).rows.length);
+      }
+      #promptRows(columns) {
+        const width = this.#promptWidth();
+        const layout = this.#prompt.layout(width);
+        const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
+        this.#promptScroll = Math.min(Math.max(this.#promptScroll, layout.cursorRow - visible + 1), layout.cursorRow);
+        const focused = this.#focus === "prompt" && this.#view === "feed";
+        const label = { text: PROMPT_LABEL, style: focused ? { tone: "accent", bold: true } : MUTED5 };
+        const indent = { text: " ".repeat(PROMPT_LABEL.length), style: PLAIN };
+        const rows = [];
+        for (let i = 0; i < visible; i++) {
+          rows.push([i ? indent : label, { text: layout.rows[this.#promptScroll + i] ?? "", style: PLAIN }]);
+        }
+        if (this.#prompt.text === "") {
+          const pending = this.#model?.pendingCount() ?? 0;
+          const placeholder = this.#working ? "Message Claude; it goes when this turn ends\u2026" : "Message Claude\u2026";
+          rows[0] = [label, { text: placeholder, style: MUTED5 }];
+          if (pending) rows[0].push({ text: `   ${plural(pending, "note rides", "notes ride")} along`, style: ACCENT2 });
+        }
+        return {
+          rows: rows.map((spans) => clipSpans(spans, columns)),
+          cursor: { row: layout.cursorRow - this.#promptScroll, column: PROMPT_LABEL.length + layout.cursorColumn }
+        };
+      }
+      #promptWidth() {
+        return Math.max(10, this.#terminal.size().columns - PROMPT_LABEL.length - 1);
       }
       #topBar(columns) {
         const model = this.#model;
@@ -3348,18 +3679,33 @@ var init_app = __esm({
         const name = terminalSafe(session ? session.name || projectName(session.cwd) : projectName(this.#cwd));
         const left = [
           { text: "sidenote", style: { bold: true } },
-          { text: " \xB7 ", style: MUTED4 },
+          { text: " \xB7 ", style: MUTED5 },
           { text: name, style: PLAIN }
         ];
         const right = [];
+        const conversation = this.#conversation;
+        if (conversation) {
+          left.push({ text: ` \xB7 ${conversation.agent}`, style: MUTED5 });
+          if (conversation.model) left.push({ text: ` \xB7 ${terminalSafe(conversation.model)}`, style: MUTED5 });
+        }
         if (!this.#reachable) {
           right.push({ text: "can't reach sidenote, retrying", style: { tone: "del" } });
+        } else if (conversation) {
+          const pending = model?.pendingCount() ?? 0;
+          if (pending) right.push({ text: `${plural(pending, "note", "notes")} pending \xB7 `, style: ACCENT2 });
+          if (conversation.context) {
+            const percent = Math.round(100 * conversation.context.used / conversation.context.limit);
+            right.push({ text: `${percent}% context \xB7 `, style: MUTED5 });
+          }
+          right.push(
+            conversation.state === "working" ? { text: "\u25D0 working", style: ACCENT2 } : conversation.state === "waiting" ? { text: "\u25C6 needs your answer", style: { tone: "accent", bold: true } } : conversation.state === "stopped" ? { text: "\u25CB stopped", style: MUTED5 } : { text: "\u25CF ready", style: { tone: "add" } }
+          );
         } else if (model && session) {
           const pending = model.pendingCount();
           const { status, send_requested: queued } = model.sendStatus();
-          if (pending) right.push({ text: queued ? `${pending} sending\u2026 \xB7 ` : `${pending} pending \xB7 `, style: ACCENT });
+          if (pending) right.push({ text: queued ? `${pending} sending\u2026 \xB7 ` : `${pending} pending \xB7 `, style: ACCENT2 });
           right.push(
-            status === "listening" ? { text: "\u25CF listening", style: { tone: "add" } } : status === "busy" ? { text: "\u25D0 Claude is working", style: ACCENT } : { text: "\u25CB not listening", style: MUTED4 }
+            status === "listening" ? { text: "\u25CF listening", style: { tone: "add" } } : status === "busy" ? { text: "\u25D0 Claude is working", style: ACCENT2 } : { text: "\u25CB not listening", style: MUTED5 }
           );
         }
         const rightWidth = spansWidth(right);
@@ -3369,14 +3715,17 @@ var init_app = __esm({
       }
       #feedBody(columns, height) {
         const model = this.#model;
-        if (!model || !model.responses.length) return emptyState(this.#emptyText(), height);
         const width = columns - GUTTER;
+        const live = this.#conversation ? liveRows(this.#conversation, { width, render: (markdown, w2) => renderReply(markdown, { width: w2 }) }) : [];
+        if (!model || !model.responses.length && !live.length) return emptyState(this.#emptyText(), height);
         if (width !== this.#renderWidth) {
           this.#renders.clear();
           this.#renderWidth = width;
         }
         const before = this.#selectedTarget();
         const feed = buildFeed(model, { width, selectedKey: this.#selected, render: (r, w2) => this.#render(r, w2) });
+        if (live.length && feed.rows.length) feed.rows.push({ left: [], right: [] });
+        for (const spans of live) feed.rows.push({ left: spans, right: [] });
         this.#feed = feed;
         if (this.#showReply !== null && feed.replyStarts.has(this.#showReply)) {
           const id = this.#showReply;
@@ -3398,6 +3747,7 @@ var init_app = __esm({
         }
         if (target && this.#reveal) this.#revealTarget(target, height);
         this.#reveal = false;
+        if (this.#follow && this.#chat) this.#scroll = feed.rows.length;
         this.#scroll = this.#clampScroll(this.#scroll);
         if (this.#scroll + height >= feed.rows.length) this.#newBelow = false;
         const lines = this.#lines;
@@ -3409,8 +3759,9 @@ var init_app = __esm({
             out.push([]);
             continue;
           }
-          const onTarget = target?.side === "left" && row >= target.start && row < target.end;
-          const gutter = row >= lineFrom && row <= lineTo ? { text: "\u2503 ", style: { tone: "accent", bold: true } } : onTarget && !lines ? { text: "\u258C ", style: ACCENT } : { text: "  ", style: PLAIN };
+          const cursorShown = !this.#chat || this.#focus === "feed";
+          const onTarget = cursorShown && target?.side === "left" && row >= target.start && row < target.end;
+          const gutter = row >= lineFrom && row <= lineTo ? { text: "\u2503 ", style: { tone: "accent", bold: true } } : onTarget && !lines ? { text: "\u258C ", style: ACCENT2 } : { text: "  ", style: PLAIN };
           const spans = [gutter, ...content.left];
           if (content.right.length) {
             const pad = GUTTER + feed.leftWidth + 3 - spansWidth(spans);
@@ -3437,9 +3788,9 @@ var init_app = __esm({
         const layout = editing.text.layout(width);
         const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
         editing.scroll = Math.min(Math.max(editing.scroll, layout.cursorRow - visible + 1), layout.cursorRow);
-        const title = clipSpans([{ text: `\u2500\u2500 ${terminalSafe(editing.title)} `, style: MUTED4 }], columns);
-        const rule = Math.max(0, columns - spansWidth(title));
-        const rows = [[...title, { text: "\u2500".repeat(rule), style: MUTED4 }]];
+        const title = clipSpans([{ text: `\u2500\u2500 ${terminalSafe(editing.title)} `, style: MUTED5 }], columns);
+        const rule2 = Math.max(0, columns - spansWidth(title));
+        const rows = [[...title, { text: "\u2500".repeat(rule2), style: MUTED5 }]];
         for (let i = 0; i < visible; i++) {
           const text = layout.rows[editing.scroll + i] ?? "";
           rows.push([
@@ -3451,13 +3802,13 @@ var init_app = __esm({
           const placeholder = "parent_id" in editing.request ? "Your follow-up for Claude\u2026" : "Your note for Claude\u2026";
           rows[1] = [
             { text: "  ", style: PLAIN },
-            { text: placeholder, style: MUTED4 }
+            { text: placeholder, style: MUTED5 }
           ];
         }
         const canSend = this.#model?.canSend() ?? false;
-        const hint = canSend ? "\u23CE send now \xB7 ^S save for later \xB7 \u2325\u23CE new line \xB7 ^E $EDITOR \xB7 esc close" : "\u23CE save: Claude isn't listening, so it goes with your next prompt \xB7 \u2325\u23CE new line \xB7 esc close";
+        const hint = this.#chat ? "\u23CE save: it goes with your next message \xB7 \u2325\u23CE new line \xB7 ^E $EDITOR \xB7 esc close" : canSend ? "\u23CE send now \xB7 ^S save for later \xB7 \u2325\u23CE new line \xB7 ^E $EDITOR \xB7 esc close" : "\u23CE save: Claude isn't listening, so it goes with your next prompt \xB7 \u2325\u23CE new line \xB7 esc close";
         rows.push(
-          this.#message ? [{ text: this.#message.text, style: this.#message.style }] : [{ text: hint, style: MUTED4 }]
+          this.#message ? [{ text: this.#message.text, style: this.#message.style }] : [{ text: hint, style: MUTED5 }]
         );
         return {
           rows: rows.map((spans) => clipSpans(spans, columns)),
@@ -3470,6 +3821,17 @@ var init_app = __esm({
       #hint() {
         if (this.#message) return [{ text: this.#message.text, style: this.#message.style }];
         const parts = [];
+        if (this.#conversation?.permission && this.#view === "feed" && !this.#lines) {
+          return [{ text: "Claude is waiting: y allow \xB7 a always allow \xB7 n deny", style: { tone: "accent", bold: true } }];
+        }
+        if (this.#chat && this.#view === "feed" && this.#focus === "prompt" && !this.#lines) {
+          parts.push("\u23CE send", "\u2325\u23CE new line");
+          if (this.#working) parts.push("esc interrupt");
+          parts.push("tab conversation");
+          if (this.#model?.pendingCount()) parts.push("notes go with your message");
+          parts.push("^C quit");
+          return [{ text: parts.join(" \xB7 "), style: MUTED5 }];
+        }
         if (this.#lines) {
           parts.push("j/k pick lines", "n note on these lines", "esc cancel");
         } else if (this.#view === "thread") {
@@ -3483,16 +3845,19 @@ var init_app = __esm({
           if (target?.kind === "note") parts.push("x delete");
           if (target?.code) parts.push("v pick lines");
           parts.push("N note on reply");
+          if (this.#chat) parts.push("tab message");
+          if (this.#chat && this.#working) parts.push("esc interrupt");
         }
         if (this.#model?.pendingCount() && this.#model.canSend()) parts.push("S send now");
         parts.push("q quit");
         const spans = [];
-        if (this.#newBelow) spans.push({ text: "\u2193 new reply: G \xB7 ", style: ACCENT });
-        spans.push({ text: parts.join(" \xB7 "), style: MUTED4 });
+        if (this.#newBelow) spans.push({ text: this.#chat ? "\u2193 more below: G \xB7 " : "\u2193 new reply: G \xB7 ", style: ACCENT2 });
+        spans.push({ text: parts.join(" \xB7 "), style: MUTED5 });
         return spans;
       }
       #emptyText() {
         if (!this.#reachable) return "Can't reach the sidenote server. Retrying\u2026";
+        if (this.#chat) return `A new session in ${projectName(this.#cwd)}. Type a message for Claude below.`;
         if (!this.#model)
           return `Waiting for a Claude Code session in ${projectName(this.#cwd)}. Its replies appear here as Claude finishes them.`;
         return "No replies in this session yet. They appear here as Claude finishes them.";
@@ -3715,6 +4080,7 @@ var init_screen = __esm({
 // src/tui/main.ts
 var main_exports = {};
 __export(main_exports, {
+  runChat: () => runChat,
   runTui: () => runTui,
   terminalOptions: () => terminalOptions
 });
@@ -3733,50 +4099,94 @@ function terminalOptions(env) {
   return { color: !env["NO_COLOR"] && env["TERM"] !== "dumb", hyperlinks: supportsHyperlinks(env) };
 }
 async function runTui(args) {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.error("sidenote tui needs a terminal.");
-    process.exitCode = 1;
-    return;
-  }
+  if (!needsTerminal("sidenote tui")) return;
   if (!existsSync2(paths.enabledFlag())) {
     console.error("sidenote is off. Turn it on in Claude Code with /sidenote:on, then run sidenote tui again.");
     process.exitCode = 1;
     return;
   }
-  const requested = args.find((arg) => !arg.startsWith("-"));
-  if (requested !== void 0 && !SESSION_ID_PATTERN.test(requested)) {
-    console.error("That doesn't look like a Claude Code session id.");
-    process.exitCode = 2;
-    return;
-  }
+  const requested = sessionArgument(args);
+  if (requested === false) return;
   const { client } = await SidenoteClient.ensure();
-  const screen = new Screen(process.stdin, process.stdout);
-  let running = true;
   let releasePane = () => {
   };
+  const { app, running } = startScreen(
+    (terminal) => new App({
+      api: new ClientApi(client),
+      ansi: terminalOptions(process.env),
+      sessionId: requested ?? null,
+      cwd: process.cwd(),
+      terminal
+    }),
+    () => releasePane()
+  );
+  let claimed = null;
+  while (running()) {
+    await app.refresh();
+    if (app.sessionId && app.sessionId !== claimed) {
+      releasePane();
+      releasePane = claimPane(app.sessionId);
+      claimed = app.sessionId;
+    }
+    await sleep3(POLL_INTERVAL_MS);
+  }
+}
+async function runChat(args) {
+  if (!needsTerminal("sidenote chat")) return;
+  const requested = sessionArgument(args);
+  if (requested === false) return;
+  const { client } = await SidenoteClient.ensure();
+  const api = new ClientApi(client, { startServer: true });
+  const sessionId = await api.startConversation(process.cwd(), requested);
+  const { app, running } = startScreen(
+    (terminal) => new App({ api, chat: api, ansi: terminalOptions(process.env), sessionId, cwd: process.cwd(), terminal }),
+    () => process.stderr.write(`To continue this session: sidenote chat ${sessionId}
+`)
+  );
+  const poll = async (step) => {
+    while (running()) {
+      try {
+        await step();
+      } catch {
+        await sleep3(POLL_INTERVAL_MS);
+      }
+    }
+  };
+  await Promise.all([poll(() => app.refresh({ wait: true })), poll(() => app.refreshConversation({ wait: true }))]);
+}
+function needsTerminal(command2) {
+  if (process.stdin.isTTY && process.stdout.isTTY) return true;
+  console.error(`${command2} needs a terminal.`);
+  process.exitCode = 1;
+  return false;
+}
+function sessionArgument(args) {
+  const requested = args.find((arg) => !arg.startsWith("-"));
+  if (requested === void 0 || SESSION_ID_PATTERN.test(requested)) return requested;
+  console.error("That doesn't look like a Claude Code session id.");
+  process.exitCode = 2;
+  return false;
+}
+function startScreen(create, onExit) {
+  const screen = new Screen(process.stdin, process.stdout);
+  let running = true;
   const quit = (code2 = 0) => {
     running = false;
     screen.stop();
-    releasePane();
+    onExit();
     process.exit(code2);
   };
-  const app = new App({
-    api: new ClientApi(client),
-    ansi: terminalOptions(process.env),
-    sessionId: requested ?? null,
-    cwd: process.cwd(),
-    terminal: {
-      size: () => screen.size(),
-      draw: (rows, cursor) => screen.draw(rows, cursor),
-      editText: async (text) => screen.suspend(() => editInEditor(text)),
-      quit: () => quit()
-    }
+  const app = create({
+    size: () => screen.size(),
+    draw: (rows, cursor) => screen.draw(rows, cursor),
+    editText: async (text) => screen.suspend(() => editInEditor(text)),
+    quit: () => quit()
   });
   for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, () => quit());
   process.on("uncaughtException", (error) => {
     screen.stop();
-    releasePane();
-    console.error(`sidenote tui stopped: ${error.message}`);
+    onExit();
+    console.error(`sidenote stopped: ${error.message}`);
     process.exit(1);
   });
   let queue = Promise.resolve();
@@ -3786,16 +4196,7 @@ async function runTui(args) {
     },
     () => app.render()
   );
-  let claimed = null;
-  while (running) {
-    await app.refresh();
-    if (app.sessionId && app.sessionId !== claimed) {
-      releasePane();
-      releasePane = claimPane(app.sessionId);
-      claimed = app.sessionId;
-    }
-    await sleep3(POLL_INTERVAL_MS);
-  }
+  return { app, running: () => running };
 }
 function editInEditor(text) {
   const editor = (process.env["VISUAL"] || process.env["EDITOR"] || "vi").trim().split(/\s+/);
@@ -4087,6 +4488,9 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote on [session] [terminal|browser]
                                turn sidenote on and open the session's window, in the browser
                                or in a terminal pane; the choice is remembered
+  sidenote chat [session]      talk to Claude Code here: sidenote runs the session, and you
+                               note its replies as it works; without a session, a new one
+                               starts in this folder
   sidenote tui [session]       show the session's replies in this terminal; without a session,
                                the latest one in this folder
   sidenote off                 turn sidenote off; unsent notes are kept
@@ -4102,7 +4506,7 @@ The /sidenote:* commands pass the current session. Without one, the most recentl
 session is used.`;
 var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
 var isEnabled = () => existsSync3(paths.enabledFlag());
-function sessionArgument() {
+function sessionArgument2() {
   const value = process.argv[3]?.trim();
   return value && !value.includes("$") ? value : void 0;
 }
@@ -4148,7 +4552,7 @@ var commands = {
     writeFileSync4(paths.enabledFlag(), "");
     if (ui) writeUi(ui);
     const { client } = await SidenoteClient.ensure();
-    console.log(`sidenote is on. ${await show(client, sessionArgument())}`);
+    console.log(`sidenote is on. ${await show(client, sessionArgument2())}`);
   },
   async off() {
     rmSync4(paths.enabledFlag(), { force: true });
@@ -4163,7 +4567,7 @@ var commands = {
   },
   async open() {
     const client = await SidenoteClient.connect();
-    console.log(client ? await show(client, sessionArgument()) : NOT_RUNNING);
+    console.log(client ? await show(client, sessionArgument2()) : NOT_RUNNING);
   },
   async status() {
     console.log(`enabled: ${isEnabled() ? "yes" : "no"}`);
@@ -4176,7 +4580,7 @@ var commands = {
     console.log(`server:  ${client.origin}`);
     const { session, responses, comments } = await fetchState(
       client,
-      sessionArgument() ?? await latestSession(client)
+      sessionArgument2() ?? await latestSession(client)
     );
     if (!session) {
       console.log("This session has no replies in sidenote yet.");
@@ -4197,7 +4601,7 @@ var commands = {
       console.log(NOT_RUNNING);
       return;
     }
-    const sessionId = sessionArgument() ?? await latestSession(client);
+    const sessionId = sessionArgument2() ?? await latestSession(client);
     const file = sessionId ? findTranscript(paths.transcriptsDir(), sessionId) : null;
     if (!sessionId || !file) {
       console.log("No transcript found for this session.");
@@ -4226,6 +4630,10 @@ var commands = {
   async tui() {
     const { runTui: runTui2 } = await Promise.resolve().then(() => (init_main(), main_exports));
     await runTui2(process.argv.slice(3));
+  },
+  async chat() {
+    const { runChat: runChat2 } = await Promise.resolve().then(() => (init_main(), main_exports));
+    await runChat2(process.argv.slice(3));
   },
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),

@@ -28,6 +28,9 @@ note on its own, and each answer lands in that note's thread.
   the session they were written on.
 - **Or stay in the terminal.** `sidenote tui` shows the same feed, notes and threads in a
   terminal pane next to Claude Code.
+- **Or talk to Claude in sidenote itself** (preview). `sidenote chat` runs the Claude Code
+  session for you: you type messages, watch Claude work, answer its permission prompts, and
+  note its replies in the same window.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -176,6 +179,31 @@ when Claude Code isn't started from a terminal. sidenote also looks in the usual
 Volta, mise, asdf, nvm and fnm locations. If it still can't find Node, set `SIDENOTE_NODE` to
 the full path of your `node` binary. Problems are logged to `~/.sidenote/server.log`.
 
+### Talk to Claude in sidenote (preview)
+
+`sidenote chat` makes sidenote the whole session, in one terminal window: no Claude Code pane
+beside it. Run it in your project folder (it doesn't need `/sidenote:on`):
+
+```shell
+'…/sidenote/bin/sidenote' chat
+```
+
+A new Claude Code session starts there, using your normal Claude Code login and settings. Type
+at the `you ›` line and press **Enter**. Claude's reply streams in above it, with each tool call
+as a one-line row (`⏺ Edit src/app.ts`, `✗` when it failed). When Claude asks to use a tool, the
+request shows in full under the reply: **y** allows it, **a** always allows it (Claude Code's
+suggested rule, such as accepting edits for this session), **n** denies it. **Esc** interrupts
+Claude; messages you typed while it worked come back to the prompt line.
+
+**Tab** moves between the prompt line and the conversation, where the keys above work: move to
+a block, **n** to note it, **Enter** to open a thread. Notes ride along with your next message,
+or go on their own with **S**. Their answers land in the notes' threads, as in the browser.
+
+Claude runs in the sidenote server, not in the window, so it keeps working if you close the
+window. The window prints the session's id when it closes; `sidenote chat <session id>` picks
+the session up again, and also continues a session you started in Claude Code. The browser
+window works for these sessions too.
+
 ## How it works
 
 Four hooks connect Claude Code to a small local server:
@@ -187,6 +215,12 @@ Four hooks connect Claude Code to a small local server:
 - **UserPromptSubmit** (`hook-prompt`) attaches pending notes to the prompt you type.
 - **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
   draw them. It applies to sessions started, resumed or cleared while sidenote is on.
+
+`sidenote chat` doesn't use the hooks: the server runs Claude Code headless (`claude -p` with
+stream-json input and output), one process per session, and sends your messages to it. Claude
+Code's permission prompts come back to the server as requests, which wait until you answer.
+Each finished turn is stored like a reply the Stop hook would have sent. The hooks see these
+sessions too, and stand aside.
 
 When notes reach Claude, it is asked to answer each one under a line like `**↳ Re: note 12**`.
 The server moves those sections out of the reply and into the notes' threads. If Claude leaves
@@ -212,6 +246,9 @@ locked down:
   with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own
   controls. The page's content security policy allows no inline or remote scripts, and every
   response carries `nosniff`, `no-referrer` and anti-framing headers.
+- **Sessions sidenote runs.** For `sidenote chat` sessions, the API can also send messages to
+  Claude and answer its permission prompts, under the same token and checks. A session only
+  starts in a folder that exists, and only your answer allows a tool Claude Code would ask about.
 - **Private files.** `~/.sidenote` and everything in it are readable only by you.
 
 Found a security problem? Please report it privately through GitHub's
@@ -232,11 +269,12 @@ npm run format     # apply Prettier
 | Path                                   | What's there                                                             |
 | -------------------------------------- | ------------------------------------------------------------------------ |
 | `src/shared/types.ts`                  | The API contract, used by the server, the hooks and the page             |
-| `src/server/`                          | Request parsing, the store, Send now, launch codes, and the HTTP routes  |
+| `src/server/`                          | Request parsing, the store, Send now, the session host, and the routes   |
+| `src/agent/`                           | Running an agent headless: the driver interface and the Claude adapter   |
 | `src/cli/`                             | The `/sidenote:*` commands and the three hooks                           |
 | `src/node/`                            | Paths and clock, shared by the server and the CLI                        |
 | `src/web/`                             | The page: feed, thread pane, note editor, and Send now controls          |
-| `src/tui/`                             | `sidenote tui`: the terminal pane, its views, editor and renderer        |
+| `src/tui/`                             | `sidenote tui` and `sidenote chat`: views, prompt line, editor, renderer |
 | `test/`                                | Unit tests, HTTP security tests, and an end-to-end run of the real hooks |
 | `bin/sidenote`                         | Finds Node and runs `dist/cli.js`                                        |
 | `hooks/`, `skills/`, `.claude-plugin/` | The plugin wiring                                                        |

@@ -27,6 +27,9 @@ export const MAX_QUEUED = 20;
 
 export class HostError extends Error {}
 
+/** The session isn't one this server runs: never opened, or opened before a restart. */
+export class UnknownSession extends HostError {}
+
 interface Hosted {
   id: string;
   cwd: string;
@@ -177,7 +180,7 @@ export class SessionHost {
 
   #get(sessionId: string): Hosted {
     const session = this.#sessions.get(sessionId);
-    if (!session) throw new HostError("sidenote isn't running this session");
+    if (!session) throw new UnknownSession("sidenote isn't running this session");
     return session;
   }
 

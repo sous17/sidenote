@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type {
+  ConversationView,
   NewNoteRequest,
   Note,
   SessionState,
@@ -8,7 +9,7 @@ import type {
   StateSnapshot,
   StoredResponse,
 } from "../src/shared/types.ts";
-import { App, type Terminal, type TuiApi } from "../src/tui/app.ts";
+import { App, type ChatApi, type Terminal, type TuiApi } from "../src/tui/app.ts";
 import { parseKeys } from "../src/tui/keys.ts";
 
 const SESSION = "s1";
@@ -363,4 +364,173 @@ test("q quits", async () => {
   const { app, terminal } = await start(new FakeApi([reply(1, REPLY_ONE)]));
   await press(app, "q");
   assert.equal(terminal.quitted, true);
+});
+
+// ---- sidenote chat ---------------------------------------------------------------------------
+
+/** The session host's side: what the app sent, and the conversation it shows. */
+class FakeChat implements ChatApi {
+  view: ConversationView = {
+    version: 1,
+    session_id: SESSION,
+    agent: "Claude Code",
+    model: "claude-test",
+    state: "idle",
+    live: null,
+    queued: [],
+    permission: null,
+    context: { used: 25_000, limit: 200_000 },
+    error: "",
+  };
+  readonly messages: string[] = [];
+  readonly answers: string[] = [];
+  interrupts = 0;
+  queuedOnInterrupt: string[] = [];
+
+  async conversation(known: number): Promise<ConversationView | null> {
+    return known === this.view.version ? null : structuredClone(this.view);
+  }
+  async message(_session: string, text: string): Promise<void> {
+    this.messages.push(text);
+  }
+  async interrupt(): Promise<string[]> {
+    this.interrupts += 1;
+    return this.queuedOnInterrupt;
+  }
+  async answer(_session: string, requestId: string, decision: string): Promise<void> {
+    this.answers.push(`${requestId}:${decision}`);
+    this.change({ permission: null, state: "working" });
+  }
+  change(fields: Partial<ConversationView>): void {
+    this.view = { ...this.view, ...fields, version: this.view.version + 1 };
+  }
+}
+
+async function startChat(api: FakeApi, chat = new FakeChat(), terminal = new FakeTerminal(130, 30)) {
+  const app = new App({
+    api,
+    chat,
+    terminal,
+    ansi: { color: true, hyperlinks: true },
+    sessionId: SESSION,
+    cwd: "/w/demo",
+  });
+  await app.refresh();
+  await app.refreshConversation();
+  return { app, chat, terminal };
+}
+
+test("chat: a new session opens on the prompt line, and Enter sends the message", async () => {
+  const api = new FakeApi([]);
+  const { app, chat, terminal } = await startChat(api);
+  assert.match(terminal.text[0]!, /^sidenote · auth-refactor · Claude Code · claude-test +13% context · ● ready$/);
+  assert.ok(terminal.has("A new session in demo. Type a message for Claude below."));
+  assert.equal(terminal.text.at(-2), "you › Message Claude…");
+  assert.deepEqual(terminal.cursor, { row: terminal.frame.length - 2, column: 6 }, "the cursor waits on the prompt");
+
+  await press(app, "Hello");
+  assert.equal(terminal.text.at(-2), "you › Hello");
+  await press(app, "\r");
+  assert.deepEqual(chat.messages, ["Hello"]);
+  assert.equal(terminal.text.at(-2), "you › Message Claude…", "the prompt line clears");
+  await press(app, "\r");
+  assert.ok(terminal.has("Type a message for Claude first"));
+  assert.deepEqual(chat.messages, ["Hello"]);
+});
+
+test("chat: the turn in progress streams in under the conversation, and Esc interrupts it", async () => {
+  const api = new FakeApi([reply(1, REPLY_ONE)]);
+  const { app, chat, terminal } = await startChat(api);
+  chat.change({
+    state: "working",
+    live: {
+      prompt: "Fix the tests",
+      notes_sent: 2,
+      started_at: 0,
+      parts: [
+        { kind: "text", text: "Looking at the **tests**." },
+        { kind: "tool", id: "t1", tool: "Bash", summary: "npm test", failed: null },
+      ],
+    },
+    queued: ["And the docs"],
+  });
+  await app.refreshConversation();
+  assert.match(terminal.text[0]!, /◐ working$/);
+  const rows = terminal.text.map((row) => row.trimEnd());
+  const at = rows.indexOf("  you › Fix the tests  + 2 notes");
+  assert.ok(at > 0, "the prompt shows above the turn, with the notes that rode along");
+  assert.match(rows[at + 1]!, /^ {2}── Claude Code ─+$/);
+  assert.equal(rows[at + 2], "  Looking at the tests.");
+  assert.equal(rows[at + 3], "    ◌ Bash npm test");
+  assert.equal(rows[at + 4], "    …");
+  assert.equal(rows[at + 5], "  queued › And the docs");
+  assert.match(terminal.text.at(-1)!, /esc interrupt/);
+
+  chat.queuedOnInterrupt = ["And the docs"];
+  await press(app, "\x1b");
+  assert.equal(chat.interrupts, 1);
+  assert.equal(terminal.text.at(-2), "you › And the docs", "queued messages come back to the prompt");
+});
+
+test("chat: y, a and n answer a permission prompt, even from the prompt line", async () => {
+  const api = new FakeApi([reply(1, REPLY_ONE)]);
+  const { app, chat, terminal } = await startChat(api);
+  chat.change({
+    state: "waiting",
+    live: { prompt: "Edit it", notes_sent: 0, started_at: 0, parts: [] },
+    permission: { request_id: "p1", tool: "Edit", summary: "a.ts", detail: "a.ts\n- old\n+ new" },
+  });
+  await app.refreshConversation();
+  assert.match(terminal.text[0]!, /◆ needs your answer$/);
+  assert.ok(terminal.has("┃ Allow Edit?"));
+  assert.ok(terminal.has("┃ - old"));
+  assert.ok(terminal.has("┃ y allow  a always allow this  n deny"));
+  assert.equal(terminal.text.at(-1), "Claude is waiting: y allow · a always allow · n deny");
+  await press(app, "a");
+  assert.deepEqual(chat.answers, ["p1:always"]);
+  assert.equal(terminal.text.at(-2), "you › Message Claude; it goes when this turn ends…", "the key wasn't typed");
+  await press(app, "y");
+  assert.equal(terminal.text.at(-2), "you › y", "with no prompt waiting, y is just a letter");
+});
+
+test("chat: stored turns show what the user typed, their tool calls and how they ended", async () => {
+  const api = new FakeApi([
+    reply(1, "Looked.\n\nChanged it.", {
+      prompt: "Change it",
+      notes_sent: 1,
+      steps: [
+        { tool: "Read", summary: "a.ts", after_block: -1, failed: false },
+        { tool: "Edit", summary: "a.ts", after_block: 0, failed: true },
+      ],
+      ended: "interrupted",
+    }),
+  ]);
+  const { terminal } = await startChat(api);
+  const rows = terminal.text.map((row) => row.trimEnd()).filter(Boolean);
+  const at = rows.indexOf("  you › Change it  + 1 note");
+  assert.ok(at > 0);
+  assert.match(rows[at + 1]!, /^ {2}── /);
+  assert.deepEqual(rows.slice(at + 2, at + 7), [
+    "    ⏺ Read a.ts",
+    "  Looked.",
+    "    ✗ Edit a.ts",
+    "  Changed it.",
+    "    ⏹ Interrupted",
+  ]);
+});
+
+test("chat: notes wait for the next message, and Tab moves between the prompt and the conversation", async () => {
+  const api = new FakeApi([reply(2, REPLY_TWO)]);
+  const { app, terminal } = await startChat(api);
+  assert.deepEqual(terminal.selected, [], "no cursor in the conversation while typing");
+  await press(app, "\t");
+  assert.equal(terminal.cursor, null);
+  assert.ok(terminal.selected.length > 0, "the cursor starts at the bottom of what is in view");
+  assert.match(terminal.text.at(-1)!, /tab message/);
+  await press(app, "gnLooks good\r");
+  assert.equal(api.sends, 0, "Enter saves the note; it doesn't send it on its own");
+  assert.ok(terminal.has("Saved. It goes with your next message, or press S to send it now"));
+  assert.match(terminal.text.at(-2)!, /^you › Message Claude… {3}1 note rides along$/);
+  await press(app, "i");
+  assert.notEqual(terminal.cursor, null, "i goes back to the prompt");
 });

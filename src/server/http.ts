@@ -26,7 +26,7 @@ import {
   type WaiterPollResult,
 } from "../shared/types.ts";
 import type { Delivery } from "./delivery.ts";
-import { HostError, type SessionHost } from "./host.ts";
+import { HostError, UnknownSession, type SessionHost } from "./host.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
@@ -340,6 +340,7 @@ export function createApp(options: AppOptions): RequestListener {
       if (response.headersSent) return response.destroy();
       if (error instanceof HttpError) return send(response, errorReply(error.status, error.message));
       if (error instanceof BadRequest) return send(response, errorReply(400, error.message));
+      if (error instanceof UnknownSession) return send(response, errorReply(404, error.message));
       if (error instanceof HostError) return send(response, errorReply(409, error.message));
       console.error(error);
       send(response, errorReply(500, "internal error"));

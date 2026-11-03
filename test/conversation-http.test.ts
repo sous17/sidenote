@@ -10,6 +10,8 @@ import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
 import { Store } from "../src/server/store.ts";
 import type { ConversationView, SendResult, StartConversationResult, StateSnapshot } from "../src/shared/types.ts";
+import { SidenoteClient } from "../src/cli/client.ts";
+import { ClientApi } from "../src/tui/api.ts";
 import { FakeAgent, noteOn } from "./helpers.ts";
 
 const TOKEN = "test-token-0123456789";
@@ -18,24 +20,26 @@ const folder = mkdtempSync(`${tmpdir()}/sidenote-chat-`);
 const store = new Store();
 const agent = new FakeAgent();
 let base = "";
+let port = 0;
+
+function app(host: SessionHost) {
+  return createApp({
+    store,
+    delivery: new Delivery(store),
+    host,
+    launchCodes: new LaunchCodes(),
+    token: TOKEN,
+    allowedHosts: new Set([`127.0.0.1:${port}`]),
+    webDir: folder,
+  });
+}
 
 before(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
+  port = typeof address === "object" && address ? address.port : 0;
   base = `http://127.0.0.1:${port}`;
-  server.on(
-    "request",
-    createApp({
-      store,
-      delivery: new Delivery(store),
-      host: new SessionHost({ store, agent }),
-      launchCodes: new LaunchCodes(),
-      token: TOKEN,
-      allowedHosts: new Set([`127.0.0.1:${port}`]),
-      webDir: folder,
-    }),
-  );
+  server.on("request", app(new SessionHost({ store, agent })));
 });
 
 after(() => {
@@ -126,5 +130,20 @@ test("an empty message without notes is refused with the reason", async () => {
   assert.equal(refused.status, 409);
   assert.match(refused.body.error, /nothing to send/);
   const unknown = await call("POST", "/api/conversation/messages", { session_id: "nope", text: "hi" });
-  assert.equal(unknown.status, 409);
+  assert.equal(unknown.status, 404, "a session this server doesn't run, say after a restart");
+});
+
+test("the terminal starts its session again when the server restarted", async () => {
+  const api = new ClientApi(new SidenoteClient({ port, token: TOKEN, pid: process.pid }));
+  const id = await api.startConversation(folder);
+  // A restart: a new host that has never heard of the session.
+  const restarted = new FakeAgent();
+  server.removeAllListeners("request");
+  server.on("request", app(new SessionHost({ store, agent: restarted })));
+
+  await api.message(id, "Still there?");
+  assert.deepEqual(restarted.starts, [{ sessionId: id, cwd: folder, resume: true }]);
+  assert.deepEqual(restarted.sent, ["Still there?"]);
+  const view = await api.conversation(57, id, false);
+  assert.equal(view?.live?.prompt, "Still there?");
 });

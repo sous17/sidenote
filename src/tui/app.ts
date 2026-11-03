@@ -1,9 +1,18 @@
 // The terminal window's controller: one session's feed or one note's thread, a cursor that moves
-// between blocks and notes, and a note editor at the bottom. It reaches the server and the
-// terminal only through TuiApi and Terminal, so tests drive it with keys and read its frames.
+// between blocks and notes, and a note editor at the bottom. With a ChatApi it is the whole
+// session (sidenote chat): a prompt line to message the agent, the turn in progress streaming in
+// below the feed, and permission prompts to answer. It reaches the server and the terminal only
+// through its APIs and Terminal, so tests drive it with keys and read its frames.
 import { Model } from "../shared/model.ts";
 import { projectName, plural, truncate } from "../shared/text.ts";
-import type { NewNoteRequest, SessionSummary, StateSnapshot, StoredResponse } from "../shared/types.ts";
+import type {
+  ConversationView,
+  NewNoteRequest,
+  PermissionAnswerRequest,
+  SessionSummary,
+  StateSnapshot,
+  StoredResponse,
+} from "../shared/types.ts";
 import { lineToAnsi, type AnsiOptions } from "./ansi.ts";
 import { NoteText } from "./editor.ts";
 import { buildFeed, type FeedView, type Target } from "./feed.ts";
@@ -12,15 +21,26 @@ import { PLAIN, type Span, type Style } from "./lines.ts";
 import { renderReply, type RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { buildThread } from "./thread.ts";
+import { liveRows } from "./turn.ts";
 import { clipSpans, spansWidth } from "./wrap.ts";
 
 export interface TuiApi {
   sessions(): Promise<SessionSummary[]>;
-  /** The session's state, or null when nothing changed since knownVersion. */
-  state(knownVersion: number, sessionId: string): Promise<StateSnapshot | null>;
+  /** The session's state, or null when nothing changed since knownVersion; wait holds out for a change. */
+  state(knownVersion: number, sessionId: string, wait?: boolean): Promise<StateSnapshot | null>;
   addNote(note: NewNoteRequest): Promise<void>;
   deleteNote(id: number): Promise<void>;
   send(sessionId: string): Promise<void>;
+}
+
+/** A session sidenote runs (see src/server/host.ts). */
+export interface ChatApi {
+  /** The conversation, or null when nothing changed since knownVersion; wait holds out for a change. */
+  conversation(knownVersion: number, sessionId: string, wait: boolean): Promise<ConversationView | null>;
+  message(sessionId: string, text: string): Promise<void>;
+  /** Stops the turn; resolves with the queued messages it dropped. */
+  interrupt(sessionId: string): Promise<string[]>;
+  answer(sessionId: string, requestId: string, decision: PermissionAnswerRequest["decision"]): Promise<void>;
 }
 
 export interface Terminal {
@@ -39,12 +59,15 @@ export interface AppOptions {
   /** The session to show; null picks the most recently active one in cwd, waiting for one. */
   sessionId: string | null;
   cwd: string;
+  /** Set for a session sidenote runs, which the user messages from here. */
+  chat?: ChatApi;
 }
 
 /** Same limit as the page's editor: enough context for Claude without the whole reply. */
 const MAX_QUOTE_CHARS = 600;
 const GUTTER = 2;
 const EDITOR_MAX_ROWS = 6;
+const PROMPT_LABEL = "you › ";
 const MIN_COLUMNS = 30;
 const MIN_ROWS = 8;
 
@@ -72,8 +95,18 @@ export class App {
   readonly #terminal: Terminal;
   readonly #ansi: AnsiOptions;
   readonly #cwd: string;
+  readonly #chat: ChatApi | null;
   #model: Model | null = null;
   #reachable = true;
+
+  #conversation: ConversationView | null = null;
+  /** The message being typed. */
+  #prompt = new NoteText();
+  #promptScroll = 0;
+  /** In chat, keys go to the prompt line or to the conversation above it. */
+  #focus: "prompt" | "feed" = "prompt";
+  /** Keep the bottom of the conversation in view as it grows. */
+  #follow = true;
 
   #view: "feed" | "thread" = "feed";
   #threadRoot: number | null = null;
@@ -105,6 +138,7 @@ export class App {
     this.#terminal = options.terminal;
     this.#ansi = options.ansi;
     this.#cwd = options.cwd;
+    this.#chat = options.chat ?? null;
     if (options.sessionId) this.#model = new Model(options.sessionId);
   }
 
@@ -114,8 +148,8 @@ export class App {
 
   // ---- Server ---------------------------------------------------------------------------
 
-  /** Fetches the latest state, then draws. Called once a second, and after every change. */
-  async refresh(): Promise<void> {
+  /** Fetches the latest state, then draws. Called in a loop, and after every change. */
+  async refresh(options: { wait?: boolean } = {}): Promise<void> {
     try {
       if (!this.#model) {
         const sessions = await this.#api.sessions();
@@ -123,14 +157,35 @@ export class App {
         if (here) this.#model = new Model(here.id);
       }
       if (this.#model) {
-        const snapshot = await this.#api.state(this.#model.snapshot.version, this.#model.sessionId);
+        const snapshot = await this.#api.state(this.#model.snapshot.version, this.#model.sessionId, options.wait);
         if (snapshot) this.#update(snapshot);
       }
       this.#reachable = true;
-    } catch {
+    } catch (error) {
       this.#reachable = false;
+      if (options.wait) throw error;
     }
     this.render();
+  }
+
+  /** Fetches the turn in progress of a session sidenote runs, then draws. */
+  async refreshConversation(options: { wait?: boolean } = {}): Promise<void> {
+    if (!this.#chat || !this.#model) return;
+    try {
+      const known = this.#conversation?.version ?? -1;
+      const view = await this.#chat.conversation(known, this.#model.sessionId, options.wait ?? false);
+      if (view) this.#conversation = view;
+      this.#reachable = true;
+    } catch (error) {
+      this.#reachable = false;
+      if (options.wait) throw error;
+    }
+    this.render();
+  }
+
+  get #working(): boolean {
+    const state = this.#conversation?.state;
+    return state === "working" || state === "waiting";
   }
 
   #update(snapshot: StateSnapshot): void {
@@ -142,7 +197,10 @@ export class App {
     model.snapshot = snapshot;
     const latest = model.responses.at(-1);
     if (!latest) return;
-    if (firstLoad) {
+    if (this.#chat) {
+      // In chat the bottom of the conversation stays in view, unless the user scrolled away.
+      if (!firstLoad && !known.has(latest.id) && !this.#follow) this.#newBelow = true;
+    } else if (firstLoad) {
       this.#showReply = latest.id;
     } else if (!known.has(latest.id)) {
       // A new reply: follow it if the cursor was on the latest one and nothing is being written.
@@ -161,7 +219,9 @@ export class App {
     try {
       if (key.ctrl && key.name === "c") return this.#terminal.quit();
       if (this.#editor) await this.#editorKey(this.#editor, key);
+      else if (await this.#permissionKey(key)) return;
       else if (this.#lines) this.#linesKey(this.#lines, key);
+      else if (this.#chat && this.#view === "feed" && this.#focus === "prompt") await this.#promptKey(key);
       else if (this.#view === "thread") await this.#threadKey(key, confirming);
       else await this.#feedKey(key, confirming);
     } catch (error) {
@@ -172,6 +232,17 @@ export class App {
 
   async #feedKey(key: Key, confirming: number | null): Promise<void> {
     const target = this.#selectedTarget();
+    if (this.#chat && (key.name === "tab" || key.name === "i")) {
+      this.#focus = "prompt";
+      return;
+    }
+    if (this.#chat && key.name === "escape") {
+      if (this.#working) return this.#interrupt();
+      this.#focus = "prompt";
+      return;
+    }
+    if (["j", "k", "up", "down", "g", "home", " ", "b", "pageup", "pagedown"].includes(key.name)) this.#follow = false;
+    if (key.ctrl && (key.name === "d" || key.name === "u")) this.#follow = false;
     switch (key.name) {
       case "j":
       case "down":
@@ -185,9 +256,13 @@ export class App {
         return;
       case "G":
       case "end": {
+        this.#newBelow = false;
+        if (this.#chat) {
+          this.#follow = true;
+          return;
+        }
         const latest = this.#model?.responses.at(-1);
         if (latest) this.#showReply = latest.id;
-        this.#newBelow = false;
         return;
       }
       case " ":
@@ -300,17 +375,60 @@ export class App {
   }
 
   async #editorKey(editing: Editing, key: Key): Promise<void> {
-    const { text } = editing;
-    const width = this.#editorWidth();
     if (key.name === "escape") return this.#closeEditor();
-    if (key.name === "enter" && (key.alt || key.shift)) return text.insert("\n");
-    if (key.name === "enter") return this.#submit(editing, this.#model?.canSend() ?? false);
+    if (key.name === "enter" && !(key.alt || key.shift)) {
+      // In chat, notes wait for the next message; S sends them on their own.
+      return this.#submit(editing, !this.#chat && (this.#model?.canSend() ?? false));
+    }
     if (key.ctrl && key.name === "s") return this.#submit(editing, false);
-    if (key.ctrl && key.name === "e") {
-      const edited = await this.#terminal.editText(text.text);
-      if (edited !== null) editing.text = new NoteText(edited.replace(/\n+$/, ""));
+    const edited = await this.#editText(editing.text, key, this.#editorWidth());
+    if (edited) editing.text = edited;
+  }
+
+  /** Keys while the prompt line has focus: type, send with Enter, Esc to interrupt or leave. */
+  async #promptKey(key: Key): Promise<void> {
+    if (key.name === "escape") {
+      if (this.#working) return this.#interrupt();
+      this.#focusFeed();
       return;
     }
+    if (key.name === "tab") return this.#focusFeed();
+    if (key.name === "enter" && !(key.alt || key.shift)) return this.#sendMessage();
+    const edited = await this.#editText(this.#prompt, key, this.#promptWidth());
+    if (edited) this.#prompt = edited;
+  }
+
+  /** y, a or n answer a permission prompt, unless a note is being written. */
+  async #permissionKey(key: Key): Promise<boolean> {
+    const permission = this.#conversation?.permission;
+    if (!this.#chat || !permission || this.#view !== "feed" || key.ctrl || key.alt) return false;
+    const decision = ({ y: "allow", a: "always", n: "deny" } as const)[key.name as "y" | "a" | "n"];
+    if (!decision) return false;
+    await this.#chat.answer(this.#model!.sessionId, permission.request_id, decision);
+    this.#message = {
+      text: decision === "deny" ? `Denied ${permission.tool}` : `Allowed ${permission.tool}`,
+      style: MUTED,
+    };
+    this.#follow = true;
+    await this.refreshConversation();
+    return true;
+  }
+
+  /** Editing keys shared by the note editor and the prompt line; a new text when $EDITOR replaced it. */
+  async #editText(text: NoteText, key: Key, width: number): Promise<NoteText | null> {
+    if (key.name === "enter") {
+      text.insert("\n");
+      return null;
+    }
+    if (key.ctrl && key.name === "e") {
+      const edited = await this.#terminal.editText(text.text);
+      return edited === null ? null : new NoteText(edited.replace(/\n+$/, ""));
+    }
+    this.#editKey(text, key, width);
+    return null;
+  }
+
+  #editKey(text: NoteText, key: Key, width: number): void {
     if (key.name === "paste") return text.insert(key.text);
     if (key.name === "backspace") return key.alt || key.ctrl ? text.deleteWord() : text.backspace();
     if (key.ctrl && key.name === "w") return text.deleteWord();
@@ -325,6 +443,45 @@ export class App {
   }
 
   // ---- Actions --------------------------------------------------------------------------
+
+  async #sendMessage(): Promise<void> {
+    const model = this.#model;
+    if (!this.#chat || !model) return;
+    if (this.#prompt.isBlank && !model.pendingCount()) {
+      this.#message = { text: "Type a message for Claude first", style: MUTED };
+      return;
+    }
+    await this.#chat.message(model.sessionId, this.#prompt.isBlank ? "" : this.#prompt.text);
+    this.#prompt = new NoteText();
+    this.#promptScroll = 0;
+    this.#follow = true;
+    this.#newBelow = false;
+    await this.refreshConversation();
+  }
+
+  async #interrupt(): Promise<void> {
+    if (!this.#chat || !this.#model) return;
+    const queued = await this.#chat.interrupt(this.#model.sessionId);
+    // Messages that were waiting come back to the prompt line, to send again or drop.
+    if (queued.length && this.#prompt.isBlank) {
+      this.#prompt = new NoteText(queued.join("\n\n"));
+      this.#prompt.end();
+    }
+    this.#message = {
+      text: queued.length ? "Interrupted. Queued messages are back in the prompt" : "Interrupted",
+      style: MUTED,
+    };
+    await this.refreshConversation();
+  }
+
+  #focusFeed(): void {
+    this.#focus = "feed";
+    // Put the cursor on what is in view at the bottom, where the user was reading.
+    const height = this.#bodyHeight();
+    const visible = this.#feed?.targets.filter((t) => t.start < this.#scroll + height && t.end > this.#scroll);
+    const last = visible?.at(-1);
+    if (last && (this.#follow || !visible?.some((t) => t.key === this.#selected))) this.#selected = last.key;
+  }
 
   #move(direction: 1 | -1): void {
     const targets = this.#feed?.targets ?? [];
@@ -418,6 +575,8 @@ export class App {
         model.sendStatus().status === "busy"
           ? { text: "Saved. Claude is working; it goes as soon as it finishes", style: ACCENT }
           : { text: "Sent to Claude", style: ACCENT };
+    } else if (this.#chat) {
+      this.#message = { text: "Saved. It goes with your next message, or press S to send it now", style: MUTED };
     } else {
       this.#message = model.canSend()
         ? { text: "Saved. It goes with your next prompt, or press S to send now", style: MUTED }
@@ -495,24 +654,57 @@ export class App {
       return;
     }
     const frame: string[] = [this.#ansiRow(this.#topBar(columns))];
-    const bottom = this.#editor ? this.#editorRows(this.#editor, columns) : null;
     const height = this.#bodyHeight();
     const body = this.#view === "thread" ? this.#threadBody(columns, height) : this.#feedBody(columns, height);
     frame.push(...body.map((spans) => this.#ansiRow(clipSpans(spans, columns))));
-    let cursor: { row: number; column: number } | null = null;
-    if (bottom) {
-      cursor = { row: frame.length + bottom.cursor.row, column: bottom.cursor.column };
-      frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
-    } else {
-      frame.push(this.#ansiRow(clipSpans(this.#hint(), columns)));
-    }
+    // After the body, which settles the selection the key hints describe.
+    const bottom = this.#bottom(columns);
+    const cursor = bottom.cursor && { row: frame.length + bottom.cursor.row, column: bottom.cursor.column };
+    frame.push(...bottom.rows.map((spans) => this.#ansiRow(spans)));
     this.#terminal.draw(frame, cursor);
+  }
+
+  /** The rows under the conversation: a note editor, or the prompt line, then the key hints. */
+  #bottom(columns: number): { rows: Span[][]; cursor: { row: number; column: number } | null } {
+    if (this.#editor) return this.#editorRows(this.#editor, columns);
+    const hint = clipSpans(this.#hint(), columns);
+    if (!this.#chat) return { rows: [hint], cursor: null };
+    const prompt = this.#promptRows(columns);
+    const focused = this.#focus === "prompt" && this.#view === "feed" && !this.#lines;
+    return { rows: [...prompt.rows, hint], cursor: focused ? prompt.cursor : null };
   }
 
   #bodyHeight(): number {
     const { columns, rows } = this.#terminal.size();
-    const bottom = this.#editor ? this.#editorRows(this.#editor, columns).rows.length : 1;
-    return Math.max(1, rows - 1 - bottom);
+    return Math.max(1, rows - 1 - this.#bottom(columns).rows.length);
+  }
+
+  #promptRows(columns: number): { rows: Span[][]; cursor: { row: number; column: number } } {
+    const width = this.#promptWidth();
+    const layout = this.#prompt.layout(width);
+    const visible = Math.min(EDITOR_MAX_ROWS, layout.rows.length);
+    this.#promptScroll = Math.min(Math.max(this.#promptScroll, layout.cursorRow - visible + 1), layout.cursorRow);
+    const focused = this.#focus === "prompt" && this.#view === "feed";
+    const label: Span = { text: PROMPT_LABEL, style: focused ? { tone: "accent", bold: true } : MUTED };
+    const indent: Span = { text: " ".repeat(PROMPT_LABEL.length), style: PLAIN };
+    const rows: Span[][] = [];
+    for (let i = 0; i < visible; i++) {
+      rows.push([i ? indent : label, { text: layout.rows[this.#promptScroll + i] ?? "", style: PLAIN }]);
+    }
+    if (this.#prompt.text === "") {
+      const pending = this.#model?.pendingCount() ?? 0;
+      const placeholder = this.#working ? "Message Claude; it goes when this turn ends…" : "Message Claude…";
+      rows[0] = [label, { text: placeholder, style: MUTED }];
+      if (pending) rows[0].push({ text: `   ${plural(pending, "note rides", "notes ride")} along`, style: ACCENT });
+    }
+    return {
+      rows: rows.map((spans) => clipSpans(spans, columns)),
+      cursor: { row: layout.cursorRow - this.#promptScroll, column: PROMPT_LABEL.length + layout.cursorColumn },
+    };
+  }
+
+  #promptWidth(): number {
+    return Math.max(10, this.#terminal.size().columns - PROMPT_LABEL.length - 1);
   }
 
   #topBar(columns: number): Span[] {
@@ -525,8 +717,29 @@ export class App {
       { text: name, style: PLAIN },
     ];
     const right: Span[] = [];
+    const conversation = this.#conversation;
+    if (conversation) {
+      left.push({ text: ` · ${conversation.agent}`, style: MUTED });
+      if (conversation.model) left.push({ text: ` · ${terminalSafe(conversation.model)}`, style: MUTED });
+    }
     if (!this.#reachable) {
       right.push({ text: "can't reach sidenote, retrying", style: { tone: "del" } });
+    } else if (conversation) {
+      const pending = model?.pendingCount() ?? 0;
+      if (pending) right.push({ text: `${plural(pending, "note", "notes")} pending · `, style: ACCENT });
+      if (conversation.context) {
+        const percent = Math.round((100 * conversation.context.used) / conversation.context.limit);
+        right.push({ text: `${percent}% context · `, style: MUTED });
+      }
+      right.push(
+        conversation.state === "working"
+          ? { text: "◐ working", style: ACCENT }
+          : conversation.state === "waiting"
+            ? { text: "◆ needs your answer", style: { tone: "accent", bold: true } }
+            : conversation.state === "stopped"
+              ? { text: "○ stopped", style: MUTED }
+              : { text: "● ready", style: { tone: "add" } },
+      );
     } else if (model && session) {
       const pending = model.pendingCount();
       const { status, send_requested: queued } = model.sendStatus();
@@ -547,14 +760,20 @@ export class App {
 
   #feedBody(columns: number, height: number): Span[][] {
     const model = this.#model;
-    if (!model || !model.responses.length) return emptyState(this.#emptyText(), height);
     const width = columns - GUTTER;
+    const live = this.#conversation
+      ? liveRows(this.#conversation, { width, render: (markdown, w) => renderReply(markdown, { width: w }) })
+      : [];
+    if (!model || (!model.responses.length && !live.length)) return emptyState(this.#emptyText(), height);
     if (width !== this.#renderWidth) {
       this.#renders.clear();
       this.#renderWidth = width;
     }
     const before = this.#selectedTarget();
     const feed = buildFeed(model, { width, selectedKey: this.#selected, render: (r, w) => this.#render(r, w) });
+    // The turn in progress goes under the stored ones; nothing in it takes notes until it ends.
+    if (live.length && feed.rows.length) feed.rows.push({ left: [], right: [] });
+    for (const spans of live) feed.rows.push({ left: spans, right: [] });
     this.#feed = feed;
 
     if (this.#showReply !== null && feed.replyStarts.has(this.#showReply)) {
@@ -581,6 +800,7 @@ export class App {
     }
     if (target && this.#reveal) this.#revealTarget(target, height);
     this.#reveal = false;
+    if (this.#follow && this.#chat) this.#scroll = feed.rows.length;
     this.#scroll = this.#clampScroll(this.#scroll);
     if (this.#scroll + height >= feed.rows.length) this.#newBelow = false;
 
@@ -593,7 +813,8 @@ export class App {
         out.push([]);
         continue;
       }
-      const onTarget = target?.side === "left" && row >= target.start && row < target.end;
+      const cursorShown = !this.#chat || this.#focus === "feed";
+      const onTarget = cursorShown && target?.side === "left" && row >= target.start && row < target.end;
       const gutter: Span =
         row >= lineFrom && row <= lineTo
           ? { text: "┃ ", style: { tone: "accent", bold: true } }
@@ -647,9 +868,11 @@ export class App {
       ];
     }
     const canSend = this.#model?.canSend() ?? false;
-    const hint = canSend
-      ? "⏎ send now · ^S save for later · ⌥⏎ new line · ^E $EDITOR · esc close"
-      : "⏎ save: Claude isn't listening, so it goes with your next prompt · ⌥⏎ new line · esc close";
+    const hint = this.#chat
+      ? "⏎ save: it goes with your next message · ⌥⏎ new line · ^E $EDITOR · esc close"
+      : canSend
+        ? "⏎ send now · ^S save for later · ⌥⏎ new line · ^E $EDITOR · esc close"
+        : "⏎ save: Claude isn't listening, so it goes with your next prompt · ⌥⏎ new line · esc close";
     rows.push(
       this.#message ? [{ text: this.#message.text, style: this.#message.style }] : [{ text: hint, style: MUTED }],
     );
@@ -666,6 +889,17 @@ export class App {
   #hint(): Span[] {
     if (this.#message) return [{ text: this.#message.text, style: this.#message.style }];
     const parts: string[] = [];
+    if (this.#conversation?.permission && this.#view === "feed" && !this.#lines) {
+      return [{ text: "Claude is waiting: y allow · a always allow · n deny", style: { tone: "accent", bold: true } }];
+    }
+    if (this.#chat && this.#view === "feed" && this.#focus === "prompt" && !this.#lines) {
+      parts.push("⏎ send", "⌥⏎ new line");
+      if (this.#working) parts.push("esc interrupt");
+      parts.push("tab conversation");
+      if (this.#model?.pendingCount()) parts.push("notes go with your message");
+      parts.push("^C quit");
+      return [{ text: parts.join(" · "), style: MUTED }];
+    }
     if (this.#lines) {
       parts.push("j/k pick lines", "n note on these lines", "esc cancel");
     } else if (this.#view === "thread") {
@@ -679,17 +913,20 @@ export class App {
       if (target?.kind === "note") parts.push("x delete");
       if (target?.code) parts.push("v pick lines");
       parts.push("N note on reply");
+      if (this.#chat) parts.push("tab message");
+      if (this.#chat && this.#working) parts.push("esc interrupt");
     }
     if (this.#model?.pendingCount() && this.#model.canSend()) parts.push("S send now");
     parts.push("q quit");
     const spans: Span[] = [];
-    if (this.#newBelow) spans.push({ text: "↓ new reply: G · ", style: ACCENT });
+    if (this.#newBelow) spans.push({ text: this.#chat ? "↓ more below: G · " : "↓ new reply: G · ", style: ACCENT });
     spans.push({ text: parts.join(" · "), style: MUTED });
     return spans;
   }
 
   #emptyText(): string {
     if (!this.#reachable) return "Can't reach the sidenote server. Retrying…";
+    if (this.#chat) return `A new session in ${projectName(this.#cwd)}. Type a message for Claude below.`;
     if (!this.#model)
       return `Waiting for a Claude Code session in ${projectName(this.#cwd)}. Its replies appear here as Claude finishes them.`;
     return "No replies in this session yet. They appear here as Claude finishes them.";

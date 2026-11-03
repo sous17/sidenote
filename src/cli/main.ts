@@ -20,6 +20,9 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote on [session] [terminal|browser]
                                turn sidenote on and open the session's window, in the browser
                                or in a terminal pane; the choice is remembered
+  sidenote chat [session]      talk to Claude Code here: sidenote runs the session, and you
+                               note its replies as it works; without a session, a new one
+                               starts in this folder
   sidenote tui [session]       show the session's replies in this terminal; without a session,
                                the latest one in this folder
   sidenote off                 turn sidenote off; unsent notes are kept
@@ -184,6 +187,11 @@ const commands: Record<string, () => Promise<void>> = {
     // Loaded only for this command, so the hooks don't pay for the terminal UI.
     const { runTui } = await import("../tui/main.ts");
     await runTui(process.argv.slice(3));
+  },
+
+  async chat() {
+    const { runChat } = await import("../tui/main.ts");
+    await runChat(process.argv.slice(3));
   },
 
   "hook-session": () => runHook(hookSession),
