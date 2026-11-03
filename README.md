@@ -29,6 +29,8 @@ note on its own, and each answer lands in that note's thread.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
+![A thread answer that walks through a code change: an explanation, then a diff of the file with the edited words highlighted, and a second file folded under its header](docs/diffs.png)
+
 ## Requirements
 
 - Claude Code with plugin support and `asyncRewake` hooks (any recent version)
