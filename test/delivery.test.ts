@@ -70,3 +70,30 @@ test("refresh bumps the revision only when a session's status changes", () => {
   delivery.refresh();
   assert.equal(store.revision.value, revision + 2);
 });
+
+test("agents without a waiter: notes saved before a turn go out when it ends", () => {
+  const { store, delivery } = fixture();
+  noteOn(store, reply(store, "Para one.").id);
+  delivery.startTurn(SESSION);
+  assert.equal(delivery.status(SESSION).status, "busy");
+  const claimed = delivery.endTurn(SESSION);
+  assert.equal(claimed.length, 1);
+  assert.equal(delivery.status(SESSION).status, "busy", "the agent goes straight on to answer them");
+  assert.deepEqual(delivery.endTurn(SESSION), [], "the follow-up turn ends with nothing more to send");
+  assert.equal(delivery.status(SESSION).status, "offline");
+});
+
+test("agents without a waiter: Send now during a turn goes out when it ends", () => {
+  const { store, delivery } = fixture();
+  const first = reply(store, "Para one.");
+  delivery.startTurn(SESSION);
+  noteOn(store, first.id);
+  assert.deepEqual(delivery.requestSend([SESSION]), [SESSION]);
+  assert.equal(delivery.endTurn(SESSION).length, 1);
+});
+
+test("a turn ending with nothing queued sends nothing", () => {
+  const { store, delivery } = fixture();
+  noteOn(store, reply(store, "Para one.").id);
+  assert.deepEqual(delivery.endTurn(SESSION), [], "saved notes wait for a prompt");
+});

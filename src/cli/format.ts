@@ -23,27 +23,45 @@ export function sessionContext(): string {
   );
 }
 
+/** Why the notes reach the agent now, which decides how it should answer them. */
+export type NoteTrigger =
+  /** With a prompt the user typed: answer the prompt, then the notes. */
+  | "prompt"
+  /** The user clicked Send now and woke the agent: there is no prompt. */
+  | "send-now"
+  /** The agent just finished a turn and continues with the notes: there is no prompt. */
+  | "turn-end";
+
+const INTROS: Readonly<Record<NoteTrigger, [intro: string, format: string]>> = {
+  prompt: [
+    "The user reviewed your earlier responses in the sidenote browser window and left " +
+      "these inline notes. Address them together with the user's message.",
+    "Format: first answer the user's message as usual (skip this part if their " +
+      "message only asks you to look at the notes). Then answer each note in its " +
+      "own section that starts with a line containing only its marker, for example:",
+  ],
+  "send-now": [
+    "The user clicked Send now in the sidenote browser window. There is no new " +
+      "terminal message: answer only these inline notes on your earlier responses.",
+    "Format: skip any main answer. Answer each note in its own section that " +
+      "starts with a line containing only its marker, for example:",
+  ],
+  "turn-end": [
+    "While you were working, the user left these inline notes on your earlier responses in " +
+      "the sidenote browser window. There is no new message from the user: answer only the notes.",
+    "Format: skip any main answer. Answer each note in its own section that " +
+      "starts with a line containing only its marker, for example:",
+  ],
+};
+
 /**
- * Describes delivered notes for Claude, and asks it to answer each under a marker line
+ * Describes delivered notes for the agent, and asks it to answer each under a marker line
  * ("**↳ Re: note 41**") so the server can file each answer into that note's thread.
  */
-export function formatNotesForClaude(notes: readonly ClaimedNote[], options: { fromBrowser?: boolean } = {}): string {
+export function formatNotes(notes: readonly ClaimedNote[], trigger: NoteTrigger): string {
   const first = notes[0];
   if (!first) return "";
-  const [intro, formatRule] = options.fromBrowser
-    ? [
-        "The user clicked Send now in the sidenote browser window. There is no new " +
-          "terminal message: answer only these inline notes on your earlier responses.",
-        "Format: skip any main answer. Answer each note in its own section that " +
-          "starts with a line containing only its marker, for example:",
-      ]
-    : [
-        "The user reviewed your earlier responses in the sidenote browser window and left " +
-          "these inline notes. Address them together with the user's message.",
-        "Format: first answer the user's message as usual (skip this part if their " +
-          "message only asks you to look at the notes). Then answer each note in its " +
-          "own section that starts with a line containing only its marker, for example:",
-      ];
+  const [intro, formatRule] = INTROS[trigger];
   const lines = [
     intro,
     "",

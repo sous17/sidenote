@@ -1,4 +1,4 @@
-// The sidenote page: one Claude Code session's replies, with notes in the margin.
+// The sidenote page: one agent session's replies, with notes in the margin.
 import { Api, ApiError, obtainToken } from "./api.ts";
 import { byId, projectName } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
@@ -36,7 +36,9 @@ function renderSessionTitle(model: Model): void {
   const name = session?.name || folder || `Session ${shortId}`;
   byId("session-title").hidden = false;
   byId("session-name").textContent = name;
-  byId("session-detail").textContent = session?.name && folder ? `${folder} · ${shortId}` : shortId;
+  // The agent, then the folder when the name doesn't already show it, then the short id.
+  const detail = [model.agentName, session?.name && folder ? folder : "", shortId].filter(Boolean);
+  byId("session-detail").textContent = detail.join(" · ");
   byId("session-title").title = `Session ${model.sessionId}${session?.cwd ? `\n${session.cwd}` : ""}`;
   document.title = `${name} · sidenote`;
 }
@@ -45,8 +47,8 @@ async function start(): Promise<void> {
   const sessionId = new URLSearchParams(location.search).get("s");
   if (!sessionId) {
     showUnavailable(
-      "Open this window from a Claude Code session",
-      "Each session has its own sidenote window. Run /sidenote:open in the session you want to see.",
+      "Open this window from an agent session",
+      "Each session has its own sidenote window. Run /sidenote:open in Claude Code, or sidenote open in a terminal.",
     );
     return;
   }
@@ -105,7 +107,7 @@ async function start(): Promise<void> {
     emptyState: byId("feed-inner").querySelector<HTMLElement>(".empty")!,
     newReply: byId<HTMLButtonElement>("new-reply"),
   });
-  const editor = new NoteEditor({ feed, sending, onError: showError });
+  const editor = new NoteEditor({ model, feed, sending, onError: showError });
   const thread: ThreadPane = new ThreadPane({
     model,
     feed,

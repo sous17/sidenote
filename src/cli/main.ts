@@ -1,9 +1,18 @@
-// sidenote CLI: the /sidenote:* commands and the three Claude Code hooks.
+// sidenote CLI: the /sidenote:* commands, the agent hooks, and installing hooks into other agents.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { paths } from "../node/paths.ts";
-import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
+import {
+  AGENTS,
+  isAgentId,
+  type AgentId,
+  type NewResponseRequest,
+  type SessionListResult,
+  type StateSnapshot,
+} from "../shared/types.ts";
+import { AGENT_ADAPTERS } from "./agents/index.ts";
+import type { HookInput, HookOutput } from "./agents/core.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
-import { hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import { install, uninstall } from "./install.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -12,20 +21,19 @@ import {
   sessionNameFromTranscript,
 } from "./transcript.ts";
 
-const USAGE = `sidenote: leave inline notes on Claude Code replies in your browser.
+const USAGE = `sidenote: leave inline notes on your coding agent's replies in a browser window.
 
-  sidenote on [session]        turn sidenote on and open the session's window
-  sidenote off                 turn sidenote off; unsent notes are kept
-  sidenote open [session]      reopen the session's window
-  sidenote status [session]    show the session's replies, notes and Send now status
-  sidenote backfill [session]  import the session's earlier replies
-  sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
-  sidenote hook-stop           Stop hook: send the finished reply to its session's window
-  sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
-  sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
+  sidenote on [session]         turn sidenote on and open the session's window
+  sidenote off                  turn sidenote off; unsent notes are kept
+  sidenote open [session]       reopen the session's window
+  sidenote status [session]     show the session's replies, notes and Send now status
+  sidenote backfill [session]   import a Claude Code session's earlier replies
+  sidenote install <agent>      add sidenote's hooks to codex, cursor or copilot
+  sidenote uninstall <agent>    remove them again
+  sidenote hook <agent> <hook>  run one of sidenote's hooks (agents call this)
 
-The /sidenote:* commands pass the current session. Without one, the most recently active
-session is used.`;
+Claude Code installs sidenote as a plugin, and its /sidenote:* commands pass the current
+session. Without a session, the most recently active one is used.`;
 
 const NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
 
@@ -52,6 +60,7 @@ async function touchSession(client: SidenoteClient, sessionId: string): Promise<
   const transcript = file ? readTranscript(file) : "";
   await client.post("/api/sessions", {
     session_id: sessionId,
+    agent: "claude",
     session_name: sessionNameFromTranscript(transcript),
     cwd: cwdFromTranscript(transcript),
   });
@@ -138,6 +147,7 @@ const commands: Record<string, () => Promise<void>> = {
       if (known.has(text)) continue;
       const reply: NewResponseRequest = {
         session_id: sessionId,
+        agent: "claude",
         session_name: sessionName,
         cwd,
         text,
@@ -149,25 +159,70 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`Imported ${imported} earlier replies of this session.`);
   },
 
-  "hook-session": () => runHook(hookSession),
-  "hook-stop": () => runHook(hookStop),
-  "hook-prompt": () => runHook(hookPrompt),
-  "hook-wait": () => runHook(hookWait),
+  async install() {
+    const agent = agentArgument();
+    const spec = agent && AGENT_ADAPTERS[agent].install;
+    if (!agent || !spec) return void console.log(installHelp(agent));
+    const file = install(agent, spec);
+    console.log(`Added sidenote's hooks for ${AGENTS[agent]} to ${file}.`);
+    for (const step of spec.nextSteps) console.log(`- ${step}`);
+    console.log("- Turn sidenote on with: sidenote on");
+  },
+
+  async uninstall() {
+    const agent = agentArgument();
+    const spec = agent && AGENT_ADAPTERS[agent].install;
+    if (!agent || !spec) return void console.log(installHelp(agent));
+    const file = uninstall(agent, spec);
+    console.log(file ? `Removed sidenote's hooks for ${AGENTS[agent]} from ${file}.` : "Nothing to remove.");
+  },
+
+  hook: () => runHook(process.argv[3], process.argv[4]),
+  // The hook names Claude Code plugins installed before other agents were supported.
+  "hook-session": () => runHook("claude", "session-start"),
+  "hook-stop": () => runHook("claude", "stop"),
+  "hook-prompt": () => runHook("claude", "prompt"),
+  "hook-wait": () => runHook("claude", "wait"),
 };
 
-/** A hook must never break the Claude session: failures go to the log, and it exits 0. */
-async function runHook(handler: (input: HookInput) => Promise<void>): Promise<void> {
-  if (!isEnabled()) return;
-  try {
-    const chunks: Buffer[] = [];
-    for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk);
-    await handler(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as HookInput);
-  } catch (error) {
-    mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
-    appendFileSync(paths.logFile(), `${new Date().toISOString()} ${handler.name} failed: ${String(error)}\n`, {
-      mode: 0o600,
-    });
+function agentArgument(): AgentId | undefined {
+  const value = process.argv[3];
+  return isAgentId(value) ? value : undefined;
+}
+
+function installHelp(agent: AgentId | undefined): string {
+  if (agent === "claude") {
+    return "Claude Code installs sidenote as a plugin: claude plugin install sidenote@sidenote";
   }
+  return "Usage: sidenote install <codex|cursor|copilot>";
+}
+
+/**
+ * Runs one of an agent's hooks. A hook must never break the agent's session: failures go to the
+ * log, the hook exits 0, and agents that expect output from a hook still get some.
+ */
+async function runHook(agentName: string | undefined, hookName: string | undefined): Promise<void> {
+  const agent = isAgentId(agentName) ? AGENT_ADAPTERS[agentName] : undefined;
+  const handler = agent && hookName ? agent.hooks[hookName] : undefined;
+  const fallback: HookOutput = { stdout: agent?.fallbackOutput?.[hookName ?? ""] };
+  let output = fallback;
+  if (handler && isEnabled()) {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk);
+      const input: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      output = await handler(typeof input === "object" && input !== null ? (input as HookInput) : {});
+    } catch (error) {
+      mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
+      const line = `${new Date().toISOString()} ${agentName} ${hookName} hook failed: ${String(error)}\n`;
+      appendFileSync(paths.logFile(), line, { mode: 0o600 });
+      output = fallback;
+    }
+  }
+  if (output.stdout) process.stdout.write(output.stdout);
+  if (output.stderr) process.stderr.write(output.stderr);
+  // Set the exit code rather than calling process.exit, so output finishes writing first.
+  if (output.exitCode) process.exitCode = output.exitCode;
 }
 
 const command = commands[process.argv[2] ?? "status"];

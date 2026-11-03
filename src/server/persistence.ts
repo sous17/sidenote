@@ -1,6 +1,6 @@
 // Reading and writing ~/.sidenote/store.json, including stores written by older versions.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { SESSION_ID_PATTERN, type Note, type SessionMeta, type StoredResponse } from "../shared/types.ts";
+import { SESSION_ID_PATTERN, isAgentId, type Note, type SessionMeta, type StoredResponse } from "../shared/types.ts";
 
 /** The store's contents in memory. Sessions are a Map, so no id can collide with Object keys. */
 export interface StoreData {
@@ -57,11 +57,17 @@ export function migrate(file: StoreFile): StoreData {
   const sessions = new Map<string, SessionMeta>();
   for (const [id, meta] of Object.entries(file.sessions ?? {})) {
     if (!SESSION_ID_PATTERN.test(id)) continue;
-    sessions.set(id, { name: meta.name ?? "", cwd: meta.cwd ?? "", last_active: meta.last_active ?? 0 });
+    sessions.set(id, {
+      // Sessions from before other agents were supported are Claude Code sessions.
+      agent: isAgentId(meta.agent) ? meta.agent : "claude",
+      name: meta.name ?? "",
+      cwd: meta.cwd ?? "",
+      last_active: meta.last_active ?? 0,
+    });
   }
   // Stores from before per-session windows have no session list: rebuild it from the replies.
   for (const response of responses) {
-    const meta = sessions.get(response.session_id) ?? { name: "", cwd: response.cwd, last_active: 0 };
+    const meta = sessions.get(response.session_id) ?? { agent: "claude", name: "", cwd: response.cwd, last_active: 0 };
     meta.last_active = Math.max(meta.last_active, response.created_at);
     sessions.set(response.session_id, meta);
   }

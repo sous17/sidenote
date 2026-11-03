@@ -72,6 +72,30 @@ var Delivery = class {
     this.#busy.add(sessionId2);
     this.#requested.delete(sessionId2);
   }
+  /**
+   * The user sent a prompt to an agent that can't take notes with it (Cursor, Copilot): the
+   * session is busy, and its unsent notes go out when this turn ends.
+   */
+  startTurn(sessionId2) {
+    this.markBusy(sessionId2);
+    if (this.#store.sessionsWithPendingNotes().has(sessionId2)) this.#requested.add(sessionId2);
+  }
+  /**
+   * An agent without a waiter finished a turn: the session is no longer busy, and notes queued
+   * with Send now, or by startTurn, go out now, for the agent to answer in a follow-up turn.
+   */
+  endTurn(sessionId2) {
+    const wasBusy = this.#busy.delete(sessionId2);
+    if (!this.#requested.delete(sessionId2)) {
+      if (wasBusy) this.#store.revision.bump();
+      return [];
+    }
+    const claimed = this.#store.claimPending(sessionId2);
+    if (claimed.length)
+      this.#busy.add(sessionId2);
+    else this.#store.revision.bump();
+    return claimed;
+  }
   /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */
   requestSend(sessionIds) {
     const pending = this.#store.sessionsWithPendingNotes();
@@ -93,6 +117,15 @@ import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
 // src/shared/types.ts
+var AGENTS = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  copilot: "Copilot"
+};
+function isAgentId(value) {
+  return typeof value === "string" && Object.hasOwn(AGENTS, value);
+}
 var TOKEN_HEADER = "X-Review-Token";
 var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
@@ -136,6 +169,11 @@ function matching(body, key, pattern) {
   if (!pattern.test(value)) throw new BadRequest(`${key} is malformed`);
   return value;
 }
+function agent(body) {
+  const value = body["agent"] ?? "claude";
+  if (!isAgentId(value)) throw new BadRequest("agent is not one sidenote supports");
+  return value;
+}
 function sessionId(value) {
   if (!SESSION_ID_PATTERN.test(value)) throw new BadRequest("session_id is malformed");
   return value;
@@ -152,6 +190,7 @@ function parseNewResponse(input) {
   }
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    agent: agent(body),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
     cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
     text: string(body, "text", LIMITS.replyText),
@@ -176,6 +215,7 @@ function parseTouchSession(input) {
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    agent: agent(body),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
     cwd: optionalString(body, "cwd", LIMITS.cwd) ?? ""
   };
@@ -262,7 +302,7 @@ function routes({ store, delivery, launchCodes, token }) {
       needsToken: true,
       handle: ({ body }) => {
         const input = parseTouchSession(body);
-        store.touchSession(input.session_id, input.session_name, input.cwd);
+        store.touchSession(input.session_id, { agent: input.agent, name: input.session_name, cwd: input.cwd });
         return ok({ ok: true });
       }
     },
@@ -274,6 +314,7 @@ function routes({ store, delivery, launchCodes, token }) {
         const input = parseNewResponse(body);
         const { response, newSession } = store.addResponse({
           sessionId: input.session_id,
+          agent: input.agent,
           sessionName: input.session_name,
           cwd: input.cwd,
           text: input.text,
@@ -307,6 +348,21 @@ function routes({ store, delivery, launchCodes, token }) {
         delivery.markBusy(session_id);
         return ok({ comments: store.claimPending(session_id) });
       }
+    },
+    {
+      method: "POST",
+      path: "/api/turns/start",
+      needsToken: true,
+      handle: ({ body }) => {
+        delivery.startTurn(parseClaim(body).session_id);
+        return ok({ ok: true });
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/turns/end",
+      needsToken: true,
+      handle: ({ body }) => ok({ comments: delivery.endTurn(parseClaim(body).session_id) })
     },
     {
       method: "POST",
@@ -506,10 +562,16 @@ function migrate(file) {
   const sessions = /* @__PURE__ */ new Map();
   for (const [id, meta] of Object.entries(file.sessions ?? {})) {
     if (!SESSION_ID_PATTERN.test(id)) continue;
-    sessions.set(id, { name: meta.name ?? "", cwd: meta.cwd ?? "", last_active: meta.last_active ?? 0 });
+    sessions.set(id, {
+      // Sessions from before other agents were supported are Claude Code sessions.
+      agent: isAgentId(meta.agent) ? meta.agent : "claude",
+      name: meta.name ?? "",
+      cwd: meta.cwd ?? "",
+      last_active: meta.last_active ?? 0
+    });
   }
   for (const response of responses) {
-    const meta = sessions.get(response.session_id) ?? { name: "", cwd: response.cwd, last_active: 0 };
+    const meta = sessions.get(response.session_id) ?? { agent: "claude", name: "", cwd: response.cwd, last_active: 0 };
     meta.last_active = Math.max(meta.last_active, response.created_at);
     sessions.set(response.session_id, meta);
   }
@@ -601,8 +663,8 @@ var Store = class {
   }
   // ---- Writing ---------------------------------------------------------------------------
   /** Remembers a session before its first reply, e.g. when /sidenote:on opens its window. */
-  touchSession(sessionId2, name, cwd) {
-    this.#upsertSession(sessionId2, { name, cwd, activeAt: this.#clock.now() });
+  touchSession(sessionId2, update) {
+    this.#upsertSession(sessionId2, { ...update, activeAt: this.#clock.now() });
     this.#changed();
   }
   addResponse(reply) {
@@ -615,7 +677,12 @@ var Store = class {
       note_answers: {}
     };
     const newSession = !this.#data.sessions.has(reply.sessionId);
-    this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
+    this.#upsertSession(reply.sessionId, {
+      agent: reply.agent,
+      name: reply.sessionName,
+      cwd: reply.cwd,
+      activeAt: response.created_at
+    });
     if (reply.createdAt === void 0) this.#takeAnswers(response);
     this.#data.responses.push(response);
     this.#data.responses.sort((a, b) => a.created_at - b.created_at);
@@ -683,7 +750,13 @@ var Store = class {
     return { response_id: note.responseId, block_index: note.blockIndex, quote: note.quote, parent_id: null };
   }
   #upsertSession(sessionId2, update) {
-    const meta = this.#data.sessions.get(sessionId2) ?? { name: "", cwd: update.cwd, last_active: 0 };
+    const meta = this.#data.sessions.get(sessionId2) ?? {
+      agent: update.agent,
+      name: "",
+      cwd: update.cwd,
+      last_active: 0
+    };
+    meta.agent = update.agent;
     if (update.name) meta.name = update.name;
     if (update.cwd) meta.cwd = update.cwd;
     meta.last_active = Math.max(meta.last_active, update.activeAt);

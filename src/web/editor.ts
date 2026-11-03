@@ -1,6 +1,7 @@
 // Writing a new note in the margin of a reply.
 import { button, el, truncate } from "./dom.ts";
 import type { Card, Feed } from "./feed.ts";
+import type { Model } from "./model.ts";
 import { isSendNow, submitOnModEnter, type Sending } from "./sending.ts";
 
 const MAX_QUOTE_CHARS = 600;
@@ -13,12 +14,14 @@ interface OpenEditor {
 }
 
 export class NoteEditor {
+  readonly #model: Model;
   readonly #feed: Feed;
   readonly #sending: Sending;
   readonly #onError: (error: unknown) => void;
   #open: OpenEditor | null = null;
 
-  constructor(options: { feed: Feed; sending: Sending; onError: (error: unknown) => void }) {
+  constructor(options: { model: Model; feed: Feed; sending: Sending; onError: (error: unknown) => void }) {
+    this.#model = options.model;
     this.#feed = options.feed;
     this.#sending = options.sending;
     this.#onError = options.onError;
@@ -41,7 +44,7 @@ export class NoteEditor {
     if (quote) form.append(el("div", "editor-quote", quote));
     const textarea = el("textarea");
     textarea.rows = 3;
-    textarea.placeholder = quote ? "Your note for Claude…" : "Your note on the whole reply…";
+    textarea.placeholder = quote ? `Your note for ${this.#model.agentName}…` : "Your note on the whole reply…";
     const send = el("button", "send-button", "Send now");
     send.type = "submit";
     send.value = "send";

@@ -1,6 +1,14 @@
 // Sessions, replies and notes, with retention limits. Send now coordination lives in delivery.ts.
 import { systemClock, type Clock } from "../node/clock.ts";
-import type { ClaimedNote, EpochSeconds, Note, SessionMeta, SessionSummary, StoredResponse } from "../shared/types.ts";
+import type {
+  AgentId,
+  ClaimedNote,
+  EpochSeconds,
+  Note,
+  SessionMeta,
+  SessionSummary,
+  StoredResponse,
+} from "../shared/types.ts";
 import { emptyStore, loadStore, saveStore, type StoreData } from "./persistence.ts";
 import type { ParsedNote } from "./requests.ts";
 import { splitNoteAnswers } from "./split.ts";
@@ -23,6 +31,7 @@ export class Revision {
 
 export interface NewReply {
   sessionId: string;
+  agent: AgentId;
   cwd: string;
   text: string;
   sessionName: string;
@@ -79,8 +88,8 @@ export class Store {
   // ---- Writing ---------------------------------------------------------------------------
 
   /** Remembers a session before its first reply, e.g. when /sidenote:on opens its window. */
-  touchSession(sessionId: string, name: string, cwd: string): void {
-    this.#upsertSession(sessionId, { name, cwd, activeAt: this.#clock.now() });
+  touchSession(sessionId: string, update: { agent: AgentId; name: string; cwd: string }): void {
+    this.#upsertSession(sessionId, { ...update, activeAt: this.#clock.now() });
     this.#changed();
   }
 
@@ -94,7 +103,12 @@ export class Store {
       note_answers: {},
     };
     const newSession = !this.#data.sessions.has(reply.sessionId);
-    this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
+    this.#upsertSession(reply.sessionId, {
+      agent: reply.agent,
+      name: reply.sessionName,
+      cwd: reply.cwd,
+      activeAt: response.created_at,
+    });
     // Backfilled replies are history: they never answer notes.
     if (reply.createdAt === undefined) this.#takeAnswers(response);
     this.#data.responses.push(response);
@@ -169,8 +183,17 @@ export class Store {
     return { response_id: note.responseId, block_index: note.blockIndex, quote: note.quote, parent_id: null };
   }
 
-  #upsertSession(sessionId: string, update: { name: string; cwd: string; activeAt: EpochSeconds }): void {
-    const meta: SessionMeta = this.#data.sessions.get(sessionId) ?? { name: "", cwd: update.cwd, last_active: 0 };
+  #upsertSession(
+    sessionId: string,
+    update: { agent: AgentId; name: string; cwd: string; activeAt: EpochSeconds },
+  ): void {
+    const meta: SessionMeta = this.#data.sessions.get(sessionId) ?? {
+      agent: update.agent,
+      name: "",
+      cwd: update.cwd,
+      last_active: 0,
+    };
+    meta.agent = update.agent;
     if (update.name) meta.name = update.name;
     if (update.cwd) meta.cwd = update.cwd;
     meta.last_active = Math.max(meta.last_active, update.activeAt);

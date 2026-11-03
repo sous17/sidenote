@@ -39,9 +39,25 @@ export interface Note {
  */
 export type SessionState = "listening" | "busy" | "offline";
 
-/** What sidenote remembers about a Claude Code session. */
+/** The coding agents sidenote works with. */
+export const AGENTS = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  copilot: "Copilot",
+} as const;
+
+export type AgentId = keyof typeof AGENTS;
+
+export function isAgentId(value: unknown): value is AgentId {
+  return typeof value === "string" && Object.hasOwn(AGENTS, value);
+}
+
+/** What sidenote remembers about an agent session. */
 export interface SessionMeta {
-  /** The name given with /rename, or "" when the session has none. */
+  /** The agent the session runs in. */
+  agent: AgentId;
+  /** The session's name (Claude Code's /rename), or "" when it has none. */
   name: string;
   cwd: string;
   /** When the session was last active; sessions idle too long are forgotten. */
@@ -79,6 +95,8 @@ export interface ClaimedNote extends Note {
 
 export interface NewResponseRequest {
   session_id: string;
+  /** Defaults to "claude", for hooks installed before other agents were supported. */
+  agent?: AgentId;
   /** The session's /rename name, when the hook could read it. */
   session_name?: string;
   cwd: string;
@@ -98,6 +116,7 @@ export type NewNoteRequest =
 
 export interface TouchSessionRequest {
   session_id: string;
+  agent?: AgentId;
   session_name?: string;
   cwd?: string;
 }

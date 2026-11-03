@@ -41,6 +41,7 @@ describe("sessions", () => {
     const { store } = fixture();
     const first = store.addResponse({
       sessionId: SESSION,
+      agent: "claude",
       cwd: "/w/shop-api",
       text: "mine",
       sessionName: "rate limits",
@@ -80,11 +81,17 @@ describe("sessions", () => {
     const { clock, store } = fixture();
     reply(store, "older", { sessionId: "session-b" });
     clock.advanceDays(1);
-    store.touchSession(SESSION, "named early", "/w/shop-api");
+    store.touchSession(SESSION, { agent: "claude", name: "named early", cwd: "/w/shop-api" });
     assert.equal(store.session(SESSION)?.name, "named early");
     assert.equal(
-      store.addResponse({ sessionId: SESSION, cwd: "/w", text: "first", sessionName: "", createdAt: undefined })
-        .newSession,
+      store.addResponse({
+        sessionId: SESSION,
+        agent: "claude",
+        cwd: "/w",
+        text: "first",
+        sessionName: "",
+        createdAt: undefined,
+      }).newSession,
       false,
     );
     assert.deepEqual(

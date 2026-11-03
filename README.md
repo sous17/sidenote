@@ -1,7 +1,8 @@
 # sidenote
 
-Leave inline notes on Claude Code's replies in a browser window, and send them back to Claude,
-right away or with your next prompt.
+Leave inline notes on your coding agent's replies in a browser window, and send them back to it,
+right away or with your next prompt. Made for Claude Code, and also works with Codex CLI, Cursor
+and GitHub Copilot CLI (see [Other agents](#other-agents)).
 
 ![The feed: Claude's replies with your notes in the margin](docs/feed.png)
 
@@ -69,6 +70,44 @@ claude plugin marketplace add ./sidenote
 claude plugin install sidenote@sidenote
 ```
 
+## Other agents
+
+sidenote also works with Codex CLI, Cursor and GitHub Copilot CLI, through their own hooks. Their
+hooks can do less than Claude Code's, which changes how notes reach the agent:
+
+|                                  | Claude Code   | Codex CLI          | Cursor                       | Copilot CLI                  |
+| -------------------------------- | ------------- | ------------------ | ---------------------------- | ---------------------------- |
+| Replies in the window            | Yes           | Yes                | Yes                          | Experimental                 |
+| Saved notes reach the agent      | With a prompt | With a prompt      | When that prompt's turn ends | When that prompt's turn ends |
+| Send now while the agent works   | Yes           | When the turn ends | When the turn ends           | When the turn ends           |
+| Send now while the agent is idle | Yes           | No                 | No                           | No                           |
+| Code changes as diffs            | Yes           | Yes                | Yes                          | Yes                          |
+| Session names                    | `/rename`     | Folder             | Folder                       | Folder                       |
+
+- **When the turn ends:** the agent finishes what it's doing, then continues with your notes as if
+  you had sent them as the next message.
+- **Copilot CLI:** its hooks don't include the agent's reply, so sidenote reads it from Copilot's
+  session log, whose format GitHub doesn't document. It may break with a Copilot update.
+
+### Install for another agent
+
+```shell
+git clone https://github.com/sous17/sidenote.git ~/sidenote
+~/sidenote/bin/sidenote install codex      # or: cursor, copilot
+~/sidenote/bin/sidenote on
+```
+
+`install` adds sidenote's hooks to the agent's own hook config (`~/.codex/hooks.json`,
+`~/.cursor/hooks.json`, or `~/.copilot/hooks/sidenote.json`), next to any hooks you already have.
+
+- **Codex:** run `/hooks` in Codex and trust the three sidenote hooks. Codex skips them until you do.
+- **Cursor and Copilot:** start a new agent chat or session so the hooks load.
+
+These agents have no `/sidenote:*` commands; run `sidenote on`, `off`, `open` and `status` in a
+terminal instead (put `~/sidenote/bin` on your `PATH`, or use the full path). Without a session,
+`open` shows the most recently active one. To remove the hooks, run
+`sidenote uninstall <agent>`.
+
 ## Using it
 
 1. **Leave a note.** Select text in a reply and click **Add sidenote**, or hover a paragraph and
@@ -129,7 +168,7 @@ the full path of your `node` binary. Problems are logged to `~/.sidenote/server.
 
 ## How it works
 
-Four hooks connect Claude Code to a small local server:
+In Claude Code, four hooks connect the session to a small local server:
 
 - **Stop** (`hook-stop`) posts each finished reply to the server, starting it if needed, and
   opens the session's window the first time that session replies.
@@ -139,7 +178,7 @@ Four hooks connect Claude Code to a small local server:
 - **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
   draw them. It applies to sessions started, resumed or cleared while sidenote is on.
 
-When notes reach Claude, it is asked to answer each one under a line like `**↳ Re: note 12**`.
+When notes reach the agent, it is asked to answer each one under a line like `**↳ Re: note 12**`.
 The server moves those sections out of the reply and into the notes' threads. If Claude leaves
 the markers out, the reply stays whole in the feed and the thread links to it.
 
@@ -184,7 +223,7 @@ npm run format     # apply Prettier
 | -------------------------------------- | ------------------------------------------------------------------------ |
 | `src/shared/types.ts`                  | The API contract, used by the server, the hooks and the page             |
 | `src/server/`                          | Request parsing, the store, Send now, launch codes, and the HTTP routes  |
-| `src/cli/`                             | The `/sidenote:*` commands and the three hooks                           |
+| `src/cli/`                             | The commands, the installer, and `agents/`: one hook adapter per agent   |
 | `src/node/`                            | Paths and clock, shared by the server and the CLI                        |
 | `src/web/`                             | The page: feed, thread pane, note editor, and Send now controls          |
 | `test/`                                | Unit tests, HTTP security tests, and an end-to-end run of the real hooks |

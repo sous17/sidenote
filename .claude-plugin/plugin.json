@@ -1,7 +1,7 @@
 {
   "name": "sidenote",
   "displayName": "sidenote",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Leave inline notes on Claude's replies in a browser window, and send them back to Claude without typing in the terminal.",
   "author": {
     "name": "Sourajit Saha"

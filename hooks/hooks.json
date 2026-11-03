@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook-session",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook claude session-start",
             "timeout": 10
           }
         ]
@@ -16,12 +16,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook-stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook claude stop",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook-wait",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook claude wait",
             "asyncRewake": true,
             "timeout": 86400
           }
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook-prompt",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook claude prompt",
             "timeout": 10
           }
         ]
