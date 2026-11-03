@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_CONTEXT_CHARS, formatNotesForClaude } from "../src/cli/format.ts";
+import { MAX_CONTEXT_CHARS, formatNotesForClaude } from "../src/shared/format.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
 function claimed(overrides: Partial<ClaimedNote> = {}): ClaimedNote {
@@ -32,7 +32,7 @@ test("asks for one marker per note, using a real note id in the example", () => 
 });
 
 test("Send now asks Claude to skip the main answer", () => {
-  const text = formatNotesForClaude([claimed()], { fromBrowser: true });
+  const text = formatNotesForClaude([claimed()], { sendNow: true });
   assert.match(text, /clicked Send now/);
   assert.match(text, /skip any main answer/);
 });

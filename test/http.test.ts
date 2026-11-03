@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { Delivery } from "../src/server/delivery.ts";
+import { SessionHost } from "../src/server/host.ts";
 import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
 import { Store } from "../src/server/store.ts";
@@ -37,6 +38,15 @@ before(async () => {
     createApp({
       store,
       delivery: new Delivery(store),
+      host: new SessionHost({
+        store,
+        agent: {
+          name: "None",
+          start: () => {
+            throw new Error("no agent in these tests");
+          },
+        },
+      }),
       launchCodes: new LaunchCodes(),
       token: TOKEN,
       allowedHosts: new Set([`127.0.0.1:${port}`]),

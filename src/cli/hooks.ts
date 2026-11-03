@@ -11,7 +11,7 @@ import type {
 } from "../shared/types.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { readUi } from "./config.ts";
-import { formatNotesForClaude, sessionContext } from "./format.ts";
+import { formatNotesForClaude, sessionContext } from "../shared/format.ts";
 import { openTerminal } from "./panes.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
@@ -99,7 +99,7 @@ export async function hookWait(input: HookInput): Promise<void> {
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
-      process.stderr.write(formatNotesForClaude(result.comments, { fromBrowser: true }));
+      process.stderr.write(formatNotesForClaude(result.comments, { sendNow: true }));
       // Exit code 2 wakes Claude. Set it instead of calling process.exit, so stderr finishes
       // writing first (pipes are asynchronous on macOS).
       process.exitCode = 2;

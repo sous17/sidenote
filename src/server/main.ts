@@ -6,7 +6,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paths } from "../node/paths.ts";
 import type { ServerInfo } from "../shared/types.ts";
+import { ClaudeAgent } from "../agent/claude.ts";
+import { sessionContext } from "../shared/format.ts";
 import { Delivery } from "./delivery.ts";
+import { SessionHost } from "./host.ts";
 import { createApp } from "./http.ts";
 import { LaunchCodes } from "./launch.ts";
 import { Store } from "./store.ts";
@@ -53,12 +56,14 @@ function removeServerFile(): void {
 async function main(): Promise<void> {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
   const store = new Store({ file: paths.storeFile() });
+  const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
   const token = randomBytes(32).toString("base64url");
   const allowedHosts = new Set<string>();
   const server = createServer(
     createApp({
       store,
       delivery: new Delivery(store),
+      host,
       launchCodes: new LaunchCodes(),
       token,
       allowedHosts,
@@ -78,6 +83,7 @@ async function main(): Promise<void> {
   console.error(`sidenote listening on http://127.0.0.1:${port}`);
 
   const shutDown = (): void => {
+    host.closeAll();
     removeServerFile();
     server.close();
     server.closeAllConnections();

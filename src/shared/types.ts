@@ -14,6 +14,27 @@ export interface StoredResponse {
   created_at: EpochSeconds;
   /** Claude's answer to each note this reply answered, keyed by String(note id). */
   note_answers: Record<string, string>;
+  // The rest is set only for turns sidenote ran itself (see src/server/host.ts).
+  /** What the user typed for this turn; notes that rode along aren't included. */
+  prompt?: string;
+  /** How many notes rode along with the prompt. */
+  notes_sent?: number;
+  /** The turn's tool calls, each shown as a one-line row. */
+  steps?: TurnStep[];
+  /** Set when the turn didn't finish: stopped by the user, or failed. */
+  ended?: "interrupted" | "error";
+  /** The agent's error, when ended is "error". */
+  error?: string;
+}
+
+/** One tool call of a turn: "Edit src/app.ts", "Bash npm test". */
+export interface TurnStep {
+  tool: string;
+  /** What the call works on, such as a file or a command, or "". */
+  summary: string;
+  /** The row follows this block of the reply's text; -1 puts it before the first. */
+  after_block: number;
+  failed: boolean;
 }
 
 /** A note the user wrote in the browser. Follow-ups in a thread point at the thread's root note. */
@@ -73,6 +94,76 @@ export interface StateSnapshot {
 export interface ClaimedNote extends Note {
   response_created_at: EpochSeconds;
   root_body: string | null;
+}
+
+// ---- Sessions sidenote runs ---------------------------------------------------------------
+
+/**
+ * What the agent of a session sidenote runs is doing:
+ * - idle: waiting for a message
+ * - working: in a turn
+ * - waiting: in a turn, waiting for the user to answer a permission prompt
+ * - stopped: its process ended; the next message starts it again
+ */
+export type AgentState = "idle" | "working" | "waiting" | "stopped";
+
+/** Part of the turn in progress: streamed text, or a tool call (failed is null while it runs). */
+export type LivePart =
+  { kind: "text"; text: string } | { kind: "tool"; id: string; tool: string; summary: string; failed: boolean | null };
+
+export interface LiveTurn {
+  prompt: string;
+  notes_sent: number;
+  started_at: EpochSeconds;
+  parts: LivePart[];
+}
+
+/** A tool call waiting for the user's yes or no. */
+export interface PermissionPrompt {
+  request_id: string;
+  tool: string;
+  summary: string;
+  /** The command, file or input in full, for the user to read before answering. */
+  detail: string;
+}
+
+export interface ConversationView {
+  version: number;
+  session_id: string;
+  /** Such as "Claude Code". */
+  agent: string;
+  /** "" until the agent reports it. */
+  model: string;
+  state: AgentState;
+  live: LiveTurn | null;
+  /** Messages typed while the agent worked; each goes when the turn before it ends. */
+  queued: string[];
+  permission: PermissionPrompt | null;
+  context: { used: number; limit: number } | null;
+  /** Why the agent last stopped or failed, or "". */
+  error: string;
+}
+
+export interface StartConversationRequest {
+  cwd: string;
+  /** An earlier session to continue; without one, a new session starts. */
+  session_id?: string;
+}
+
+export interface StartConversationResult {
+  session_id: string;
+}
+
+export interface ConversationMessageRequest {
+  session_id: string;
+  /** May be "" to send only the pending notes. */
+  text: string;
+}
+
+export interface PermissionAnswerRequest {
+  session_id: string;
+  request_id: string;
+  decision: "allow" | "deny" | "always";
 }
 
 // ---- Requests and results ------------------------------------------------------------------

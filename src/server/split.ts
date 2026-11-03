@@ -1,4 +1,4 @@
-// Claude starts each note's answer with a line like "**↳ Re: note 41**" (see cli/format.ts).
+// Claude starts each note's answer with a line like "**↳ Re: note 41**" (see shared/format.ts).
 const NOTE_MARKER =
   /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
 const TRAILING_RULES = /(?:\n\s*(?:-{3,}|\*{3,}|_{3,})\s*)+$/;

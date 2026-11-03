@@ -1,6 +1,14 @@
 // Sessions, replies and notes, with retention limits. Send now coordination lives in delivery.ts.
 import { systemClock, type Clock } from "../node/clock.ts";
-import type { ClaimedNote, EpochSeconds, Note, SessionMeta, SessionSummary, StoredResponse } from "../shared/types.ts";
+import type {
+  ClaimedNote,
+  EpochSeconds,
+  Note,
+  SessionMeta,
+  SessionSummary,
+  StoredResponse,
+  TurnStep,
+} from "../shared/types.ts";
 import { emptyStore, loadStore, saveStore, type StoreData } from "./persistence.ts";
 import type { ParsedNote } from "./requests.ts";
 import { splitNoteAnswers } from "./split.ts";
@@ -10,14 +18,29 @@ export const MAX_RESPONSES_PER_SESSION = 100;
 /** A session with no activity for this long is forgotten, with its replies and notes. */
 export const SESSION_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 
-/** A counter pages poll with, so unchanged state costs one 204. */
+/** A counter clients poll with, so unchanged state costs one 204. */
 export class Revision {
   #value = 0;
+  readonly #waiting = new Set<() => void>();
   get value(): number {
     return this.#value;
   }
   bump(): void {
     this.#value += 1;
+    for (const wake of [...this.#waiting]) wake();
+  }
+  /** Resolves when the value moves past `known`, or after timeoutMs: a long poll's wait. */
+  async waitPast(known: number, timeoutMs: number): Promise<void> {
+    if (this.#value !== known) return;
+    await new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        this.#waiting.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, timeoutMs);
+      this.#waiting.add(wake);
+    });
   }
 }
 
@@ -28,6 +51,14 @@ export interface NewReply {
   sessionName: string;
   /** Only for backfilled replies; live replies are stamped now. */
   createdAt: EpochSeconds | undefined;
+  /** For turns sidenote ran itself. */
+  turn?: {
+    prompt: string;
+    notesSent: number;
+    steps: TurnStep[];
+    ended?: "interrupted" | "error";
+    error?: string;
+  };
 }
 
 export class Store {
@@ -93,6 +124,13 @@ export class Store {
       created_at: reply.createdAt ?? this.#clock.now(),
       note_answers: {},
     };
+    if (reply.turn) {
+      response.prompt = reply.turn.prompt;
+      response.notes_sent = reply.turn.notesSent;
+      response.steps = reply.turn.steps;
+      if (reply.turn.ended) response.ended = reply.turn.ended;
+      if (reply.turn.error) response.error = reply.turn.error;
+    }
     const newSession = !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
     // Backfilled replies are history: they never answer notes.

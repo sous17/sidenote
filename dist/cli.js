@@ -125,8 +125,9 @@ var init_client = __esm({
       get origin() {
         return `http://127.0.0.1:${this.#server.port}`;
       }
-      get(path) {
-        return this.#request("GET", path);
+      /** timeoutMs is for long polls, which the server holds open until something changes. */
+      get(path, timeoutMs = REQUEST_TIMEOUT_MS) {
+        return this.#request("GET", path, void 0, timeoutMs);
       }
       post(path, body) {
         return this.#request("POST", path, body);
@@ -143,12 +144,12 @@ var init_client = __esm({
         const query = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
         return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code2}`;
       }
-      async #request(method, path, body) {
+      async #request(method, path, body, timeoutMs = REQUEST_TIMEOUT_MS) {
         const response = await fetch(this.origin + path, {
           method,
           headers: { [TOKEN_HEADER]: this.#server.token, "Content-Type": "application/json" },
           body: body === void 0 ? void 0 : JSON.stringify(body),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+          signal: AbortSignal.timeout(timeoutMs)
         });
         const text = await response.text();
         if (!response.ok) {
@@ -3861,20 +3862,20 @@ import { randomBytes } from "node:crypto";
 import { readFileSync as readFileSync5 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
 
-// src/cli/format.ts
+// src/shared/format.ts
 var MAX_CONTEXT_CHARS = 9500;
 var CODE_CHANGE_RULE = "When you show a code change, or the user asks to see code or a diff, show it as changes to the current code, not as whole files: for each change, a sentence or two on what it does and why, then a ```diff block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines and use @@ hunks with about three lines of context. Use one block per file or per step. Put the diff in your reply itself, not only in command output such as `git diff`, because the sidenote window shows only your replies.";
 function sessionContext() {
-  return "The user follows this session in the sidenote browser window, which shows your replies and draws ```diff blocks as diffs. " + CODE_CHANGE_RULE;
+  return "The user follows this session in sidenote, which shows your replies and draws ```diff blocks as diffs. " + CODE_CHANGE_RULE;
 }
 function formatNotesForClaude(notes, options = {}) {
   const first = notes[0];
   if (!first) return "";
-  const [intro, formatRule] = options.fromBrowser ? [
-    "The user clicked Send now in the sidenote browser window. There is no new terminal message: answer only these inline notes on your earlier responses.",
+  const [intro, formatRule] = options.sendNow ? [
+    "The user clicked Send now in sidenote. There is no new message: answer only these inline notes on your earlier responses.",
     "Format: skip any main answer. Answer each note in its own section that starts with a line containing only its marker, for example:"
   ] : [
-    "The user reviewed your earlier responses in the sidenote browser window and left these inline notes. Address them together with the user's message.",
+    "The user reviewed your earlier responses in sidenote and left these inline notes. Address them together with the user's message.",
     "Format: first answer the user's message as usual (skip this part if their message only asks you to look at the notes). Then answer each note in its own section that starts with a line containing only its marker, for example:"
   ];
   const lines = [
@@ -4064,7 +4065,7 @@ async function hookWait(input) {
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
-      process.stderr.write(formatNotesForClaude(result.comments, { fromBrowser: true }));
+      process.stderr.write(formatNotesForClaude(result.comments, { sendNow: true }));
       process.exitCode = 2;
       return;
     }

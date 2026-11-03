@@ -57,8 +57,9 @@ export class SidenoteClient {
     return `http://127.0.0.1:${this.#server.port}`;
   }
 
-  get<T>(path: string): Promise<T> {
-    return this.#request<T>("GET", path);
+  /** timeoutMs is for long polls, which the server holds open until something changes. */
+  get<T>(path: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+    return this.#request<T>("GET", path, undefined, timeoutMs);
   }
 
   post<T>(path: string, body: object): Promise<T> {
@@ -79,12 +80,12 @@ export class SidenoteClient {
     return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
   }
 
-  async #request<T>(method: string, path: string, body?: object): Promise<T> {
+  async #request<T>(method: string, path: string, body?: object, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const response = await fetch(this.origin + path, {
       method,
       headers: { [TOKEN_HEADER]: this.#server.token, "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await response.text();
     if (!response.ok) {

@@ -8,36 +8,45 @@
 // - Every response carries nosniff, no-referrer and same-origin headers; the page also gets a
 //   content security policy that allows no inline or remote scripts.
 import { timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import {
   TOKEN_HEADER,
   type ClaimResult,
+  type ConversationView,
   type ErrorResult,
   type LaunchCodeResult,
   type NewResponseResult,
   type RedeemResult,
   type SendResult,
   type SessionListResult,
+  type StartConversationResult,
   type StateSnapshot,
   type WaiterPollResult,
 } from "../shared/types.ts";
 import type { Delivery } from "./delivery.ts";
+import { HostError, type SessionHost } from "./host.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
   parseClaim,
+  parseConversationMessage,
   parseNewNote,
   parseNewResponse,
   parseRedeem,
+  parsePermissionAnswer,
   parseSend,
+  parseSessionOnly,
+  parseStartConversation,
   parseTouchSession,
   parseWaiter,
 } from "./requests.ts";
 import type { Store } from "./store.ts";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/** A long poll (wait=1) is answered at the latest after this, so proxies and timeouts never cut it. */
+export const LONG_POLL_MS = 25_000;
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -63,6 +72,7 @@ const PAGE_HEADERS: Readonly<Record<string, string>> = {
 export interface AppOptions {
   store: Store;
   delivery: Delivery;
+  host: SessionHost;
   launchCodes: LaunchCodes;
   token: string;
   /** Host header values to accept. Filled in by main.ts once the port is known. */
@@ -98,13 +108,13 @@ interface Route {
 const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
-function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
+function routes({ store, delivery, host, launchCodes, token }: AppOptions): Route[] {
   const snapshot = (sessionId: string | null): StateSnapshot => {
     const session = sessionId ? store.session(sessionId) : undefined;
     if (!session) return { version: store.revision.value, session: null, responses: [], comments: [] };
     return {
       version: store.revision.value,
-      session: { ...session, ...delivery.status(session.id) },
+      session: { ...session, ...(host.sendStatus(session.id) ?? delivery.status(session.id)) },
       ...store.sessionContent(session.id),
     };
   };
@@ -114,11 +124,71 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
       method: "GET",
       path: "/api/state",
       needsToken: true,
-      handle: ({ query }) => {
+      handle: async ({ query }) => {
         delivery.refresh();
         // The page passes the version it has; an unchanged store costs one empty reply.
-        if (query.get("v") === String(store.revision.value)) return empty(204);
+        const known = query.get("v");
+        if (known === String(store.revision.value) && query.get("wait") === "1") {
+          await store.revision.waitPast(Number(known), LONG_POLL_MS);
+        }
+        if (known === String(store.revision.value)) return empty(204);
         return ok(snapshot(query.get("s")));
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/conversation",
+      needsToken: true,
+      handle: async ({ query }) => {
+        const sessionId = query.get("s") ?? "";
+        if (!host.owns(sessionId)) throw new HttpError(404, "sidenote isn't running this session");
+        const known = query.get("v");
+        if (known === String(host.revision.value) && query.get("wait") === "1") {
+          await host.revision.waitPast(Number(known), LONG_POLL_MS);
+        }
+        if (known === String(host.revision.value)) return empty(204);
+        const view: ConversationView | null = host.view(sessionId);
+        if (!view) throw new HttpError(404, "sidenote isn't running this session");
+        return ok(view);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversations",
+      needsToken: true,
+      handle: async ({ body }) => {
+        const input = parseStartConversation(body);
+        const folder = await stat(input.cwd).catch(() => null);
+        if (!folder?.isDirectory()) throw new HttpError(400, "cwd is not a folder");
+        return ok({ session_id: host.open(input.cwd, input.session_id) } satisfies StartConversationResult, 201);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversation/messages",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseConversationMessage(body);
+        host.message(input.session_id, input.text);
+        return ok({ ok: true }, 202);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversation/interrupt",
+      needsToken: true,
+      handle: ({ body }) => ok({ queued: host.interrupt(parseSessionOnly(body).session_id) }),
+    },
+    {
+      method: "POST",
+      path: "/api/conversation/permission",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parsePermissionAnswer(body);
+        if (!host.answer(input.session_id, input.request_id, input.decision)) {
+          throw new HttpError(409, "that permission prompt was already answered or has gone");
+        }
+        return ok({ ok: true });
       },
     },
     {
@@ -203,7 +273,13 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
       method: "POST",
       path: "/api/send",
       needsToken: true,
-      handle: ({ body }) => ok({ sessions: delivery.requestSend(parseSend(body).session_ids) } satisfies SendResult),
+      handle: ({ body }) => {
+        // Sessions sidenote runs take their notes as a message; the others through their waiter.
+        const ids = parseSend(body).session_ids;
+        const hosted = ids.filter((id) => host.owns(id) && host.sendNotes(id));
+        const waiting = delivery.requestSend(ids.filter((id) => !host.owns(id)));
+        return ok({ sessions: [...hosted, ...waiting].sort() } satisfies SendResult);
+      },
     },
     {
       method: "POST",
@@ -264,6 +340,7 @@ export function createApp(options: AppOptions): RequestListener {
       if (response.headersSent) return response.destroy();
       if (error instanceof HttpError) return send(response, errorReply(error.status, error.message));
       if (error instanceof BadRequest) return send(response, errorReply(400, error.message));
+      if (error instanceof HostError) return send(response, errorReply(409, error.message));
       console.error(error);
       send(response, errorReply(500, "internal error"));
     });
