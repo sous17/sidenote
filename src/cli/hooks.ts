@@ -1,8 +1,9 @@
-// The three Claude Code hooks. Each reads Claude Code's JSON hook input from stdin (see main.ts).
+// The Claude Code hooks. Each reads Claude Code's JSON hook input from stdin (see main.ts).
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
+  ActivityRequest,
   ClaimRequest,
   ClaimResult,
   NewResponseRequest,
@@ -12,6 +13,7 @@ import type {
 } from "../shared/types.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "./format.ts";
+import { toolActivity } from "../shared/tools.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
 const WAITER_POLL_MS = 1000;
@@ -26,6 +28,11 @@ export interface HookInput {
   last_assistant_message?: string;
   /** UserPromptSubmit: what the user typed. */
   prompt?: string;
+  /** PreToolUse: the call Claude is about to make. */
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  /** Set when a subagent makes the call. */
+  agent_id?: string;
 }
 
 /** The session's /rename name, or "" if the transcript can't be read or has none. */
@@ -74,6 +81,20 @@ export async function hookPrompt(input: HookInput): Promise<void> {
       : formatPromptForClaude(prompt, comments, { withTerminalPrompt: true });
   const output = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
   process.stdout.write(`${JSON.stringify(output)}\n`);
+}
+
+/**
+ * PreToolUse, in the background: shows the window what Claude is doing, in one line. Subagents
+ * work in parallel with Claude, so their calls would only make the line flicker.
+ */
+export async function hookActivity(input: HookInput): Promise<void> {
+  if (!input.session_id || !input.tool_name || input.agent_id) return;
+  const text = toolActivity(input.tool_name, input.tool_input ?? {}, input.cwd ?? "");
+  if (!text) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  const activity: ActivityRequest = { session_id: input.session_id, text };
+  await client.post("/api/activity", activity);
 }
 
 /**

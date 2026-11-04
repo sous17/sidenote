@@ -68,6 +68,8 @@ export interface SendStatus {
   send_requested: boolean;
   /** A message typed in the page that waits for Claude to finish its turn; absent when none does. */
   queued_prompt?: string;
+  /** What Claude is doing in this turn, such as "Editing src/app.ts"; absent when unknown. */
+  activity?: string;
 }
 
 /** The session a page shows, with its Send now status. */
@@ -88,6 +90,12 @@ export interface StateSnapshot {
 export interface ClaimedNote extends Note {
   response_created_at: EpochSeconds;
   root_body: string | null;
+}
+
+/** A terminal session's tool call, reported by its PreToolUse hook. */
+export interface ActivityRequest {
+  session_id: string;
+  text: string;
 }
 
 // ---- Requests and results ------------------------------------------------------------------

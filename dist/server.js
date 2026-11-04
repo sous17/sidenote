@@ -41,6 +41,8 @@ var Delivery = class {
   #busy = /* @__PURE__ */ new Set();
   /** Sessions whose notes go out at the waiter's next poll. */
   #requested = /* @__PURE__ */ new Set();
+  /** The latest tool call of each busy session. Only the page's status line needs it. */
+  #activity = /* @__PURE__ */ new Map();
   #statusSignature = "";
   constructor(store, clock = systemClock) {
     this.#store = store;
@@ -50,6 +52,8 @@ var Delivery = class {
     const status = { status: this.#state(sessionId2), send_requested: this.#requested.has(sessionId2) };
     const waiting = this.#store.waitingMessageText(sessionId2);
     if (waiting) status.queued_prompt = waiting;
+    const activity = this.#activity.get(sessionId2);
+    if (activity) status.activity = activity;
     return status;
   }
   /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
@@ -63,6 +67,13 @@ var Delivery = class {
   registerWaiter(sessionId2, waiterId) {
     this.#waiters.set(sessionId2, { id: waiterId, seenMs: this.#clock.monotonicMs() });
     this.#busy.delete(sessionId2);
+    this.#activity.delete(sessionId2);
+  }
+  /** Hooks run in the background, so one can land after its turn ended: only a busy session counts. */
+  setActivity(sessionId2, text) {
+    if (this.#state(sessionId2) !== "busy") return;
+    this.#activity.set(sessionId2, text);
+    this.#store.revision.bump();
   }
   pollWaiter(sessionId2, waiterId) {
     const waiter = this.#waiters.get(sessionId2);
@@ -72,6 +83,7 @@ var Delivery = class {
     this.#requested.delete(sessionId2);
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
+    this.#activity.delete(sessionId2);
     const comments = this.#store.claimPending(sessionId2);
     const prompt = this.#store.claimMessages(sessionId2);
     if (prompt === void 0) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
@@ -97,6 +109,7 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
     this.#requested.delete(sessionId2);
+    this.#activity.delete(sessionId2);
   }
   /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */
   requestSend(sessionIds) {
@@ -117,6 +130,9 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
 import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
+
+// src/shared/tools.ts
+var MAX_ACTIVITY_CHARS = 200;
 
 // src/server/requests.ts
 var BadRequest = class extends Error {
@@ -208,6 +224,13 @@ function parseClaim(input) {
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
   return prompt === void 0 ? { session_id } : { session_id, prompt };
+}
+function parseActivity(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    text: nonEmpty(string(body, "text", MAX_ACTIVITY_CHARS), "text")
+  };
 }
 function parseWaiter(input) {
   const body = asObject(input);
@@ -343,6 +366,16 @@ function routes({ store, delivery, launchCodes, token }) {
         const result = { comments: store.claimPending(session_id) };
         if (prompt !== void 0) result.prompt = prompt;
         return ok(result);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/activity",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, text } = parseActivity(body);
+        delivery.setActivity(session_id, text);
+        return ok({ ok: true });
       }
     },
     {

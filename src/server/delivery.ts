@@ -25,6 +25,8 @@ export class Delivery {
   readonly #busy = new Set<string>();
   /** Sessions whose notes go out at the waiter's next poll. */
   readonly #requested = new Set<string>();
+  /** The latest tool call of each busy session. Only the page's status line needs it. */
+  readonly #activity = new Map<string, string>();
   #statusSignature = "";
 
   constructor(store: Store, clock: Clock = systemClock) {
@@ -36,6 +38,8 @@ export class Delivery {
     const status: SendStatus = { status: this.#state(sessionId), send_requested: this.#requested.has(sessionId) };
     const waiting = this.#store.waitingMessageText(sessionId);
     if (waiting) status.queued_prompt = waiting;
+    const activity = this.#activity.get(sessionId);
+    if (activity) status.activity = activity;
     return status;
   }
 
@@ -51,6 +55,14 @@ export class Delivery {
   registerWaiter(sessionId: string, waiterId: string): void {
     this.#waiters.set(sessionId, { id: waiterId, seenMs: this.#clock.monotonicMs() });
     this.#busy.delete(sessionId);
+    this.#activity.delete(sessionId);
+  }
+
+  /** Hooks run in the background, so one can land after its turn ended: only a busy session counts. */
+  setActivity(sessionId: string, text: string): void {
+    if (this.#state(sessionId) !== "busy") return;
+    this.#activity.set(sessionId, text);
+    this.#store.revision.bump();
   }
 
   pollWaiter(sessionId: string, waiterId: string): WaiterPollResult {
@@ -62,6 +74,7 @@ export class Delivery {
     this.#requested.delete(sessionId);
     this.#waiters.delete(sessionId);
     this.#busy.add(sessionId);
+    this.#activity.delete(sessionId);
     const comments = this.#store.claimPending(sessionId);
     const prompt = this.#store.claimMessages(sessionId);
     if (prompt === undefined) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
@@ -87,6 +100,7 @@ export class Delivery {
     this.#waiters.delete(sessionId);
     this.#busy.add(sessionId);
     this.#requested.delete(sessionId);
+    this.#activity.delete(sessionId);
   }
 
   /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */

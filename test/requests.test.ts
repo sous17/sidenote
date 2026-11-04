@@ -4,6 +4,7 @@ import { LaunchCodes, LAUNCH_CODE_TTL_MS } from "../src/server/launch.ts";
 import {
   BadRequest,
   LIMITS,
+  parseActivity,
   parseNewNote,
   parseNewResponse,
   parsePrompt,
@@ -50,4 +51,12 @@ test("launch codes work once and expire", () => {
   clock.advanceMs(LAUNCH_CODE_TTL_MS);
   assert.equal(codes.redeem(late), false, "expired");
   assert.equal(codes.redeem("never-issued-code-123"), false);
+});
+
+test("an activity line is short, and not empty", () => {
+  const session_id = "s1";
+  assert.deepEqual(parseActivity({ session_id, text: "Editing a.ts" }), { session_id, text: "Editing a.ts" });
+  assert.throws(() => parseActivity({ session_id, text: " " }), BadRequest);
+  assert.throws(() => parseActivity({ session_id, text: "x".repeat(201) }), BadRequest);
+  assert.throws(() => parseActivity({ session_id: "../x", text: "Editing a.ts" }), BadRequest);
 });

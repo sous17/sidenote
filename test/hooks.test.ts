@@ -230,6 +230,21 @@ test("clients starting the server at the same moment all end up on one server", 
   }
 });
 
+test("a tool call shows in the window while Claude works, and a subagent's doesn't", async () => {
+  const session = "activity-session";
+  const activity = async () => (await api<StateSnapshot>("GET", `/api/state?v=-1&s=${session}`)).session?.activity;
+  const input = (fields: Record<string, unknown>): string =>
+    JSON.stringify({ session_id: session, cwd: "/w/demo", tool_name: "Edit", ...fields });
+
+  await run(["hook-stop"], hookInput({ session_id: session, last_assistant_message: "Hello." }));
+  await run(["hook-prompt"], hookInput({ session_id: session, prompt: "Fix it" }));
+  await run(["hook-activity"], input({ tool_input: { file_path: "/w/demo/a.ts", new_string: "code" } }));
+  assert.equal(await activity(), "Editing a.ts");
+
+  await run(["hook-activity"], input({ tool_input: { file_path: "/w/demo/b.ts" }, agent_id: "agent-1" }));
+  assert.equal(await activity(), "Editing a.ts");
+});
+
 test("off stops the server and hooks go quiet", async () => {
   assert.match((await run(["off"])).stdout, /sidenote is off/);
   await sleep(300);

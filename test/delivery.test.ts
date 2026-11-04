@@ -141,3 +141,28 @@ test("a message stays visible from the moment it is sent, even if a wake-up mark
     [["testing the button", "page"]],
   );
 });
+
+test("a busy session shows its latest tool call until the turn ends", () => {
+  const { store, delivery } = fixture();
+  reply(store, "Para one.");
+  delivery.markBusy(SESSION);
+  const revision = store.revision.value;
+  delivery.setActivity(SESSION, "Reading a.ts");
+  delivery.setActivity(SESSION, "Editing a.ts");
+  assert.equal(delivery.status(SESSION).activity, "Editing a.ts");
+  assert.ok(store.revision.value > revision, "pages hear about it");
+
+  delivery.registerWaiter(SESSION, "w1");
+  assert.equal(delivery.status(SESSION).activity, undefined, "the turn ended");
+  delivery.setActivity(SESSION, "Running late");
+  assert.equal(delivery.status(SESSION).activity, undefined, "a background hook landed after the turn");
+});
+
+test("a new turn doesn't start with the last turn's tool call", () => {
+  const { store, delivery } = fixture();
+  reply(store, "Para one.");
+  delivery.markBusy(SESSION);
+  delivery.setActivity(SESSION, "Editing a.ts");
+  delivery.markBusy(SESSION);
+  assert.equal(delivery.status(SESSION).activity, undefined);
+});

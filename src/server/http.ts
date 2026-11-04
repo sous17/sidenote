@@ -29,6 +29,7 @@ import type { Delivery } from "./delivery.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
+  parseActivity,
   parseClaim,
   parseNewNote,
   parseNewResponse,
@@ -186,6 +187,16 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
         const result: ClaimResult = { comments: store.claimPending(session_id) };
         if (prompt !== undefined) result.prompt = prompt;
         return ok(result);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/activity",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, text } = parseActivity(body);
+        delivery.setActivity(session_id, text);
+        return ok({ ok: true });
       },
     },
     {
