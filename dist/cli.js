@@ -1,5 +1,5 @@
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, rmSync as rmSync2, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, rmSync, writeFileSync } from "node:fs";
 
 // src/node/paths.ts
 import { homedir } from "node:os";
@@ -9,6 +9,7 @@ var paths = {
   stateDir,
   storeFile: () => join(stateDir(), "store.json"),
   serverFile: () => join(stateDir(), "server.json"),
+  lockFile: () => join(stateDir(), "server.lock"),
   portFile: () => join(stateDir(), "port"),
   logFile: () => join(stateDir(), "server.log"),
   enabledFlag: () => join(stateDir(), "enabled"),
@@ -17,7 +18,7 @@ var paths = {
 
 // src/cli/client.ts
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join as join2 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -108,7 +109,6 @@ function serverPid() {
 }
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
-  rmSync(paths.serverFile(), { force: true });
   const log = openSync(paths.logFile(), "a", 384);
   spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
@@ -412,7 +412,7 @@ var commands = {
     console.log(`sidenote is on. ${await openWindow(client, sessionArgument())}`);
   },
   async off() {
-    rmSync2(paths.enabledFlag(), { force: true });
+    rmSync(paths.enabledFlag(), { force: true });
     const pid = serverPid();
     if (pid) {
       try {

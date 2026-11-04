@@ -200,6 +200,29 @@ test("status and open act on the session", async () => {
   assert.equal((await lastOpened()).searchParams.get("s"), SESSION, "open without a session picks the latest");
 });
 
+test("clients starting the server at the same moment all end up on one server", async () => {
+  // Enabled, with no server running: as when a server crashes.
+  await run(["off"]);
+  await sleep(300);
+  writeFileSync(join(home, ".sidenote", "enabled"), "");
+  const results = await Promise.all(
+    Array.from({ length: 4 }, (_, index) =>
+      run(["hook-stop"], hookInput({ last_assistant_message: `Reply ${index}` })),
+    ),
+  );
+  assert.deepEqual(
+    results.map((result) => result.code),
+    [0, 0, 0, 0],
+  );
+  const state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
+  for (const index of [0, 1, 2, 3]) {
+    assert.ok(
+      state.responses.some((response) => response.text === `Reply ${index}`),
+      `reply ${index} reached the server that is left`,
+    );
+  }
+});
+
 test("off stops the server and hooks go quiet", async () => {
   assert.match((await run(["off"])).stdout, /sidenote is off/);
   await sleep(300);
