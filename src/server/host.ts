@@ -121,7 +121,10 @@ export class SessionHost {
     const session = this.#sessions.get(sessionId);
     if (!session) return null;
     const busy = session.state === "working" || session.state === "waiting";
-    return { status: busy ? "busy" : "listening", send_requested: session.queued.includes("") };
+    const status: SendStatus = { status: busy ? "busy" : "listening", send_requested: session.queued.includes("") };
+    const messages = session.queued.filter((text) => text.trim());
+    if (messages.length) status.queued_prompt = messages.join("\n\n");
+    return status;
   }
 
   /** Sends a message, with the session's pending notes; while the agent works, it waits its turn. */

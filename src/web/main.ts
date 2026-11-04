@@ -5,6 +5,7 @@ import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
 import { Model } from "../shared/model.ts";
+import { PromptBox } from "./prompt.ts";
 import { installNoteStarters } from "./selection.ts";
 import { Sending } from "./sending.ts";
 import { ThreadPane } from "./thread.ts";
@@ -107,6 +108,17 @@ async function start(): Promise<void> {
     newReply: byId<HTMLButtonElement>("new-reply"),
   });
   const editor = new NoteEditor({ feed, sending, onError: showError });
+  const promptBox = new PromptBox({
+    model,
+    api,
+    refresh,
+    onSent: () => feed.scrollToLatest(),
+    onError: showError,
+    form: byId<HTMLFormElement>("prompt-form"),
+    field: byId<HTMLTextAreaElement>("prompt-text"),
+    send: byId<HTMLButtonElement>("prompt-send"),
+    hint: byId("prompt-hint"),
+  });
   const thread: ThreadPane = new ThreadPane({
     model,
     feed,
@@ -127,6 +139,7 @@ async function start(): Promise<void> {
     renderSessionTitle(model);
     feed.render();
     sending.render();
+    promptBox.render();
     if (thread.isOpen) thread.render();
     if (!rendered && threadFromUrl) thread.open(threadFromUrl);
     rendered = true;

@@ -1,12 +1,19 @@
 // Reading and writing ~/.sidenote/store.json, including stores written by older versions.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { SESSION_ID_PATTERN, type Note, type SessionMeta, type StoredResponse } from "../shared/types.ts";
+import {
+  SESSION_ID_PATTERN,
+  type Note,
+  type SessionMeta,
+  type StoredResponse,
+  type UserMessage,
+} from "../shared/types.ts";
 
 /** The store's contents in memory. Sessions are a Map, so no id can collide with Object keys. */
 export interface StoreData {
   sessions: Map<string, SessionMeta>;
   responses: StoredResponse[];
   comments: Note[];
+  messages: UserMessage[];
   nextId: number;
 }
 
@@ -15,11 +22,12 @@ interface StoreFile {
   sessions?: Record<string, SessionMeta>;
   responses?: StoredResponse[];
   comments?: Note[];
+  messages?: UserMessage[];
   next_id?: number;
 }
 
 export function emptyStore(): StoreData {
-  return { sessions: new Map(), responses: [], comments: [], nextId: 1 };
+  return { sessions: new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
 
 export function loadStore(file: string): StoreData {
@@ -33,6 +41,7 @@ export function saveStore(file: string, data: StoreData): void {
     sessions: Object.fromEntries(data.sessions),
     responses: data.responses,
     comments: data.comments,
+    messages: data.messages,
     next_id: data.nextId,
   };
   const temp = `${file}.tmp`;
@@ -67,6 +76,14 @@ export function migrate(file: StoreFile): StoreData {
     sessions.set(response.session_id, meta);
   }
 
-  const highestId = Math.max(0, ...responses.map((r) => r.id), ...comments.map((c) => c.id));
-  return { sessions, responses, comments, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
+  // Stores from before the message box have no messages.
+  const messages = (file.messages ?? []).filter((m) => SESSION_ID_PATTERN.test(m.session_id));
+
+  const highestId = Math.max(
+    0,
+    ...responses.map((r) => r.id),
+    ...comments.map((c) => c.id),
+    ...messages.map((m) => m.id),
+  );
+  return { sessions, responses, comments, messages, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
 }

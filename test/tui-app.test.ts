@@ -43,6 +43,7 @@ class FakeApi implements TuiApi {
       session: { id: SESSION, name: "auth-refactor", cwd: "/w/demo", last_active: 0, status, send_requested: false },
       responses,
       comments,
+      messages: [],
     };
   }
 

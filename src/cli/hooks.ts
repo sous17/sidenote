@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
+  ClaimRequest,
   ClaimResult,
   NewResponseRequest,
   NewResponseResult,
@@ -10,10 +11,12 @@ import type {
   WaiterRequest,
 } from "../shared/types.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
-import { formatNotesForClaude, sessionContext } from "../shared/format.ts";
+import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "../shared/format.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
 const WAITER_POLL_MS = 1000;
+/** A huge paste is cut for the window; Claude still gets all of it from Claude Code. */
+const MAX_SHOWN_PROMPT_CHARS = 100_000;
 
 /** The fields sidenote reads from Claude Code's hook input. */
 export interface HookInput {
@@ -21,6 +24,8 @@ export interface HookInput {
   cwd?: string;
   transcript_path?: string;
   last_assistant_message?: string;
+  /** UserPromptSubmit: what the user typed. */
+  prompt?: string;
 }
 
 /** The session's /rename name, or "" if the transcript can't be read or has none. */
@@ -56,21 +61,25 @@ export async function hookSession(): Promise<void> {
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
-/** UserPromptSubmit: attaches the session's pending notes to the prompt as context. */
+/** UserPromptSubmit: shows the prompt in the window, and attaches pending notes to it as context. */
 export async function hookPrompt(input: HookInput): Promise<void> {
   const client = await SidenoteClient.connect();
   if (!client || !input.session_id) return;
-  const { comments } = await client.post<ClaimResult>("/api/claim", { session_id: input.session_id });
-  if (!comments.length) return;
-  const output = {
-    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatNotesForClaude(comments) },
-  };
+  const claim: ClaimRequest = { session_id: input.session_id };
+  if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
+  const { comments, prompt } = await client.post<ClaimResult>("/api/claim", claim);
+  if (!comments.length && prompt === undefined) return;
+  const additionalContext =
+    prompt === undefined
+      ? formatNotesForClaude(comments)
+      : formatPromptForClaude(prompt, comments, { withTerminalPrompt: true });
+  const output = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
 /**
- * Stop, in the background with asyncRewake: waits for Send now in the browser, then prints the
- * notes to stderr and exits 2, which wakes Claude to answer them.
+ * Stop, in the background with asyncRewake: waits for Send now or a message from the browser, then
+ * prints the notes and message to stderr and exits 2, which wakes Claude to answer them.
  */
 export async function hookWait(input: HookInput): Promise<void> {
   if (!input.session_id) return;
@@ -88,7 +97,11 @@ export async function hookWait(input: HookInput): Promise<void> {
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
-      process.stderr.write(formatNotesForClaude(result.comments, { sendNow: true }));
+      process.stderr.write(
+        result.prompt === undefined
+          ? formatNotesForClaude(result.comments, { sendNow: true })
+          : formatPromptForClaude(result.prompt, result.comments),
+      );
       // Exit code 2 wakes Claude. Set it instead of calling process.exit, so stderr finishes
       // writing first (pipes are asynchronous on macOS).
       process.exitCode = 2;

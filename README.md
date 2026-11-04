@@ -18,6 +18,10 @@ note on its own, and each answer lands in that note's thread.
   to the text they are about, or inline when the window is narrow.
 - **Send now.** Claude answers your notes straight away, with nothing typed in the terminal.
   **Save** keeps a note until your next prompt instead.
+- **Message Claude from the browser.** Type in the box at the bottom of the window and press
+  **Enter**: Claude gets it as if you had typed it in the terminal, with your pending notes
+  alongside. While Claude is working, the message waits and goes as soon as it finishes. Your
+  messages show in the feed between Claude's replies, including prompts typed in the terminal.
 - **Threads.** Click a note to open its thread beside the feed: your note, Claude's answer,
   your follow-ups. Claude's answer appears only in the thread, never duplicated in the feed.
 - **Code changes as diffs.** When you ask Claude to see or change code, in a note or in the
@@ -208,9 +212,13 @@ Four hooks connect Claude Code to a small local server:
 
 - **Stop** (`hook-stop`) posts each finished reply to the server, starting it if needed, and
   opens the session's window the first time that session replies.
-- **Stop, in the background** (`hook-wait`, with `asyncRewake`) waits for **Send now**. When you
-  click it, the hook prints your notes and exits with code 2, which wakes Claude to answer.
-- **UserPromptSubmit** (`hook-prompt`) attaches pending notes to the prompt you type.
+- **Stop, in the background** (`hook-wait`, with `asyncRewake`) waits for **Send now** or a
+  message from the window's message box. Then the hook prints your message and notes and exits
+  with code 2, which wakes Claude to answer.
+- **UserPromptSubmit** also carries a message from the window that was still waiting when you
+  typed in the terminal, so it isn't lost.
+- **UserPromptSubmit** (`hook-prompt`) shows the prompt you type in the window and attaches
+  pending notes to it.
 - **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
   draw them. It applies to sessions started, resumed or cleared while sidenote is on.
 

@@ -18,6 +18,7 @@ import {
   type ErrorResult,
   type LaunchCodeResult,
   type NewResponseResult,
+  type PromptResult,
   type RedeemResult,
   type SendResult,
   type SessionListResult,
@@ -25,6 +26,7 @@ import {
   type StateSnapshot,
   type WaiterPollResult,
 } from "../shared/types.ts";
+import { MAX_PROMPT_CHARS } from "../shared/format.ts";
 import type { Delivery } from "./delivery.ts";
 import { HostError, UnknownSession, type SessionHost } from "./host.ts";
 import type { LaunchCodes } from "./launch.ts";
@@ -34,6 +36,7 @@ import {
   parseConversationMessage,
   parseNewNote,
   parseNewResponse,
+  parsePrompt,
   parseRedeem,
   parsePermissionAnswer,
   parseSend,
@@ -111,7 +114,7 @@ const empty = (status: number): Reply => ({ status });
 function routes({ store, delivery, host, launchCodes, token }: AppOptions): Route[] {
   const snapshot = (sessionId: string | null): StateSnapshot => {
     const session = sessionId ? store.session(sessionId) : undefined;
-    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [] };
+    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [], messages: [] };
     return {
       version: store.revision.value,
       session: { ...session, ...(host.sendStatus(session.id) ?? delivery.status(session.id)) },
@@ -245,9 +248,14 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id } = parseClaim(body);
+        const { session_id, prompt: typed } = parseClaim(body);
         delivery.markBusy(session_id);
-        return ok({ comments: store.claimPending(session_id) } satisfies ClaimResult);
+        // A message still waiting from the page rides along with this terminal prompt.
+        const prompt = store.claimMessages(session_id);
+        if (typed?.trim()) store.addMessage(session_id, typed.trim(), "terminal");
+        const result: ClaimResult = { comments: store.claimPending(session_id) };
+        if (prompt !== undefined) result.prompt = prompt;
+        return ok(result);
       },
     },
     {
@@ -279,6 +287,32 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
         const hosted = ids.filter((id) => host.owns(id) && host.sendNotes(id));
         const waiting = delivery.requestSend(ids.filter((id) => !host.owns(id)));
         return ok({ sessions: [...hosted, ...waiting].sort() } satisfies SendResult);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/prompt",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, text } = parsePrompt(body);
+        if (!store.session(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
+        // Sessions sidenote runs take it as their next message; the others through their waiter.
+        if (host.owns(session_id)) {
+          const busy = host.sendStatus(session_id)?.status === "busy";
+          host.message(session_id, text);
+          return ok({ delivery: busy ? "queued" : "sent" } satisfies PromptResult, 202);
+        }
+        const outcome = delivery.requestPrompt(session_id, text);
+        if (outcome === "offline") {
+          throw new HttpError(
+            409,
+            "this session isn't listening: it may be closed, or hasn't finished a reply since sidenote started",
+          );
+        }
+        if (outcome === "too-long") {
+          throw new HttpError(413, `messages to a terminal session are limited to ${MAX_PROMPT_CHARS} characters`);
+        }
+        return ok({ delivery: outcome } satisfies PromptResult, 202);
       },
     },
     {

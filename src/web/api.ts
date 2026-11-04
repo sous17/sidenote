@@ -5,6 +5,7 @@ import {
   type ErrorResult,
   type NewNoteRequest,
   type Note,
+  type PromptResult,
   type RedeemResult,
   type SendResult,
   type StateSnapshot,
@@ -86,6 +87,11 @@ export class Api {
 
   deleteNote(id: number): Promise<null> {
     return request("DELETE", `/api/comments/${id}`, this.#token);
+  }
+
+  /** Sends a message to the session's Claude, as if it were typed in the terminal. */
+  prompt(sessionId: string, text: string): Promise<PromptResult | null> {
+    return request("POST", "/api/prompt", this.#token, { session_id: sessionId, text });
   }
 
   send(sessionId: string): Promise<SendResult | null> {

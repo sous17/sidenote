@@ -1,5 +1,5 @@
 // The feed: one card per reply, with notes in the margin beside the text they are about.
-import type { Note, StoredResponse } from "../shared/types.ts";
+import type { Note, StoredResponse, UserMessage } from "../shared/types.ts";
 import { formatTime, plainText, plural, truncate } from "../shared/text.ts";
 import { button, el, flash, tag } from "./dom.ts";
 import { renderMarkdownInto } from "./markdown.ts";
@@ -56,6 +56,10 @@ export class Feed {
   readonly #emptyState: HTMLElement;
   readonly #newReply: HTMLButtonElement;
   readonly #cards = new Map<number, Card>();
+  /** The user's messages, which sit between the replies in time order. */
+  readonly #messages = new Map<number, HTMLElement>();
+  /** Three dots after the user's latest message, until Claude's reply arrives. */
+  readonly #typing = createTypingIndicator();
   #firstRender = true;
 
   constructor(options: {
@@ -91,14 +95,15 @@ export class Feed {
     const scroller = this.scroller();
     const wasNearBottom = isNearBottom(scroller);
     const added = this.#syncCards();
+    const typingStarted = this.#syncTyping();
 
-    this.#emptyState.hidden = this.#model.responses.length > 0;
+    this.#emptyState.hidden = this.#model.responses.length + this.#model.messages.length > 0;
     for (const card of this.#cards.values()) this.#renderNotes(card);
     this.layout();
 
     if (this.#firstRender) {
       scrollToEnd(this.scroller());
-    } else if (added && wasNearBottom) {
+    } else if ((added || typingStarted) && wasNearBottom) {
       scrollToEnd(scroller);
     } else if (added) {
       this.#newReply.hidden = false;
@@ -156,6 +161,12 @@ export class Feed {
       : document.scrollingElement!;
   }
 
+  /** Shows the end of the feed, for a message the user just sent. */
+  scrollToLatest(): void {
+    scrollToEnd(this.scroller());
+    this.#newReply.hidden = true;
+  }
+
   hideNewReply(): void {
     this.#newReply.hidden = true;
   }
@@ -203,8 +214,13 @@ export class Feed {
       this.#cards.set(response.id, card);
       added = true;
     }
-    // Backfilled replies are older than cards already shown, so restore time order.
-    if (added) for (const response of this.#model.responses) this.#inner.append(this.#cards.get(response.id)!.element);
+    for (const message of this.#model.messages) {
+      if (this.#messages.has(message.id)) continue;
+      this.#messages.set(message.id, createMessage(message));
+      added = true;
+    }
+    // Messages go between replies, and backfilled replies are older than cards already shown.
+    if (added) for (const element of this.#inTimeOrder()) this.#inner.append(element);
 
     const live = new Set(this.#model.responses.map((r) => r.id));
     for (const [id, card] of this.#cards) {
@@ -212,7 +228,29 @@ export class Feed {
       card.element.remove();
       this.#cards.delete(id);
     }
+    const liveMessages = new Set(this.#model.messages.map((m) => m.id));
+    for (const [id, element] of this.#messages) {
+      if (liveMessages.has(id)) continue;
+      element.remove();
+      this.#messages.delete(id);
+    }
     return added;
+  }
+
+  /** Keeps the dots last in the feed. Returns whether they just appeared. */
+  #syncTyping(): boolean {
+    const wasHidden = this.#typing.hidden;
+    this.#typing.hidden = !this.#model.awaitingReply();
+    if (this.#inner.lastElementChild !== this.#typing) this.#inner.append(this.#typing);
+    return wasHidden && !this.#typing.hidden;
+  }
+
+  #inTimeOrder(): HTMLElement[] {
+    const items = [
+      ...this.#model.responses.map((r) => ({ at: r.created_at, element: this.#cards.get(r.id)!.element })),
+      ...this.#model.messages.map((m) => ({ at: m.created_at, element: this.#messages.get(m.id)! })),
+    ];
+    return items.sort((a, b) => a.at - b.at).map((item) => item.element);
   }
 
   #createCard(response: StoredResponse): Card {
@@ -244,7 +282,7 @@ export class Feed {
     const wholeThread = createMarginThread();
     linkOnHover(meta, wholeThread);
     const answered = el("div", "answered");
-    element.append(meta, body, wholeThread, answered);
+    element.append(...promptOf(response), meta, body, wholeThread, answered);
     this.#inner.append(element);
 
     const card: Card = { element, response, meta, blocks, threads, wholeThread, count, answered };
@@ -259,7 +297,7 @@ export class Feed {
     const meta = createMeta(response);
     const answered = el("div", "answered");
     meta.append(answered);
-    element.append(meta);
+    element.append(...promptOf(response), meta);
     this.#inner.append(element);
     return { element, response, meta, blocks: [], threads: [], answered };
   }
@@ -371,6 +409,32 @@ export class Feed {
 }
 
 /** The line above a reply. The whole window is one session, so it only needs the time. */
+function createMessage(message: UserMessage): HTMLElement {
+  const element = el("article", "user-message");
+  element.dataset["messageId"] = String(message.id);
+  const meta = el("div", "user-message-meta");
+  meta.append(el("b", "", "You"), el("span", "", formatTime(message.created_at)));
+  element.append(meta, el("div", "user-message-text", message.text));
+  return element;
+}
+
+function createTypingIndicator(): HTMLElement {
+  const element = el("div", "typing");
+  element.hidden = true;
+  element.setAttribute("role", "status");
+  element.setAttribute("aria-label", "Claude is working");
+  element.append(el("span"), el("span"), el("span"));
+  return element;
+}
+
+/** What the user typed for a turn sidenote ran itself, above its reply. */
+function promptOf(response: StoredResponse): HTMLElement[] {
+  if (!response.prompt?.trim()) return [];
+  const prompt = el("div", "card-prompt");
+  prompt.append(el("span", "card-prompt-label", "You"), el("div", "card-prompt-text", response.prompt));
+  return [prompt];
+}
+
 export function createMeta(response: StoredResponse): HTMLElement {
   const meta = el("div", "meta");
   meta.append(el("span", "", formatTime(response.created_at)));

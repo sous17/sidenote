@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LaunchCodes, LAUNCH_CODE_TTL_MS } from "../src/server/launch.ts";
-import { BadRequest, LIMITS, parseNewNote, parseNewResponse, parseSend, parseWaiter } from "../src/server/requests.ts";
+import {
+  BadRequest,
+  LIMITS,
+  parseNewNote,
+  parseNewResponse,
+  parsePrompt,
+  parseSend,
+  parseWaiter,
+} from "../src/server/requests.ts";
 import { FakeClock } from "./helpers.ts";
 
 test("bodies must be JSON objects", () => {
@@ -25,6 +33,9 @@ test("fields are typed and bounded", () => {
   assert.throws(() => parseNewNote({ response_id: 1.5, block_index: 0, quote: "", body: "x" }), BadRequest);
   assert.throws(() => parseWaiter({ session_id: "s", waiter_id: "not hex!" }), BadRequest);
   assert.deepEqual(parseNewNote({ parent_id: 4, body: " Why? " }), { kind: "follow-up", parentId: 4, body: "Why?" });
+  assert.throws(() => parsePrompt({ session_id: "s", text: " \n " }), BadRequest, "empty messages are refused");
+  assert.throws(() => parsePrompt({ session_id: "s", text: "x".repeat(LIMITS.message + 1) }), BadRequest);
+  assert.deepEqual(parsePrompt({ session_id: "s", text: " Add tests\n" }), { session_id: "s", text: "Add tests" });
 });
 
 test("launch codes work once and expire", () => {

@@ -453,8 +453,13 @@ li.block:hover:has(li.block:hover) {
 
 .feed {
   container: feed / inline-size;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - var(--topbar-height));
 }
 .feed-inner {
+  flex: 1 0 auto;
+  width: 100%;
   max-width: 860px;
   margin: 0 auto;
   padding: 28px 24px 160px;
@@ -1105,4 +1110,205 @@ summary.diff-head:hover {
 }
 .diffview .diff-lines td {
   border: 0;
+}
+
+/* The message box: talk to Claude from the page. It stays at the bottom of the feed as it scrolls. */
+.prompt-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  width: 100%;
+  max-width: 860px;
+  margin: -136px auto 0;
+  padding: 24px 24px 14px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 24px);
+}
+.prompt-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.prompt-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.prompt-box textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
+  padding: 3px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  resize: none;
+}
+.prompt-box textarea::placeholder {
+  color: var(--muted);
+}
+.prompt-send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.prompt-send svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.prompt-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.prompt-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.prompt-send:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.prompt-bar.offline .prompt-box {
+  background: var(--sunken);
+}
+.prompt-hint {
+  min-height: 18px;
+  margin: 6px 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-bar.offline .prompt-hint {
+  white-space: normal;
+}
+@container feed (min-width: 1000px) {
+  .prompt-bar {
+    max-width: calc(800px + var(--margin-gap) + var(--margin-width) + 48px);
+  }
+  .prompt-box,
+  .prompt-hint {
+    margin-right: calc(var(--margin-gap) + var(--margin-width));
+  }
+}
+@media (max-width: 640px) {
+  .prompt-bar {
+    padding: 20px 14px 10px;
+  }
+}
+.new-reply {
+  bottom: 110px;
+}
+
+/* The message the user sent from the page, above the reply that answers it. */
+.card-prompt {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--sunken);
+}
+.card-prompt-label {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.card-prompt-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.prompt-bar.failed .prompt-hint {
+  color: var(--danger);
+  white-space: normal;
+}
+
+/* What the user sent Claude, from the terminal or the message box, between the replies. */
+.user-message {
+  margin-bottom: 24px;
+  padding: 8px 14px 10px;
+  border-radius: 12px;
+  background: var(--sunken);
+}
+.user-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.user-message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+@container feed (min-width: 1000px) {
+  .user-message {
+    margin-right: calc(var(--margin-gap) + var(--margin-width));
+  }
+}
+
+/* Three dots at the end of the feed while Claude works on the user's latest message. */
+.typing {
+  display: flex;
+  gap: 5px;
+  width: fit-content;
+  margin-bottom: 24px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.4;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing span {
+    animation: none;
+  }
 }
