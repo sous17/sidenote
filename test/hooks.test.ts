@@ -2,7 +2,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -377,6 +386,85 @@ test("restart replaces the server, keeps the replies and opens the window", asyn
   assert.ok(await lastOpened());
   const state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
   assert.ok(state.responses.length > 0);
+});
+
+test("/clear forgets the session it ended, and other ways of ending keep it", async () => {
+  const clearInput = (session_id: string, reason: string): string => hookInput({ session_id, reason });
+  const known = async (id: string): Promise<boolean> =>
+    (await api<StateSnapshot>("GET", `/api/state?v=-1&s=${id}`)).session !== null;
+
+  for (const id of ["to-clear", "to-exit"]) {
+    await run(["hook-stop"], hookInput({ session_id: id, last_assistant_message: "Hi." }));
+    await nextOpened();
+  }
+  assert.ok(existsSync(join(home, ".sidenote", "sessions", "to-clear.json")));
+
+  assert.equal((await run(["hook-clear"], clearInput("to-exit", "prompt_input_exit"))).code, 0);
+  assert.equal(await known("to-exit"), true);
+  assert.equal((await run(["hook-clear"], clearInput("to-clear", "clear"))).code, 0);
+  assert.equal(await known("to-clear"), false);
+  assert.equal(existsSync(join(home, ".sidenote", "sessions", "to-clear.json")), false);
+});
+
+test("off and restart reach a server whose server.json is gone", async () => {
+  const stale = server();
+  rmSync(join(home, ".sidenote", "server.json"));
+  assert.match((await run(["restart"])).stdout, /sidenote restarted/);
+  await nextOpened();
+  assert.notEqual(server().pid, stale.pid);
+  assert.throws(() => process.kill(stale.pid, 0), "the old server is gone, not left beside the new one");
+});
+
+test("a stopped server comes back for a prompt, so saved notes still go with it", async () => {
+  await run(["hook-stop"], hookInput({ session_id: "after-idle", last_assistant_message: "Para." }));
+  await nextOpened();
+  const { responses } = await api<StateSnapshot>("GET", "/api/state?v=-1&s=after-idle");
+  await api("POST", "/api/comments", { response_id: responses[0]!.id, block_index: 0, quote: "", body: "Saved." });
+  process.kill(server().pid, "SIGTERM");
+  await sleep(300);
+
+  const prompt = await run(["hook-prompt"], hookInput({ session_id: "after-idle", prompt: "next" }));
+  assert.match(prompt.stdout, /Saved\./);
+});
+
+test("/sidenote:open starts a server that stopped, unless sidenote is off", async () => {
+  process.kill(server().pid, "SIGTERM");
+  await sleep(300);
+  assert.match((await run(["open", SESSION])).stdout, /Opened the/);
+  await nextOpened();
+  await run(["off"]);
+  await sleep(300);
+  assert.match((await run(["open", SESSION])).stdout, /sidenote is off/);
+  await run(["on", SESSION]);
+  await nextOpened();
+});
+
+test("a waiter stops when its Claude dies, so it can't keep the server running", async () => {
+  // Stands in for Claude: node, under the name claude, leaving a waiter behind when it exits.
+  // The name is a symlink to the real node binary: only ever run it, never write to it.
+  const claude = join(home, "fakebin", "claude");
+  if (!existsSync(claude)) symlinkSync(process.execPath, claude);
+  const leaveWaiter = `
+    const { spawn } = require("node:child_process");
+    const waiter = spawn(process.argv[1], ["hook-wait"], { stdio: ["pipe", "ignore", "ignore"], detached: true });
+    waiter.stdin.end(process.argv[2]);
+    waiter.unref();
+    process.stdout.write(String(waiter.pid));
+    setTimeout(() => process.exit(0), 1500);`;
+  const child = spawn(claude, ["-e", leaveWaiter, launcher, hookInput({ session_id: "orphan" })], {
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
+      SIDENOTE_NODE: process.execPath,
+    },
+  });
+  let pid = "";
+  child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
+  await once(child, "close");
+  await sleep(2500);
+  assert.match(pid, /^\d+$/);
+  assert.throws(() => process.kill(Number(pid), 0), "the waiter is gone");
 });
 
 test("off stops the server and hooks go quiet", async () => {

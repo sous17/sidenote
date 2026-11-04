@@ -139,6 +139,14 @@ export class Delivery {
     return targets;
   }
 
+  /** The session's Claude is gone, so nothing may wake it: its waiter exits at its next poll. */
+  forgetSession(sessionId: string): void {
+    this.#waiters.delete(sessionId);
+    this.#busy.delete(sessionId);
+    this.#requested.delete(sessionId);
+    this.#forgetTurn(sessionId);
+  }
+
   #forgetTurn(sessionId: string): void {
     this.#activity.delete(sessionId);
     this.#progress.delete(sessionId);

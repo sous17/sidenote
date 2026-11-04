@@ -1,8 +1,8 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join as join3 } from "node:path";
+import { dirname, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/node/open.ts
@@ -20,7 +20,6 @@ import { join } from "node:path";
 var stateDir = () => join(homedir(), ".sidenote");
 var paths = {
   stateDir,
-  storeFile: () => join(stateDir(), "store.json"),
   serverFile: () => join(stateDir(), "server.json"),
   lockFile: () => join(stateDir(), "server.lock"),
   portFile: () => join(stateDir(), "port"),
@@ -297,6 +296,13 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
     for (const id of targets) this.#requested.add(id);
     if (targets.length) this.#store.revision.bump();
     return targets;
+  }
+  /** The session's Claude is gone, so nothing may wake it: its waiter exits at its next poll. */
+  forgetSession(sessionId2) {
+    this.#waiters.delete(sessionId2);
+    this.#busy.delete(sessionId2);
+    this.#requested.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
   }
   #forgetTurn(sessionId2) {
     this.#activity.delete(sessionId2);
@@ -745,6 +751,18 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
     },
     {
       method: "POST",
+      path: "/api/sessions/cleared",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        delivery.forgetSession(session_id);
+        processes.forget(session_id);
+        const forgotten = !store.hasUnsent(session_id) && store.forgetSession(session_id);
+        return ok({ forgotten });
+      }
+    },
+    {
+      method: "POST",
       path: "/api/sessions/start",
       needsToken: true,
       handle: async ({ body }) => {
@@ -799,6 +817,7 @@ function createApp(options) {
     });
     if (!route) throw new HttpError(404);
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    if (route.needsToken) options.onActivity?.();
     const body = request.method === "POST" ? await readJson(request) : void 0;
     return route.handle({ body, query: url.searchParams, param });
   };
@@ -943,76 +962,180 @@ var LaunchCodes = class {
 // src/server/lock.ts
 import { closeSync, openSync, readFileSync as readFileSync2, rmSync, statSync as statSync2, writeSync } from "node:fs";
 var STARTUP_GRACE_MS = 3e4;
-function isRunning(pid) {
+function readLock(lockFile) {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function registeredPid(serverFile) {
-  try {
-    return JSON.parse(readFileSync2(serverFile, "utf8")).pid;
+    const [pid = "", started = ""] = readFileSync2(lockFile, "utf8").split("\n");
+    return { pid: Number.parseInt(pid, 10), started };
   } catch {
     return null;
   }
 }
-function isHeld(lockFile, serverFile) {
-  let pid;
-  let ageMs;
+function isOwner(pid, started) {
+  const info = processInfo(pid);
+  if (!info) return false;
+  return started ? info.started === started : info.args.includes("server.js");
+}
+function serverLockOwner(lockFile) {
+  const lock = readLock(lockFile);
+  return lock && !Number.isNaN(lock.pid) && isOwner(lock.pid, lock.started) ? lock.pid : null;
+}
+function isHeld(lockFile) {
+  const lock = readLock(lockFile);
+  if (!lock) return false;
+  if (!Number.isNaN(lock.pid)) return serverLockOwner(lockFile) !== null;
   try {
-    pid = Number.parseInt(readFileSync2(lockFile, "utf8"), 10);
-    ageMs = Date.now() - statSync2(lockFile).mtimeMs;
+    return Date.now() - statSync2(lockFile).mtimeMs < STARTUP_GRACE_MS;
   } catch {
     return false;
   }
-  if (ageMs < STARTUP_GRACE_MS) return Number.isNaN(pid) || isRunning(pid);
-  return !Number.isNaN(pid) && isRunning(pid) && registeredPid(serverFile) === pid;
 }
-function acquireServerLock(lockFile, serverFile) {
+function createLock(lockFile, contents) {
+  try {
+    const descriptor = openSync(lockFile, "wx", 384);
+    writeSync(descriptor, contents);
+    closeSync(descriptor);
+    return true;
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    return false;
+  }
+}
+var ownLock = () => `${process.pid}
+${processInfo(process.pid)?.started ?? ""}`;
+function acquireServerLock(lockFile) {
+  const contents = ownLock();
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const descriptor = openSync(lockFile, "wx", 384);
-      writeSync(descriptor, String(process.pid));
-      closeSync(descriptor);
-      return true;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-    }
-    if (isHeld(lockFile, serverFile)) return false;
+    if (createLock(lockFile, contents)) return true;
+    if (isHeld(lockFile)) return false;
     rmSync(lockFile, { force: true });
   }
   return false;
 }
+function holdServerLock(lockFile) {
+  const lock = readLock(lockFile);
+  if (lock) return lock.pid === process.pid;
+  return createLock(lockFile, ownLock());
+}
 function releaseServerLock(lockFile) {
-  try {
-    if (Number.parseInt(readFileSync2(lockFile, "utf8"), 10) === process.pid) rmSync(lockFile);
-  } catch {
-  }
+  if (readLock(lockFile)?.pid === process.pid) rmSync(lockFile, { force: true });
 }
 
 // src/server/persistence.ts
-import { existsSync, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync as rmSync2, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
 function emptyStore() {
   return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
-function loadStore(file) {
-  if (!existsSync(file)) return emptyStore();
-  return migrate(JSON.parse(readFileSync3(file, "utf8")));
-}
-function saveStore(file, data) {
-  const contents = {
-    sessions: Object.fromEntries(data.sessions),
-    responses: data.responses,
-    comments: data.comments,
-    messages: data.messages,
-    next_id: data.nextId
-  };
+function writeAtomically(file, contents) {
   const temp = `${file}.tmp`;
-  writeFileSync(temp, JSON.stringify(contents), { mode: 384 });
+  writeFileSync(temp, contents, { mode: 384 });
   renameSync(temp, file);
 }
+function parseSessionFile(contents) {
+  try {
+    const file = JSON.parse(contents);
+    const complete = [file?.responses, file?.comments, file?.messages].every(Array.isArray);
+    return complete ? file : null;
+  } catch {
+    return null;
+  }
+}
+function sessionFiles(data) {
+  const files = /* @__PURE__ */ new Map();
+  const fileOf = (sessionId2) => {
+    const existing = files.get(sessionId2);
+    if (existing) return existing;
+    const created = { session: null, responses: [], comments: [], messages: [] };
+    files.set(sessionId2, created);
+    return created;
+  };
+  for (const [id, meta] of data.sessions) fileOf(id).session = meta;
+  const sessionOf = /* @__PURE__ */ new Map();
+  for (const response of data.responses) {
+    sessionOf.set(response.id, response.session_id);
+    fileOf(response.session_id).responses.push(response);
+  }
+  for (const note of data.comments) {
+    const sessionId2 = sessionOf.get(note.response_id);
+    if (sessionId2 !== void 0) fileOf(sessionId2).comments.push(note);
+  }
+  for (const message of data.messages) fileOf(message.session_id).messages.push(message);
+  return new Map([...files].map(([id, file]) => [id, JSON.stringify(file)]));
+}
+var StoreFiles = class {
+  #sessionsDir;
+  #idsFile;
+  #legacyFile;
+  /** What each session's file holds now, so saving writes only the ones that changed. */
+  #written = /* @__PURE__ */ new Map();
+  #writtenNextId = 0;
+  constructor(dir) {
+    this.#sessionsDir = join3(dir, "sessions");
+    this.#idsFile = join3(dir, "ids.json");
+    this.#legacyFile = join3(dir, "store.json");
+  }
+  load() {
+    mkdirSync(this.#sessionsDir, { recursive: true, mode: 448 });
+    if (existsSync(this.#legacyFile)) {
+      const data = migrate(JSON.parse(readFileSync3(this.#legacyFile, "utf8")));
+      this.save(data);
+      renameSync(this.#legacyFile, `${this.#legacyFile}.migrated`);
+      return data;
+    }
+    const combined = {
+      sessions: {},
+      responses: [],
+      comments: [],
+      messages: [],
+      next_id: this.#readNextId()
+    };
+    for (const entry of readdirSync(this.#sessionsDir)) {
+      const id = entry.endsWith(".json") ? entry.slice(0, -".json".length) : "";
+      if (!SESSION_ID_PATTERN.test(id)) continue;
+      const contents = readFileSync3(join3(this.#sessionsDir, entry), "utf8");
+      const file = parseSessionFile(contents);
+      if (!file) {
+        console.error(`skipping ${entry}: it isn't a session file`);
+        continue;
+      }
+      this.#written.set(id, contents);
+      if (file.session) combined.sessions[id] = file.session;
+      combined.responses.push(...file.responses);
+      combined.comments.push(...file.comments);
+      combined.messages.push(...file.messages);
+    }
+    combined.responses.sort((a, b) => a.created_at - b.created_at);
+    combined.comments.sort((a, b) => a.id - b.id);
+    combined.messages.sort((a, b) => a.id - b.id);
+    this.#writtenNextId = combined.next_id;
+    return migrate(combined);
+  }
+  save(data) {
+    if (data.nextId !== this.#writtenNextId) {
+      writeAtomically(this.#idsFile, JSON.stringify({ next_id: data.nextId }));
+      this.#writtenNextId = data.nextId;
+    }
+    const files = sessionFiles(data);
+    for (const [id, contents] of files) {
+      if (this.#written.get(id) === contents) continue;
+      writeAtomically(join3(this.#sessionsDir, `${id}.json`), contents);
+      this.#written.set(id, contents);
+    }
+    for (const id of this.#written.keys()) {
+      if (files.has(id)) continue;
+      rmSync2(join3(this.#sessionsDir, `${id}.json`), { force: true });
+      this.#written.delete(id);
+    }
+  }
+  /** 1 when the file is missing or damaged: migrate then starts past the highest id it finds. */
+  #readNextId() {
+    try {
+      return JSON.parse(readFileSync3(this.#idsFile, "utf8")).next_id ?? 1;
+    } catch {
+      return 1;
+    }
+  }
+};
 function migrate(file) {
   const responses = (file.responses ?? []).filter((r) => SESSION_ID_PATTERN.test(r.session_id));
   for (const response of responses) response.note_answers ??= {};
@@ -1063,13 +1186,13 @@ var Revision = class {
 var Store = class {
   revision = new Revision();
   #data;
-  #file;
+  #files;
   #clock;
-  /** Without a file, the store lives in memory only (tests). */
+  /** Without a directory, the store lives in memory only (tests). */
   constructor(options = {}) {
-    this.#file = options.file;
+    this.#files = options.dir === void 0 ? void 0 : new StoreFiles(options.dir);
     this.#clock = options.clock ?? systemClock;
-    this.#data = this.#file ? loadStore(this.#file) : emptyStore();
+    this.#data = this.#files?.load() ?? emptyStore();
     if (this.#prune()) this.#persist();
   }
   // ---- Reading ---------------------------------------------------------------------------
@@ -1104,6 +1227,10 @@ var Store = class {
   waitingMessageText(sessionId2) {
     return this.#waitingMessages(sessionId2).map((m) => m.text).join("\n\n");
   }
+  /** Whether the session holds notes or messages that never reached Claude. */
+  hasUnsent(sessionId2) {
+    return this.#pendingNotesPerSession().has(sessionId2) || this.#waitingMessages(sessionId2).length > 0;
+  }
   /** Sessions with notes that haven't been sent to Claude yet. */
   sessionsWithPendingNotes() {
     return new Set(this.#pendingNotesPerSession().keys());
@@ -1124,8 +1251,9 @@ var Store = class {
   }
   /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
   forgetSession(sessionId2) {
-    if (!this.#data.sessions.delete(sessionId2)) return false;
     const data = this.#data;
+    const known = data.sessions.delete(sessionId2) || data.messages.some((m) => m.session_id === sessionId2);
+    if (!known) return false;
     const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId2).map((r) => r.id));
     data.responses = data.responses.filter((r) => !dropped.has(r.id));
     data.comments = data.comments.filter((c) => !dropped.has(c.response_id));
@@ -1320,12 +1448,35 @@ var Store = class {
     this.#persist();
   }
   #persist() {
-    if (this.#file) saveStore(this.#file, this.#data);
+    this.#files?.save(this.#data);
+  }
+};
+
+// src/server/watch.ts
+var WATCH_INTERVAL_MS = 5e3;
+var IDLE_MINUTES = 30;
+var IDLE_TICKS = IDLE_MINUTES * 6e4 / WATCH_INTERVAL_MS;
+var ServerWatch = class {
+  #checks;
+  #idleTicks = 0;
+  constructor(checks) {
+    this.#checks = checks;
+  }
+  /** A client used the API: a session's waiter, a hook or an open window. */
+  active() {
+    this.#idleTicks = 0;
+  }
+  /** Why the server should stop now, or null to keep running. */
+  tick() {
+    if (!this.#checks.holdsLock()) return "another server holds the lock";
+    if (!this.#checks.isRegistered()) this.#checks.register();
+    this.#idleTicks += 1;
+    return this.#idleTicks >= IDLE_TICKS ? `nothing used it for ${IDLE_MINUTES} minutes` : null;
   }
 };
 
 // src/server/main.ts
-var WEB_DIR = join3(dirname(fileURLToPath(import.meta.url)), "web");
+var WEB_DIR = join4(dirname(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
   return new Promise((resolvePort, reject) => {
     server.once("error", reject);
@@ -1349,20 +1500,30 @@ async function listen(server) {
     throw error;
   }
 }
-function removeServerFile() {
+function registeredPid() {
   try {
-    const current = JSON.parse(readFileSync4(paths.serverFile(), "utf8"));
-    if (current.pid === process.pid) rmSync2(paths.serverFile());
+    return JSON.parse(readFileSync4(paths.serverFile(), "utf8")).pid;
   } catch {
+    return null;
   }
 }
+function removeServerFile() {
+  if (registeredPid() === process.pid) rmSync3(paths.serverFile(), { force: true });
+}
 async function main() {
-  mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
-  if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
+  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
+  if (!acquireServerLock(paths.lockFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
-  const store = new Store({ file: paths.storeFile() });
+  const store = new Store({ dir: paths.stateDir() });
   const token = randomBytes2(32).toString("base64url");
   const allowedHosts = /* @__PURE__ */ new Set();
+  let serverInfo = "";
+  const register = () => writeFileSync2(paths.serverFile(), serverInfo, { mode: 384 });
+  const watch = new ServerWatch({
+    holdsLock: () => holdServerLock(paths.lockFile()),
+    isRegistered: () => registeredPid() === process.pid,
+    register
+  });
   const server = createServer(
     createApp({
       store,
@@ -1371,6 +1532,7 @@ async function main() {
       token,
       allowedHosts,
       webDir: WEB_DIR,
+      onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
       processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
       startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
@@ -1382,9 +1544,8 @@ async function main() {
   allowedHosts.add(`localhost:${port}`);
   allowedHosts.add(`${PAGE_HOST}:${port}`);
   writeFileSync2(paths.portFile(), String(port), { mode: 384 });
-  writeFileSync2(paths.serverFile(), JSON.stringify({ port, token, pid: process.pid }), {
-    mode: 384
-  });
+  serverInfo = JSON.stringify({ port, token, pid: process.pid });
+  register();
   console.error(`sidenote listening on http://127.0.0.1:${port}`);
   const shutDown = () => {
     removeServerFile();
@@ -1394,6 +1555,18 @@ async function main() {
   };
   process.on("SIGTERM", shutDown);
   process.on("SIGINT", shutDown);
+  const interval = Number(process.env["SIDENOTE_WATCH_INTERVAL_MS"]) || WATCH_INTERVAL_MS;
+  setInterval(() => {
+    let reason;
+    try {
+      reason = watch.tick();
+    } catch (error) {
+      reason = `its files can't be reached: ${String(error)}`;
+    }
+    if (!reason) return;
+    console.error(`sidenote stopping: ${reason}`);
+    shutDown();
+  }, interval);
 }
 main().catch((error) => {
   console.error(error);

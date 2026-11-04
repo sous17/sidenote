@@ -1,5 +1,5 @@
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, rmSync as rmSync2, writeFileSync } from "node:fs";
 import { setTimeout as sleep3 } from "node:timers/promises";
 
 // src/node/paths.ts
@@ -8,7 +8,6 @@ import { join } from "node:path";
 var stateDir = () => join(homedir(), ".sidenote");
 var paths = {
   stateDir,
-  storeFile: () => join(stateDir(), "store.json"),
   serverFile: () => join(stateDir(), "server.json"),
   lockFile: () => join(stateDir(), "server.lock"),
   portFile: () => join(stateDir(), "port"),
@@ -27,7 +26,7 @@ function folderPath(folder) {
 
 // src/cli/client.ts
 import { spawn as spawn2 } from "node:child_process";
-import { mkdirSync, openSync, readFileSync } from "node:fs";
+import { mkdirSync, openSync as openSync2, readFileSync as readFileSync3 } from "node:fs";
 import { dirname, join as join2 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -39,6 +38,82 @@ function openWithSystem(target, onError) {
   const child = spawn(command2, args, { detached: true, stdio: "ignore" });
   child.on("error", onError);
   child.unref();
+}
+
+// src/server/lock.ts
+import { closeSync, openSync, readFileSync as readFileSync2, rmSync, statSync, writeSync } from "node:fs";
+
+// src/node/process.ts
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+var MAX_DEPTH = 8;
+function processInfo(pid, platform = process.platform) {
+  try {
+    return platform === "linux" ? linuxInfo(pid) : platform === "darwin" ? psInfo(pid) : null;
+  } catch {
+    return null;
+  }
+}
+function linuxInfo(pid) {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const fields = stat.slice(close + 2).split(" ");
+  return {
+    ppid: Number(fields[1]),
+    started: fields[19],
+    name: stat.slice(stat.indexOf("(") + 1, close),
+    args: readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+  };
+}
+function psInfo(pid) {
+  const ps = (field) => spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  const ppid = ps("ppid");
+  if (!ppid) return null;
+  return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
+}
+function isClaude(info) {
+  const base = (path) => path.split("/").pop() ?? "";
+  return base(info.name) === "claude" || base(info.args.split(" ")[0] ?? "") === "claude" || /@anthropic-ai\/claude-code\/cli\.js/.test(info.args);
+}
+function findClaude(pid, info) {
+  let current = pid;
+  for (let depth = 0; depth < MAX_DEPTH && current > 1; depth += 1) {
+    const found = info(current);
+    if (!found) return null;
+    if (isClaude(found)) return { pid: current, started: found.started };
+    current = found.ppid;
+  }
+  return null;
+}
+function claudeProcess() {
+  return findClaude(process.ppid, (pid) => processInfo(pid));
+}
+function pidInUse(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// src/server/lock.ts
+function readLock(lockFile) {
+  try {
+    const [pid = "", started = ""] = readFileSync2(lockFile, "utf8").split("\n");
+    return { pid: Number.parseInt(pid, 10), started };
+  } catch {
+    return null;
+  }
+}
+function isOwner(pid, started) {
+  const info = processInfo(pid);
+  if (!info) return false;
+  return started ? info.started === started : info.args.includes("server.js");
+}
+function serverLockOwner(lockFile) {
+  const lock = readLock(lockFile);
+  return lock && !Number.isNaN(lock.pid) && isOwner(lock.pid, lock.started) ? lock.pid : null;
 }
 
 // src/shared/types.ts
@@ -125,17 +200,17 @@ var SidenoteClient = class _SidenoteClient {
 };
 function readServerInfo() {
   try {
-    return JSON.parse(readFileSync(paths.serverFile(), "utf8"));
+    return JSON.parse(readFileSync3(paths.serverFile(), "utf8"));
   } catch {
     return null;
   }
 }
 function serverPid() {
-  return readServerInfo()?.pid ?? null;
+  return serverLockOwner(paths.lockFile());
 }
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
-  const log = openSync(paths.logFile(), "a", 384);
+  const log = openSync2(paths.logFile(), "a", 384);
   spawn2(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -151,54 +226,8 @@ function openBrowser(url) {
 
 // src/cli/hooks.ts
 import { randomBytes } from "node:crypto";
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
-
-// src/node/process.ts
-import { spawnSync } from "node:child_process";
-import { readFileSync as readFileSync2 } from "node:fs";
-var MAX_DEPTH = 8;
-function processInfo(pid, platform = process.platform) {
-  try {
-    return platform === "linux" ? linuxInfo(pid) : platform === "darwin" ? psInfo(pid) : null;
-  } catch {
-    return null;
-  }
-}
-function linuxInfo(pid) {
-  const stat = readFileSync2(`/proc/${pid}/stat`, "utf8");
-  const close = stat.lastIndexOf(")");
-  const fields = stat.slice(close + 2).split(" ");
-  return {
-    ppid: Number(fields[1]),
-    started: fields[19],
-    name: stat.slice(stat.indexOf("(") + 1, close),
-    args: readFileSync2(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
-  };
-}
-function psInfo(pid) {
-  const ps = (field) => spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
-  const ppid = ps("ppid");
-  if (!ppid) return null;
-  return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
-}
-function isClaude(info) {
-  const base = (path) => path.split("/").pop() ?? "";
-  return base(info.name) === "claude" || base(info.args.split(" ")[0] ?? "") === "claude" || /@anthropic-ai\/claude-code\/cli\.js/.test(info.args);
-}
-function findClaude(pid, info) {
-  let current = pid;
-  for (let depth = 0; depth < MAX_DEPTH && current > 1; depth += 1) {
-    const found = info(current);
-    if (!found) return null;
-    if (isClaude(found)) return { pid: current, started: found.started };
-    current = found.ppid;
-  }
-  return null;
-}
-function claudeProcess() {
-  return findClaude(process.ppid, (pid) => processInfo(pid));
-}
 
 // src/cli/format.ts
 var MAX_CONTEXT_CHARS = 9500;
@@ -333,7 +362,7 @@ function firstLine(text) {
 }
 
 // src/cli/transcript.ts
-import { existsSync, readdirSync, readFileSync as readFileSync3 } from "node:fs";
+import { existsSync, readdirSync, readFileSync as readFileSync4 } from "node:fs";
 import { join as join3 } from "node:path";
 var QUESTION_TOOLS = /* @__PURE__ */ new Set(["AskUserQuestion", "ExitPlanMode"]);
 function findTranscript(transcriptsDir, sessionId) {
@@ -405,7 +434,7 @@ function cwdFromTranscript(transcript) {
   return "";
 }
 function readTranscript(file) {
-  return readFileSync3(file, "utf8");
+  return readFileSync4(file, "utf8");
 }
 function isUserPrompt(entry) {
   if (entry.isMeta) return false;
@@ -424,7 +453,7 @@ function reportedProcess() {
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
-    return sessionNameFromTranscript(readFileSync4(transcriptPath, "utf8"));
+    return sessionNameFromTranscript(readFileSync5(transcriptPath, "utf8"));
   } catch {
     return "";
   }
@@ -444,14 +473,20 @@ async function hookStop(input) {
   const result = await client.post("/api/responses", reply);
   if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
 }
+async function hookClear(input) {
+  if (input.reason !== "clear" || !input.session_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  await client.post("/api/sessions/cleared", { session_id: input.session_id });
+}
 async function hookSession() {
   const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
   process.stdout.write(`${JSON.stringify(output)}
 `);
 }
 async function hookPrompt(input) {
-  const client = await SidenoteClient.connect();
-  if (!client || !input.session_id) return;
+  if (!input.session_id) return;
+  const { client } = await SidenoteClient.ensure();
   const claim = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post("/api/claim", claim);
@@ -493,8 +528,10 @@ async function hookWait(input) {
     ...reportedProcess()
   };
   await client.post("/api/waiters", waiter);
+  const owner = claudeProcess();
   for (; ; ) {
     await sleep2(WAITER_POLL_MS);
+    if (owner && !pidInUse(owner.pid)) return;
     let result;
     try {
       result = await client.post("/api/waiters/poll", waiter);
@@ -532,6 +569,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote backfill [session]  import the session's earlier replies
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
+  sidenote hook-clear          SessionEnd hook: forget the session on /clear
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
@@ -539,7 +577,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
-var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+var NOT_RUNNING = "sidenote is off; use /sidenote:on first.";
 var SERVER_STOP_TIMEOUT_MS = 5e3;
 var isEnabled = () => existsSync2(paths.enabledFlag());
 function sessionArgument() {
@@ -570,6 +608,9 @@ async function openWindow(client, requested) {
   openBrowser(await client.windowUrl(sessionId, cwd));
   const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
   return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
+}
+async function enabledClient() {
+  return isEnabled() ? (await SidenoteClient.ensure()).client : null;
 }
 function stopServer() {
   const pid = serverPid();
@@ -604,7 +645,7 @@ var commands = {
     console.log(`sidenote is on. ${await turnOn()}`);
   },
   async off() {
-    rmSync(paths.enabledFlag(), { force: true });
+    rmSync2(paths.enabledFlag(), { force: true });
     stopServer();
     console.log("sidenote is off. Unsent notes are kept and go out after the next /sidenote:on.");
   },
@@ -618,7 +659,7 @@ var commands = {
     console.log(`sidenote restarted. ${await turnOn()}`);
   },
   async open() {
-    const client = await SidenoteClient.connect();
+    const client = await enabledClient();
     console.log(client ? await openWindow(client, sessionArgument()) : NOT_RUNNING);
   },
   async status() {
@@ -645,7 +686,7 @@ var commands = {
   },
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {
-    const client = await SidenoteClient.connect();
+    const client = await enabledClient();
     if (!client) {
       console.log(NOT_RUNNING);
       return;
@@ -678,6 +719,7 @@ var commands = {
   },
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
+  "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
   "hook-progress": () => runHook(hookProgress),

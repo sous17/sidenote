@@ -18,6 +18,7 @@ import {
   MAX_PROMPT_CHARS,
   TOKEN_HEADER,
   type ClaimResult,
+  type ClearedSessionResult,
   type ErrorResult,
   type LaunchCodeResult,
   type NewResponseResult,
@@ -79,6 +80,8 @@ export interface AppOptions {
   delivery: Delivery;
   launchCodes: LaunchCodes;
   token: string;
+  /** Called for each API request that passed the token check. */
+  onActivity?: () => void;
   /** Host header values to accept. Filled in by main.ts once the port is known. */
   allowedHosts: ReadonlySet<string>;
   /** Directory holding index.html and the page's other files. */
@@ -354,6 +357,20 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
     },
     {
       method: "POST",
+      path: "/api/sessions/cleared",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        // Claude moved on to a new session either way, so a kept session must not wake it.
+        delivery.forgetSession(session_id);
+        processes.forget(session_id);
+        // Words the user wrote and Claude never saw aren't cleared away unasked.
+        const forgotten = !store.hasUnsent(session_id) && store.forgetSession(session_id);
+        return ok({ forgotten } satisfies ClearedSessionResult);
+      },
+    },
+    {
+      method: "POST",
       path: "/api/sessions/start",
       needsToken: true,
       handle: async ({ body }) => {
@@ -412,6 +429,8 @@ export function createApp(options: AppOptions): RequestListener {
     });
     if (!route) throw new HttpError(404);
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    // Only a real client counts: a stale tab, refused above, mustn't keep the server running.
+    if (route.needsToken) options.onActivity?.();
     const body = request.method === "POST" ? await readJson(request) : undefined;
     return route.handle({ body, query: url.searchParams, param });
   };

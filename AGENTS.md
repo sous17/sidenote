@@ -19,7 +19,7 @@ does and how it is built; this file covers the rules and decisions to keep.
 - The plugin runs on Node 20 or newer, with no runtime dependencies on the server or CLI side.
   Development needs Node 22.18 or newer.
 - `src/shared/types.ts` is the contract between the server, the hooks and the page, and also the
-  on-disk format of `~/.sidenote/store.json`. Change the store's shape only together with a
+  on-disk format of `~/.sidenote/sessions/`. Change the store's shape only together with a
   migration in `src/server/persistence.ts`, so existing stores keep loading.
 - Keep each module to one job, with no import cycles. The page wires its parts together in
   `src/web/main.ts`.
@@ -73,7 +73,12 @@ These were settled with the maintainer. Don't change them without asking.
 - **Look:** the "Bracket" logo, the `sidenote` wordmark in the normal text color (not purple), and
   a light, dark or system theme switch.
 - **Retention:** up to 100 replies per session; a session is forgotten after 7 days without
-  activity.
+  activity, or at once when `/clear` ends it, unless it holds notes or messages Claude never got.
+
+- **One server per machine, and it never outlives its use:** `src/server/lock.ts` decides who runs,
+  by asking the system whether the lock's owner lives, never by reading `server.json`.
+  `src/server/watch.ts` puts `server.json` back, gives up if another server owns the lock, and stops
+  the server after 30 minutes without an API request.
 
 ## Screenshots
 
@@ -82,6 +87,8 @@ conversations), from a scratch server, with the mouse pointer cropped out.
 
 ## Testing by hand
 
+- In tests, `fakebin/claude` is a symlink to the real node binary. Only run it. Writing to that path
+  replaces node on the machine.
 - Never touch the real `~/.sidenote`: run the server with `HOME` pointing at a scratch directory,
   and put a stand-in `open`/`xdg-open` first on `PATH` so no real browser tabs open. See
   `test/hooks.test.ts`.

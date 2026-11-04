@@ -1,5 +1,5 @@
 // The contract between the server, the hooks and the page.
-// Field names are snake_case because they are also the on-disk format of ~/.sidenote/store.json.
+// Field names are snake_case because they are also the on-disk format of ~/.sidenote/sessions/.
 
 /** Seconds since the epoch, with a fraction. */
 export type EpochSeconds = number;
@@ -259,6 +259,11 @@ export interface RedeemRequest {
 
 export interface RedeemResult {
   token: string;
+}
+
+/** /clear ended a session: forgotten is false when it was kept for its unsent notes or messages. */
+export interface ClearedSessionResult {
+  forgotten: boolean;
 }
 
 export interface ErrorResult {

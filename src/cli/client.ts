@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
+import { serverLockOwner } from "../server/lock.ts";
 import { folderName, folderPath } from "../shared/folders.ts";
 import {
   LAUNCH_FRAGMENT_KEY,
@@ -113,9 +114,9 @@ function readServerInfo(): ServerInfo | null {
   }
 }
 
-/** The pid of the running server, for `sidenote off`. */
+/** The pid of the running server, for `sidenote off`. The lock knows it even if server.json is lost. */
 export function serverPid(): number | null {
-  return readServerInfo()?.pid ?? null;
+  return serverLockOwner(paths.lockFile());
 }
 
 async function startServer(): Promise<SidenoteClient> {
