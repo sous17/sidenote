@@ -202,6 +202,13 @@ test("while on, each session start asks Claude for code changes as diffs", async
   assert.match(output.hookSpecificOutput.additionalContext, /```diff block/);
 });
 
+test("while on, each session start asks Claude to put its questions in its reply", async () => {
+  const result = await run(["hook-session"], hookInput({ source: "startup" }));
+  const output = JSON.parse(result.stdout) as { hookSpecificOutput: { additionalContext: string } };
+  assert.match(output.hookSpecificOutput.additionalContext, /don't use the AskUserQuestion tool/);
+  assert.match(output.hookSpecificOutput.additionalContext, /then end your turn/);
+});
+
 test("status and open act on the session", async () => {
   const status = await run(["status", SESSION]);
   assert.match(status.stdout, /enabled: yes/);

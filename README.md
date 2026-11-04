@@ -220,7 +220,9 @@ Four hooks connect Claude Code to a small local server:
 - **UserPromptSubmit** (`hook-prompt`) shows the prompt you type in the window and attaches
   pending notes to it.
 - **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
-  draw them. It applies to sessions started, resumed or cleared while sidenote is on.
+  draw them, and to ask questions in its reply rather than with the `AskUserQuestion` tool, so
+  they reach the window and can be answered from it. It applies to sessions started, resumed or
+  cleared while sidenote is on. Permission prompts and plan approval still wait in the terminal.
 
 `sidenote chat` doesn't use the hooks: the server runs Claude Code headless (`claude -p` with
 stream-json input and output), one process per session, and sends your messages to it. Claude
