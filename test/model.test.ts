@@ -65,3 +65,13 @@ test("a note sent with Send now shows the dots and what Claude is doing, until i
   idle.snapshot.comments = [note];
   assert.equal(idle.awaitingReply(), false, "the turn ended");
 });
+
+test("Claude's messages show only while the reply is awaited", () => {
+  const working = model("busy", 10, true, 5);
+  working.snapshot.session!.progress = ["Looking.", "Found it."];
+  assert.deepEqual(working.progress(), ["Looking.", "Found it."]);
+
+  const answered = model("busy", 10, true, 20);
+  answered.snapshot.session!.progress = ["Looking."];
+  assert.deepEqual(answered.progress(), [], "the reply took over, so the text isn't shown twice");
+});

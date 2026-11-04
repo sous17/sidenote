@@ -245,6 +245,33 @@ test("a tool call shows in the window while Claude works, and a subagent's doesn
   assert.equal(await activity(), "Editing a.ts");
 });
 
+test("what Claude writes between tool calls shows in the window, and a subagent's doesn't", async () => {
+  const session = "progress-session";
+  const progress = async () => (await api<StateSnapshot>("GET", `/api/state?v=-1&s=${session}`)).session?.progress;
+  const input = (fields: Record<string, unknown>): string =>
+    JSON.stringify({ session_id: session, cwd: "/w/demo", message_id: "m1", index: 0, final: true, ...fields });
+
+  await run(["hook-stop"], hookInput({ session_id: session, last_assistant_message: "Hello." }));
+  await run(["hook-prompt"], hookInput({ session_id: session, prompt: "Fix it" }));
+  await run(["hook-progress"], input({ delta: "Looking at it." }));
+  assert.deepEqual(await progress(), ["Looking at it."]);
+
+  await run(["hook-progress"], input({ message_id: "m2", delta: "Subagent text.", agent_id: "agent-1" }));
+  await run(["hook-progress"], input({ message_id: "m3", delta: "" }));
+  assert.deepEqual(await progress(), ["Looking at it."]);
+});
+
+test("restart replaces the server, keeps the replies and opens the window", async () => {
+  const before = server();
+  const result = await run(["restart", SESSION]);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /sidenote restarted\. Opened the/);
+  assert.notEqual(server().token, before.token, "a new server");
+  assert.ok(await lastOpened());
+  const state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
+  assert.ok(state.responses.length > 0);
+});
+
 test("off stops the server and hooks go quiet", async () => {
   assert.match((await run(["off"])).stdout, /sidenote is off/);
   await sleep(300);

@@ -1,7 +1,8 @@
 // The thread pane: one note's whole conversation beside the feed, with a reply box.
 import type { Note } from "../shared/types.ts";
 import { button, el, formatTime, tag } from "./dom.ts";
-import { createMeta, createTypingIndicator, setTypingActivity, type Feed } from "./feed.ts";
+import { createMeta, type Feed } from "./feed.ts";
+import { LiveCard } from "./live-card.ts";
 import { renderMarkdownInto } from "./markdown.ts";
 import { isAnswered, type Model } from "./model.ts";
 import { isSendNow, submitOnModEnter, type Sending } from "./sending.ts";
@@ -18,6 +19,8 @@ export class ThreadPane {
   readonly #timeline: HTMLElement;
   readonly #composer: HTMLFormElement;
   readonly #text: HTMLTextAreaElement;
+  /** One card for the pane's life: the timeline is rebuilt often, and it keeps its open state. */
+  readonly #live: LiveCard;
 
   constructor(options: {
     model: Model;
@@ -44,6 +47,7 @@ export class ThreadPane {
     this.#timeline = options.timeline;
     this.#composer = options.composer;
     this.#text = options.composerText;
+    this.#live = new LiveCard(options.model);
 
     options.close.addEventListener("click", () => this.close());
     this.#sending.track({
@@ -136,13 +140,12 @@ export class ThreadPane {
     this.#timeline.replaceChildren(...timeline);
   }
 
-  /** Under a sent note: the dots and what Claude is doing, once it has the note. */
+  /** Under a sent note: what Claude is doing, once it has the note. */
   #waiting(): HTMLElement {
     if (this.#model.sendStatus().status !== "busy")
       return el("div", "waiting", "Sent. Claude's reply will appear here.");
-    const typing = createTypingIndicator();
-    setTypingActivity(typing, this.#model.activity());
-    return typing;
+    this.#live.render();
+    return this.#live.element;
   }
 
   async #reply(sendNow: boolean): Promise<void> {

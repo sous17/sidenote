@@ -2,6 +2,8 @@
 
 /** The longest activity line; the page shows one row of it. */
 export const MAX_ACTIVITY_CHARS = 200;
+/** The most text one MessageDisplay batch may carry to the server. */
+export const MAX_PROGRESS_DELTA_CHARS = 20_000;
 
 const ACTIVITY_VERBS: ReadonlyMap<string, string> = new Map([
   ["Read", "Reading"],
@@ -59,9 +61,14 @@ export function toolSummary(tool: string, input: Input, cwd: string): string {
  * showing. Other tools show only their name, because their first argument could be anything.
  */
 export function toolActivity(tool: string, input: Input, cwd: string): string {
+  return activityLine(tool, toolSummary(tool, input, cwd));
+}
+
+/** The same line from a call's summary, for callers that kept only that. */
+export function activityLine(tool: string, summary: string): string {
   if (tool === "TodoWrite") return "";
   const verb = ACTIVITY_VERBS.get(tool);
-  const line = verb ? `${verb} ${toolSummary(tool, input, cwd)}`.trim() : `Using ${tool}`;
+  const line = verb ? `${verb} ${summary}`.trim() : `Using ${tool}`;
   return line.slice(0, MAX_ACTIVITY_CHARS);
 }
 

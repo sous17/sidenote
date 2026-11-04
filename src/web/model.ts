@@ -77,6 +77,11 @@ export class Model {
     return this.awaitingReply() ? (this.sendStatus().activity ?? "") : "";
   }
 
+  /** What Claude has written so far in this turn, while the user waits for its reply. */
+  progress(): readonly string[] {
+    return this.awaitingReply() ? (this.sendStatus().progress ?? []) : [];
+  }
+
   /** Unsent, but Send now was clicked: it goes as soon as the session can take it. */
   isQueued(note: Note): boolean {
     return note.delivered_at === null && this.sendStatus().send_requested;

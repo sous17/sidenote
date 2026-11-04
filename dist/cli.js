@@ -1,5 +1,6 @@
 // src/cli/main.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, rmSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep3 } from "node:timers/promises";
 
 // src/node/paths.ts
 import { homedir } from "node:os";
@@ -205,6 +206,7 @@ ${formatNotesForClaude(notes)}`;
 
 // src/shared/tools.ts
 var MAX_ACTIVITY_CHARS = 200;
+var MAX_PROGRESS_DELTA_CHARS = 2e4;
 var ACTIVITY_VERBS = /* @__PURE__ */ new Map([
   ["Read", "Reading"],
   ["Edit", "Editing"],
@@ -249,9 +251,12 @@ function toolSummary(tool, input, cwd) {
   return firstLine(str(first));
 }
 function toolActivity(tool, input, cwd) {
+  return activityLine(tool, toolSummary(tool, input, cwd));
+}
+function activityLine(tool, summary) {
   if (tool === "TodoWrite") return "";
   const verb = ACTIVITY_VERBS.get(tool);
-  const line = verb ? `${verb} ${toolSummary(tool, input, cwd)}`.trim() : `Using ${tool}`;
+  const line = verb ? `${verb} ${summary}`.trim() : `Using ${tool}`;
   return line.slice(0, MAX_ACTIVITY_CHARS);
 }
 function firstLine(text) {
@@ -392,6 +397,19 @@ async function hookActivity(input) {
   const activity = { session_id: input.session_id, text };
   await client.post("/api/activity", activity);
 }
+async function hookProgress(input) {
+  const { session_id, message_id, index, delta } = input;
+  if (!session_id || !message_id || index === void 0 || !delta || input.agent_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  const progress = {
+    session_id,
+    message_id,
+    index,
+    delta: delta.slice(0, MAX_PROGRESS_DELTA_CHARS)
+  };
+  await client.post("/api/progress", progress);
+}
 async function hookWait(input) {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
@@ -430,6 +448,8 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
 
   sidenote on [session]        turn sidenote on and open the session's window
   sidenote off                 turn sidenote off; unsent notes are kept
+  sidenote restart [session]   restart the server, for example after an update, and open the
+                               session's window; unsent notes are kept
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
@@ -437,11 +457,13 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
+  sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
   sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
 var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+var SERVER_STOP_TIMEOUT_MS = 5e3;
 var isEnabled = () => existsSync2(paths.enabledFlag());
 function sessionArgument() {
   const value = process.argv[3]?.trim();
@@ -471,23 +493,51 @@ async function openWindow(client, requested) {
   const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
   return `Opened the ${label} window in your browser (${client.origin}).`;
 }
+function stopServer() {
+  const pid = serverPid();
+  if (!pid) return null;
+  try {
+    process.kill(pid, "SIGTERM");
+    return pid;
+  } catch {
+    return null;
+  }
+}
+async function exited(pid) {
+  const deadline = Date.now() + SERVER_STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await sleep3(100);
+  }
+  return false;
+}
+async function turnOn() {
+  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
+  writeFileSync(paths.enabledFlag(), "");
+  const { client } = await SidenoteClient.ensure();
+  return openWindow(client, sessionArgument());
+}
 var commands = {
   async on() {
-    mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
-    writeFileSync(paths.enabledFlag(), "");
-    const { client } = await SidenoteClient.ensure();
-    console.log(`sidenote is on. ${await openWindow(client, sessionArgument())}`);
+    console.log(`sidenote is on. ${await turnOn()}`);
   },
   async off() {
     rmSync(paths.enabledFlag(), { force: true });
-    const pid = serverPid();
-    if (pid) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-      }
-    }
+    stopServer();
     console.log("sidenote is off. Unsent notes are kept and go out after the next /sidenote:on.");
+  },
+  async restart() {
+    const pid = stopServer();
+    if (pid && !await exited(pid)) {
+      console.log(`The sidenote server (pid ${pid}) didn't stop, so nothing was restarted.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`sidenote restarted. ${await turnOn()}`);
   },
   async open() {
     const client = await SidenoteClient.connect();
@@ -551,6 +601,7 @@ var commands = {
   "hook-stop": () => runHook(hookStop),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
+  "hook-progress": () => runHook(hookProgress),
   "hook-wait": () => runHook(hookWait)
 };
 async function runHook(handler) {

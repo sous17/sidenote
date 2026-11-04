@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type {
   ActivityRequest,
   ClaimRequest,
+  ProgressRequest,
   ClaimResult,
   NewResponseRequest,
   NewResponseResult,
@@ -13,7 +14,7 @@ import type {
 } from "../shared/types.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "./format.ts";
-import { toolActivity } from "../shared/tools.ts";
+import { MAX_PROGRESS_DELTA_CHARS, toolActivity } from "../shared/tools.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
 const WAITER_POLL_MS = 1000;
@@ -31,8 +32,12 @@ export interface HookInput {
   /** PreToolUse: the call Claude is about to make. */
   tool_name?: string;
   tool_input?: Record<string, unknown>;
-  /** Set when a subagent makes the call. */
+  /** Set when a subagent makes the call or writes the message. */
   agent_id?: string;
+  /** MessageDisplay: a batch of the message Claude is writing. */
+  message_id?: string;
+  index?: number;
+  delta?: string;
 }
 
 /** The session's /rename name, or "" if the transcript can't be read or has none. */
@@ -95,6 +100,24 @@ export async function hookActivity(input: HookInput): Promise<void> {
   if (!client) return;
   const activity: ActivityRequest = { session_id: input.session_id, text };
   await client.post("/api/activity", activity);
+}
+
+/**
+ * MessageDisplay, in the background: shows the window what Claude writes between tool calls. Its
+ * last message of a turn comes through here too; the page drops it when the reply lands.
+ */
+export async function hookProgress(input: HookInput): Promise<void> {
+  const { session_id, message_id, index, delta } = input;
+  if (!session_id || !message_id || index === undefined || !delta || input.agent_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  const progress: ProgressRequest = {
+    session_id,
+    message_id,
+    index,
+    delta: delta.slice(0, MAX_PROGRESS_DELTA_CHARS),
+  };
+  await client.post("/api/progress", progress);
 }
 
 /**

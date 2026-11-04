@@ -1,10 +1,11 @@
 // Parsers for request bodies. Each one turns untrusted JSON into a typed, bounded value, or
 // throws BadRequest. Handlers never touch raw input.
-import { MAX_ACTIVITY_CHARS } from "../shared/tools.ts";
+import { MAX_ACTIVITY_CHARS, MAX_PROGRESS_DELTA_CHARS } from "../shared/tools.ts";
 import {
   SESSION_ID_PATTERN,
   type ActivityRequest,
   type ClaimRequest,
+  type ProgressRequest,
   type PromptRequest,
   type EpochSeconds,
   type NewResponseRequest,
@@ -27,6 +28,7 @@ export const LIMITS = {
   message: 100_000,
 } as const;
 
+const MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 const LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -132,6 +134,16 @@ export function parseActivity(input: unknown): ActivityRequest {
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     text: nonEmpty(string(body, "text", MAX_ACTIVITY_CHARS), "text"),
+  };
+}
+
+export function parseProgress(input: unknown): ProgressRequest {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    message_id: matching(body, "message_id", MESSAGE_ID_PATTERN),
+    index: integer(body, "index", 0),
+    delta: string(body, "delta", MAX_PROGRESS_DELTA_CHARS),
   };
 }
 

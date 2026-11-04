@@ -30,6 +30,7 @@ import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
   parseActivity,
+  parseProgress,
   parseClaim,
   parseNewNote,
   parseNewResponse,
@@ -196,6 +197,15 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
       handle: ({ body }) => {
         const { session_id, text } = parseActivity(body);
         delivery.setActivity(session_id, text);
+        return ok({ ok: true });
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/progress",
+      needsToken: true,
+      handle: ({ body }) => {
+        delivery.addProgress(parseProgress(body));
         return ok({ ok: true });
       },
     },

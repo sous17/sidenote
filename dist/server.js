@@ -31,8 +31,50 @@ var TOKEN_HEADER = "X-Review-Token";
 var MAX_PROMPT_CHARS = 8e3;
 var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
+// src/server/split.ts
+var NOTE_MARKER = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
+var TRAILING_RULES = /(?:\n\s*(?:-{3,}|\*{3,}|_{3,})\s*)+$/;
+var FENCE = /^\s*(?:```|~~~)/;
+function splitNoteAnswers(text, noteIds) {
+  const main2 = [];
+  const sections = /* @__PURE__ */ new Map();
+  let current = null;
+  let inFence = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (FENCE.test(line)) inFence = !inFence;
+    const ids = inFence ? [] : markerIds(line).filter((id) => noteIds.has(id));
+    if (ids.length) {
+      current = ids;
+      for (const id of ids) if (!sections.has(id)) sections.set(id, []);
+      continue;
+    }
+    if (current === null) main2.push(line);
+    else for (const id of current) sections.get(id).push(line);
+  }
+  const answers = /* @__PURE__ */ new Map();
+  for (const [id, lines] of sections) {
+    const body = lines.join("\n").trim();
+    if (body) answers.set(id, body);
+  }
+  const mainText = main2.join("\n").trim().replace(TRAILING_RULES, "").trim();
+  return { mainText, answers };
+}
+var MAX_PROGRESS_MESSAGES = 20;
+var MAX_PROGRESS_CHARS = 4e3;
+function liveProgress(messages) {
+  return messages.map(
+    (text) => text.split(/\r?\n/).filter((line) => !NOTE_MARKER.test(line)).join("\n").trim()
+  ).filter(Boolean).slice(-MAX_PROGRESS_MESSAGES).map((text) => text.length > MAX_PROGRESS_CHARS ? `\u2026${text.slice(-MAX_PROGRESS_CHARS)}` : text);
+}
+function markerIds(line) {
+  const ids = NOTE_MARKER.exec(line)?.groups?.["ids"];
+  return ids ? [...ids.matchAll(/\d+/g)].map((match) => Number(match[0])) : [];
+}
+
 // src/server/delivery.ts
 var LISTENER_STALE_MS = 5e3;
+var MAX_TRACKED_MESSAGES = 40;
+var MAX_TRACKED_BATCHES = 2e3;
 var Delivery = class {
   #store;
   #clock;
@@ -43,6 +85,8 @@ var Delivery = class {
   #requested = /* @__PURE__ */ new Set();
   /** The latest tool call of each busy session. Only the page's status line needs it. */
   #activity = /* @__PURE__ */ new Map();
+  /** Each busy session's messages this turn, by message id, as batches by index. */
+  #progress = /* @__PURE__ */ new Map();
   #statusSignature = "";
   constructor(store, clock = systemClock) {
     this.#store = store;
@@ -54,6 +98,9 @@ var Delivery = class {
     if (waiting) status.queued_prompt = waiting;
     const activity = this.#activity.get(sessionId2);
     if (activity) status.activity = activity;
+    const messages = this.#progress.get(sessionId2);
+    const progress = messages ? liveProgress([...messages.values()].map((batches) => batches.join(""))) : [];
+    if (progress.length) status.progress = progress;
     return status;
   }
   /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
@@ -67,12 +114,23 @@ var Delivery = class {
   registerWaiter(sessionId2, waiterId) {
     this.#waiters.set(sessionId2, { id: waiterId, seenMs: this.#clock.monotonicMs() });
     this.#busy.delete(sessionId2);
-    this.#activity.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
   }
   /** Hooks run in the background, so one can land after its turn ended: only a busy session counts. */
   setActivity(sessionId2, text) {
     if (this.#state(sessionId2) !== "busy") return;
     this.#activity.set(sessionId2, text);
+    this.#store.revision.bump();
+  }
+  /** Part of a message Claude is writing. Like an activity line, it can land after its turn. */
+  addProgress({ session_id: sessionId2, message_id: messageId, index, delta }) {
+    if (this.#state(sessionId2) !== "busy" || index >= MAX_TRACKED_BATCHES) return;
+    const messages = this.#progress.get(sessionId2) ?? /* @__PURE__ */ new Map();
+    this.#progress.set(sessionId2, messages);
+    const batches = messages.get(messageId) ?? [];
+    messages.set(messageId, batches);
+    batches[index] = delta;
+    if (messages.size > MAX_TRACKED_MESSAGES) messages.delete(messages.keys().next().value);
     this.#store.revision.bump();
   }
   pollWaiter(sessionId2, waiterId) {
@@ -83,7 +141,7 @@ var Delivery = class {
     this.#requested.delete(sessionId2);
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
-    this.#activity.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
     const comments = this.#store.claimPending(sessionId2);
     const prompt = this.#store.claimMessages(sessionId2);
     if (prompt === void 0) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
@@ -109,7 +167,7 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
     this.#requested.delete(sessionId2);
-    this.#activity.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
   }
   /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */
   requestSend(sessionIds) {
@@ -118,6 +176,10 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
     for (const id of targets) this.#requested.add(id);
     if (targets.length) this.#store.revision.bump();
     return targets;
+  }
+  #forgetTurn(sessionId2) {
+    this.#activity.delete(sessionId2);
+    this.#progress.delete(sessionId2);
   }
   #state(sessionId2) {
     const waiter = this.#waiters.get(sessionId2);
@@ -133,6 +195,7 @@ import { extname, resolve, sep } from "node:path";
 
 // src/shared/tools.ts
 var MAX_ACTIVITY_CHARS = 200;
+var MAX_PROGRESS_DELTA_CHARS = 2e4;
 
 // src/server/requests.ts
 var BadRequest = class extends Error {
@@ -146,6 +209,7 @@ var LIMITS = {
   sessionIds: 100,
   message: 1e5
 };
+var MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 var WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 var LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 function asObject(value) {
@@ -230,6 +294,15 @@ function parseActivity(input) {
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     text: nonEmpty(string(body, "text", MAX_ACTIVITY_CHARS), "text")
+  };
+}
+function parseProgress(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    message_id: matching(body, "message_id", MESSAGE_ID_PATTERN),
+    index: integer(body, "index", 0),
+    delta: string(body, "delta", MAX_PROGRESS_DELTA_CHARS)
   };
 }
 function parseWaiter(input) {
@@ -375,6 +448,15 @@ function routes({ store, delivery, launchCodes, token }) {
       handle: ({ body }) => {
         const { session_id, text } = parseActivity(body);
         delivery.setActivity(session_id, text);
+        return ok({ ok: true });
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/progress",
+      needsToken: true,
+      handle: ({ body }) => {
+        delivery.addProgress(parseProgress(body));
         return ok({ ok: true });
       }
     },
@@ -664,39 +746,6 @@ function migrate(file) {
     ...messages.map((m) => m.id)
   );
   return { sessions, responses, comments, messages, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
-}
-
-// src/server/split.ts
-var NOTE_MARKER = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
-var TRAILING_RULES = /(?:\n\s*(?:-{3,}|\*{3,}|_{3,})\s*)+$/;
-var FENCE = /^\s*(?:```|~~~)/;
-function splitNoteAnswers(text, noteIds) {
-  const main2 = [];
-  const sections = /* @__PURE__ */ new Map();
-  let current = null;
-  let inFence = false;
-  for (const line of text.split(/\r?\n/)) {
-    if (FENCE.test(line)) inFence = !inFence;
-    const ids = inFence ? [] : markerIds(line).filter((id) => noteIds.has(id));
-    if (ids.length) {
-      current = ids;
-      for (const id of ids) if (!sections.has(id)) sections.set(id, []);
-      continue;
-    }
-    if (current === null) main2.push(line);
-    else for (const id of current) sections.get(id).push(line);
-  }
-  const answers = /* @__PURE__ */ new Map();
-  for (const [id, lines] of sections) {
-    const body = lines.join("\n").trim();
-    if (body) answers.set(id, body);
-  }
-  const mainText = main2.join("\n").trim().replace(TRAILING_RULES, "").trim();
-  return { mainText, answers };
-}
-function markerIds(line) {
-  const ids = NOTE_MARKER.exec(line)?.groups?.["ids"];
-  return ids ? [...ids.matchAll(/\d+/g)].map((match) => Number(match[0])) : [];
 }
 
 // src/server/store.ts
