@@ -6,10 +6,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
+import { isSameProcess, pidInUse } from "../node/process.ts";
 import { canStartSessions, startInTerminal, terminalCommand } from "../node/terminal.ts";
 import { PAGE_HOST, type ServerInfo } from "../shared/types.ts";
 import { Delivery } from "./delivery.ts";
 import { createApp } from "./http.ts";
+import { SessionProcesses } from "./processes.ts";
 import { LaunchCodes } from "./launch.ts";
 import { acquireServerLock, releaseServerLock } from "./lock.ts";
 import { Store } from "./store.ts";
@@ -70,6 +72,7 @@ async function main(): Promise<void> {
       allowedHosts,
       webDir: WEB_DIR,
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
+      processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
       startSession: canStartSessions()
         ? (session) => startInTerminal(terminalCommand(process.platform, session)!)
         : null,

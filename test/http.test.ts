@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { isSameProcess, pidInUse, processInfo } from "../src/node/process.ts";
 import type { NewSession } from "../src/node/terminal.ts";
 import { Delivery } from "../src/server/delivery.ts";
 import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
+import { SessionProcesses } from "../src/server/processes.ts";
 import { Store } from "../src/server/store.ts";
 import {
   MAX_PROMPT_CHARS,
@@ -55,6 +59,7 @@ before(async () => {
       openFolder: (path) => {
         openedFolders.push(path);
       },
+      processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
       startSession: async (session) => {
         if (nextStartFails) throw new Error(nextStartFails);
         startedSessions.push(session);
@@ -314,7 +319,7 @@ describe("starting a session", () => {
     assert.equal(response.status, 201);
     const { session_id } = (await response.json()) as StartSessionResult;
     assert.match(session_id, /^[0-9a-f-]{36}$/);
-    assert.deepEqual(startedSessions.at(-1), { cwd: folder, sessionId: session_id, prompt: "--help me" });
+    assert.deepEqual(startedSessions.at(-1), { cwd: folder, sessionId: session_id, prompt: "--help me", name: "" });
 
     const state = await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=${session_id}`));
     assert.equal(state.session?.id, session_id, "selectable before Claude's first reply");
@@ -357,6 +362,7 @@ describe("starting a session", () => {
         webDir: tmpdir(),
         openFolder: () => {},
         startSession: null,
+        processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
       }),
     );
     await new Promise<void>((resolve) => bare.listen(0, "127.0.0.1", resolve));
@@ -376,5 +382,77 @@ describe("starting a session", () => {
     } finally {
       bare.close();
     }
+  });
+});
+
+describe("renaming, ending and removing sessions", () => {
+  const sessions = async (folder: string) =>
+    (await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=&f=${folder}`))).sessions;
+
+  test("a name given in the window shows instead of the /rename name, until it is cleared", async () => {
+    await call("POST", "/api/responses", { session_id: "rn", session_name: "auth", cwd: "/x/rename", text: "Hi." });
+    assert.equal((await call("POST", "/api/sessions/rename", { session_id: "rn", label: "DM-1782" })).status, 204);
+    assert.deepEqual(
+      (await sessions("rename")).map((row) => [row.label, row.name]),
+      [["DM-1782", "auth"]],
+    );
+    await call("POST", "/api/sessions/rename", { session_id: "rn", label: "" });
+    assert.equal((await sessions("rename"))[0]?.label, "");
+    assert.equal((await call("POST", "/api/sessions/rename", { session_id: "nope", label: "x" })).status, 404);
+  });
+
+  test("ending a session stops the Claude process its hooks reported, and takes it off the list", async () => {
+    const claude = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
+    const exited = once(claude, "exit");
+    try {
+      const reported = { pid: claude.pid!, started: processInfo(claude.pid!)!.started };
+      await call("POST", "/api/responses", { session_id: "en", cwd: "/x/end", text: "Hi." });
+      assert.equal(
+        (await call("POST", "/api/sessions/end", { session_id: "en" })).status,
+        409,
+        "no hook has reported its process yet",
+      );
+      await call("POST", "/api/claim", { session_id: "en", claude_process: reported });
+      assert.equal((await sessions("end"))[0]?.process, "running");
+      assert.equal(
+        (await call("POST", "/api/sessions/forget", { session_id: "en" })).status,
+        409,
+        "a running session is ended, not just removed",
+      );
+
+      assert.equal((await call("POST", "/api/sessions/end", { session_id: "en" })).status, 204);
+      const [, signal] = await exited;
+      assert.equal(signal, "SIGTERM");
+      assert.deepEqual(await sessions("end"), []);
+    } finally {
+      claude.kill();
+    }
+  });
+
+  test("a session whose process ended shows as ended and can be removed; a reused pid is left alone", async () => {
+    const gone = spawn(process.execPath, ["-e", ""]);
+    const started = processInfo(gone.pid!)?.started ?? "0";
+    await once(gone, "exit");
+    await call("POST", "/api/responses", { session_id: "rm", cwd: "/x/remove", text: "Hi." });
+    await call("POST", "/api/claim", { session_id: "rm", claude_process: { pid: gone.pid, started } });
+    assert.equal((await sessions("remove"))[0]?.process, "ended");
+    assert.equal((await call("POST", "/api/sessions/forget", { session_id: "rm" })).status, 204);
+    assert.deepEqual(await sessions("remove"), []);
+    assert.equal((await call("POST", "/api/sessions/forget", { session_id: "rm" })).status, 404);
+
+    await call("POST", "/api/responses", { session_id: "rp", cwd: "/x/reused", text: "Hi." });
+    await call("POST", "/api/claim", { session_id: "rp", claude_process: { pid: process.pid, started: "long ago" } });
+    assert.equal((await call("POST", "/api/sessions/end", { session_id: "rp" })).status, 204);
+    assert.deepEqual(await sessions("reused"), [], "removed from the list, but the test process still runs");
+  });
+
+  test("a new session started with a name gets it in the window and in Claude", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-start-"));
+    await call("POST", "/api/sessions", { session_id: "nm", cwd: folder });
+    const response = await call("POST", "/api/sessions/start", { session_id: "nm", name: " DM-1782  OAuth " });
+    const { session_id } = (await response.json()) as StartSessionResult;
+    assert.equal(startedSessions.at(-1)?.name, "DM-1782 OAuth");
+    const state = await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=${session_id}`));
+    assert.equal(state.session?.label, "DM-1782 OAuth");
   });
 });

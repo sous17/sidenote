@@ -1,6 +1,6 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,45 @@ var paths = {
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
 
+// src/node/process.ts
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+function processInfo(pid, platform = process.platform) {
+  try {
+    return platform === "linux" ? linuxInfo(pid) : platform === "darwin" ? psInfo(pid) : null;
+  } catch {
+    return null;
+  }
+}
+function linuxInfo(pid) {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const fields = stat.slice(close + 2).split(" ");
+  return {
+    ppid: Number(fields[1]),
+    started: fields[19],
+    name: stat.slice(stat.indexOf("(") + 1, close),
+    args: readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+  };
+}
+function psInfo(pid) {
+  const ps = (field) => spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  const ppid = ps("ppid");
+  if (!ppid) return null;
+  return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
+}
+function isSameProcess(recorded) {
+  return processInfo(recorded.pid)?.started === recorded.started;
+}
+function pidInUse(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
 // src/node/terminal.ts
 import { spawn as spawn2 } from "node:child_process";
 import { accessSync, constants } from "node:fs";
@@ -37,7 +76,8 @@ var STILL_STARTING_MS = 3e3;
 var MACOS_SCRIPT = [
   "on run argv",
   'set theCommand to "cd " & quoted form of item 1 of argv & " && claude --session-id " & quoted form of item 2 of argv',
-  'if (count of argv) > 2 then set theCommand to theCommand & " -- " & quoted form of item 3 of argv',
+  'if item 3 of argv is not "" then set theCommand to theCommand & " " & quoted form of ("--name=" & item 3 of argv)',
+  'if (count of argv) > 3 then set theCommand to theCommand & " -- " & quoted form of item 4 of argv',
   'tell application "Terminal"',
   "activate",
   "do script theCommand",
@@ -47,10 +87,17 @@ var MACOS_SCRIPT = [
 function terminalCommand(platform, session) {
   const prompt = session.prompt ? [session.prompt] : [];
   if (platform === "darwin") {
-    return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), session.cwd, session.sessionId, ...prompt]];
+    const args = [session.cwd, session.sessionId, session.name, ...prompt];
+    return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), ...args]];
   }
   if (platform === "linux") {
-    const claude = ["claude", "--session-id", session.sessionId, ...session.prompt ? ["--", session.prompt] : []];
+    const claude = [
+      "claude",
+      "--session-id",
+      session.sessionId,
+      ...session.name ? [`--name=${session.name}`] : [],
+      ...session.prompt ? ["--", session.prompt] : []
+    ];
     return ["gnome-terminal", [`--working-directory=${session.cwd}`, "--", ...claude]];
   }
   return null;
@@ -338,7 +385,8 @@ function parseNewResponse(input) {
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
     cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
     text: string(body, "text", LIMITS.replyText),
-    created_at: createdAt
+    created_at: createdAt,
+    claude_process: optionalProcess(body)
   };
 }
 function parseNewNote(input) {
@@ -367,7 +415,10 @@ function parseClaim(input) {
   const body = asObject(input);
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
-  return prompt === void 0 ? { session_id } : { session_id, prompt };
+  const claim = prompt === void 0 ? { session_id } : { session_id, prompt };
+  const claudeProcess = optionalProcess(body);
+  if (claudeProcess) claim.claude_process = claudeProcess;
+  return claim;
 }
 function parseActivity(input) {
   const body = asObject(input);
@@ -387,10 +438,13 @@ function parseProgress(input) {
 }
 function parseWaiter(input) {
   const body = asObject(input);
-  return {
+  const waiter = {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     waiter_id: matching(body, "waiter_id", WAITER_ID_PATTERN)
   };
+  const claudeProcess = optionalProcess(body);
+  if (claudeProcess) waiter.claude_process = claudeProcess;
+  return waiter;
 }
 function parseSend(input) {
   const ids = asObject(input)["session_ids"];
@@ -409,14 +463,28 @@ function parsePrompt(input) {
     text: nonEmpty(string(body, "text", LIMITS.message), "text").trim()
   };
 }
-function parseOpenFolder(input) {
+function parseSessionRequest(input) {
   return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+}
+function parseRename(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    label: string(body, "label", LIMITS.sessionName).replace(/\s+/g, " ").trim()
+  };
+}
+function optionalProcess(body) {
+  const value = body["claude_process"];
+  if (value === void 0 || value === null) return void 0;
+  const fields = asObject(value);
+  return { pid: integer(fields, "pid", 2), started: nonEmpty(string(fields, "started", 64), "started") };
 }
 function parseStartSession(input) {
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
-    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim()
+    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim(),
+    name: (optionalString(body, "name", LIMITS.sessionName) ?? "").replace(/\s+/g, " ").trim()
   };
 }
 
@@ -448,7 +516,7 @@ var HttpError = class extends Error {
 };
 var ok = (body, status = 200) => ({ status, body });
 var empty = (status) => ({ status });
-function routes({ store, delivery, launchCodes, token, openFolder, startSession }) {
+function routes({ store, delivery, launchCodes, token, openFolder, startSession, processes }) {
   const snapshot = (sessionId2, folder) => {
     const latest = folder === null ? void 0 : store.folderSessions(folder)[0];
     const session = store.session(sessionId2 ?? "") ?? store.session(latest?.id ?? "");
@@ -471,7 +539,11 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       version,
       session: { ...session, ...delivery.status(session.id) },
       folder: windowFolder,
-      sessions: store.folderSessions(windowFolder).map((row) => ({ ...row, status: delivery.status(row.id).status })),
+      sessions: store.folderSessions(windowFolder).map((row) => ({
+        ...row,
+        status: delivery.status(row.id).status,
+        process: processes.state(row.id)
+      })),
       can_start_sessions,
       ...store.sessionContent(session.id)
     };
@@ -489,6 +561,7 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       needsToken: true,
       handle: ({ query }) => {
         delivery.refresh();
+        processes.refresh();
         if (query.get("v") === String(store.revision.value)) return empty(204);
         return ok(snapshot(query.get("s"), query.get("f")));
       }
@@ -516,6 +589,7 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       needsToken: true,
       handle: ({ body }) => {
         const input = parseNewResponse(body);
+        processes.record(input.session_id, input.claude_process);
         const { response, newSession } = store.addResponse({
           sessionId: input.session_id,
           sessionName: input.session_name,
@@ -547,7 +621,8 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, prompt: typed } = parseClaim(body);
+        const { session_id, prompt: typed, claude_process } = parseClaim(body);
+        processes.record(session_id, claude_process);
         delivery.markBusy(session_id);
         const prompt = store.claimMessages(session_id);
         if (typed?.trim()) store.addMessage(session_id, typed.trim(), "terminal");
@@ -580,7 +655,8 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/waiters",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, waiter_id } = parseWaiter(body);
+        const { session_id, waiter_id, claude_process } = parseWaiter(body);
+        processes.record(session_id, claude_process);
         delivery.registerWaiter(session_id, waiter_id);
         return ok({ ok: true });
       }
@@ -625,7 +701,45 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/open-folder",
       needsToken: true,
       handle: ({ body }) => {
-        openFolder(recordedFolder(parseOpenFolder(body).session_id));
+        openFolder(recordedFolder(parseSessionRequest(body).session_id));
+        return empty(204);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/rename",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, label } = parseRename(body);
+        if (!store.renameSession(session_id, label)) throw new HttpError(404, "sidenote doesn't know this session");
+        return empty(204);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/end",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (processes.state(session_id) === "unknown") {
+          throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+        }
+        const running = processes.running(session_id);
+        if (running) process.kill(running.pid, "SIGTERM");
+        processes.forget(session_id);
+        store.forgetSession(session_id);
+        return empty(204);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/forget",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (processes.running(session_id)) throw new HttpError(409, "this session is still running: end it instead");
+        processes.forget(session_id);
+        if (!store.forgetSession(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
         return empty(204);
       }
     },
@@ -634,16 +748,17 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/sessions/start",
       needsToken: true,
       handle: async ({ body }) => {
-        const { session_id, prompt } = parseStartSession(body);
+        const { session_id, prompt, name } = parseStartSession(body);
         const cwd = recordedFolder(session_id);
         if (!startSession) throw new HttpError(501, "starting sessions needs GNOME Terminal on Linux, or macOS");
         const id = randomUUID();
         try {
-          await startSession({ cwd, sessionId: id, prompt });
+          await startSession({ cwd, sessionId: id, prompt, name });
         } catch (error) {
           throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
         }
         store.touchSession(id, "", cwd);
+        if (name) store.renameSession(id, name);
         return ok({ session_id: id }, 201);
       }
     },
@@ -760,6 +875,41 @@ function send(response, reply) {
   response.end(content);
 }
 
+// src/server/processes.ts
+var SessionProcesses = class {
+  #processes = /* @__PURE__ */ new Map();
+  #probe;
+  #revision;
+  #signature = "";
+  constructor(probe, revision) {
+    this.#probe = probe;
+    this.#revision = revision;
+  }
+  record(sessionId2, claudeProcess) {
+    if (claudeProcess) this.#processes.set(sessionId2, claudeProcess);
+  }
+  forget(sessionId2) {
+    this.#processes.delete(sessionId2);
+  }
+  state(sessionId2) {
+    const recorded = this.#processes.get(sessionId2);
+    if (!recorded) return "unknown";
+    return this.#probe.pidInUse(recorded.pid) ? "running" : "ended";
+  }
+  /** The session's process, if it still runs as recorded; undefined when it ended or is unknown. */
+  running(sessionId2) {
+    const recorded = this.#processes.get(sessionId2);
+    return recorded && this.#probe.isSameProcess(recorded) ? recorded : void 0;
+  }
+  /** Bumps the revision when a process ended, so pages see the session as ended. */
+  refresh() {
+    const signature = JSON.stringify([...this.#processes.keys()].map((id) => [id, this.state(id)]));
+    if (signature === this.#signature) return;
+    this.#signature = signature;
+    this.#revision.bump();
+  }
+};
+
 // src/server/launch.ts
 import { randomBytes } from "node:crypto";
 var LAUNCH_CODE_TTL_MS = 2 * 60 * 1e3;
@@ -791,7 +941,7 @@ var LaunchCodes = class {
 };
 
 // src/server/lock.ts
-import { closeSync, openSync, readFileSync, rmSync, statSync as statSync2, writeSync } from "node:fs";
+import { closeSync, openSync, readFileSync as readFileSync2, rmSync, statSync as statSync2, writeSync } from "node:fs";
 var STARTUP_GRACE_MS = 3e4;
 function isRunning(pid) {
   try {
@@ -803,7 +953,7 @@ function isRunning(pid) {
 }
 function registeredPid(serverFile) {
   try {
-    return JSON.parse(readFileSync(serverFile, "utf8")).pid;
+    return JSON.parse(readFileSync2(serverFile, "utf8")).pid;
   } catch {
     return null;
   }
@@ -812,7 +962,7 @@ function isHeld(lockFile, serverFile) {
   let pid;
   let ageMs;
   try {
-    pid = Number.parseInt(readFileSync(lockFile, "utf8"), 10);
+    pid = Number.parseInt(readFileSync2(lockFile, "utf8"), 10);
     ageMs = Date.now() - statSync2(lockFile).mtimeMs;
   } catch {
     return false;
@@ -837,19 +987,19 @@ function acquireServerLock(lockFile, serverFile) {
 }
 function releaseServerLock(lockFile) {
   try {
-    if (Number.parseInt(readFileSync(lockFile, "utf8"), 10) === process.pid) rmSync(lockFile);
+    if (Number.parseInt(readFileSync2(lockFile, "utf8"), 10) === process.pid) rmSync(lockFile);
   } catch {
   }
 }
 
 // src/server/persistence.ts
-import { existsSync, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
 function emptyStore() {
   return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
 function loadStore(file) {
   if (!existsSync(file)) return emptyStore();
-  return migrate(JSON.parse(readFileSync2(file, "utf8")));
+  return migrate(JSON.parse(readFileSync3(file, "utf8")));
 }
 function saveStore(file, data) {
   const contents = {
@@ -875,10 +1025,15 @@ function migrate(file) {
   const sessions = /* @__PURE__ */ new Map();
   for (const [id, meta] of Object.entries(file.sessions ?? {})) {
     if (!SESSION_ID_PATTERN.test(id)) continue;
-    sessions.set(id, { name: meta.name ?? "", cwd: meta.cwd ?? "", last_active: meta.last_active ?? 0 });
+    sessions.set(id, {
+      name: meta.name ?? "",
+      label: meta.label ?? "",
+      cwd: meta.cwd ?? "",
+      last_active: meta.last_active ?? 0
+    });
   }
   for (const response of responses) {
-    const meta = sessions.get(response.session_id) ?? { name: "", cwd: response.cwd, last_active: 0 };
+    const meta = sessions.get(response.session_id) ?? { name: "", label: "", cwd: response.cwd, last_active: 0 };
     meta.last_active = Math.max(meta.last_active, response.created_at);
     sessions.set(response.session_id, meta);
   }
@@ -958,6 +1113,25 @@ var Store = class {
   touchSession(sessionId2, name, cwd) {
     this.#upsertSession(sessionId2, { name, cwd, activeAt: this.#clock.now() });
     this.#changed();
+  }
+  /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
+  renameSession(sessionId2, label) {
+    const meta = this.#data.sessions.get(sessionId2);
+    if (!meta) return false;
+    meta.label = label;
+    this.#changed();
+    return true;
+  }
+  /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
+  forgetSession(sessionId2) {
+    if (!this.#data.sessions.delete(sessionId2)) return false;
+    const data = this.#data;
+    const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId2).map((r) => r.id));
+    data.responses = data.responses.filter((r) => !dropped.has(r.id));
+    data.comments = data.comments.filter((c) => !dropped.has(c.response_id));
+    data.messages = data.messages.filter((m) => m.session_id !== sessionId2);
+    this.#changed();
+    return true;
   }
   addResponse(reply) {
     const response = {
@@ -1067,7 +1241,12 @@ var Store = class {
     return { response_id: note.responseId, block_index: note.blockIndex, quote: note.quote, parent_id: null };
   }
   #upsertSession(sessionId2, update) {
-    const meta = this.#data.sessions.get(sessionId2) ?? { name: "", cwd: update.cwd, last_active: 0 };
+    const meta = this.#data.sessions.get(sessionId2) ?? {
+      name: "",
+      label: "",
+      cwd: update.cwd,
+      last_active: 0
+    };
     if (update.name) meta.name = update.name;
     if (update.cwd) meta.cwd = update.cwd;
     meta.last_active = Math.max(meta.last_active, update.activeAt);
@@ -1160,7 +1339,7 @@ function listenOn(server, port) {
 async function listen(server) {
   let preferred = 0;
   try {
-    preferred = Number.parseInt(readFileSync3(paths.portFile(), "utf8"), 10) || 0;
+    preferred = Number.parseInt(readFileSync4(paths.portFile(), "utf8"), 10) || 0;
   } catch {
   }
   try {
@@ -1172,7 +1351,7 @@ async function listen(server) {
 }
 function removeServerFile() {
   try {
-    const current = JSON.parse(readFileSync3(paths.serverFile(), "utf8"));
+    const current = JSON.parse(readFileSync4(paths.serverFile(), "utf8"));
     if (current.pid === process.pid) rmSync2(paths.serverFile());
   } catch {
   }
@@ -1193,6 +1372,7 @@ async function main() {
       allowedHosts,
       webDir: WEB_DIR,
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
+      processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
       startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
     })
   );

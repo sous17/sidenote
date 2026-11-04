@@ -182,3 +182,28 @@ describe("notes", () => {
     assert.equal(store.revision.value, before + 1);
   });
 });
+
+describe("session list", () => {
+  test("a name given in the window survives the /rename name a reply brings", () => {
+    const { store } = fixture();
+    reply(store, "a");
+    assert.equal(store.renameSession(SESSION, "DM-1782 OAuth fix"), true);
+    reply(store, "b", { sessionName: "auth" });
+    assert.deepEqual([store.session(SESSION)?.label, store.session(SESSION)?.name], ["DM-1782 OAuth fix", "auth"]);
+    assert.equal(store.renameSession("unknown", "x"), false);
+  });
+
+  test("forgetting a session drops its replies, notes and messages, and nothing of others", () => {
+    const { store } = fixture();
+    noteOn(store, reply(store, "a").id);
+    store.addMessage(SESSION, "hi", "terminal");
+    reply(store, "kept", { sessionId: "session-b" });
+    const revision = store.revision.value;
+    assert.equal(store.forgetSession(SESSION), true);
+    assert.ok(store.revision.value > revision);
+    assert.equal(store.session(SESSION), undefined);
+    assert.deepEqual(store.sessionContent(SESSION), { responses: [], comments: [], messages: [] });
+    assert.equal(store.sessionContent("session-b").responses.length, 1);
+    assert.equal(store.forgetSession(SESSION), false);
+  });
+});

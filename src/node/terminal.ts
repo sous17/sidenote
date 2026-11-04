@@ -12,6 +12,8 @@ export interface NewSession {
   sessionId: string;
   /** The first prompt; "" starts Claude without one. */
   prompt: string;
+  /** The session's name in Claude Code, which also titles the terminal; "" for none. */
+  name: string;
 }
 
 export type TerminalCommand = readonly [command: string, args: readonly string[]];
@@ -21,7 +23,8 @@ export type TerminalCommand = readonly [command: string, args: readonly string[]
 const MACOS_SCRIPT = [
   "on run argv",
   'set theCommand to "cd " & quoted form of item 1 of argv & " && claude --session-id " & quoted form of item 2 of argv',
-  'if (count of argv) > 2 then set theCommand to theCommand & " -- " & quoted form of item 3 of argv',
+  'if item 3 of argv is not "" then set theCommand to theCommand & " " & quoted form of ("--name=" & item 3 of argv)',
+  'if (count of argv) > 3 then set theCommand to theCommand & " -- " & quoted form of item 4 of argv',
   'tell application "Terminal"',
   "activate",
   "do script theCommand",
@@ -31,15 +34,23 @@ const MACOS_SCRIPT = [
 
 /**
  * The command that opens a terminal running Claude in the session's folder, or null where there is
- * none. The prompt goes after `--`, so a prompt starting with a dash isn't read as an option.
+ * none. The prompt goes after `--` and the name inside `--name=`, so neither is read as an option
+ * when it starts with a dash.
  */
 export function terminalCommand(platform: NodeJS.Platform, session: NewSession): TerminalCommand | null {
   const prompt = session.prompt ? [session.prompt] : [];
   if (platform === "darwin") {
-    return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), session.cwd, session.sessionId, ...prompt]];
+    const args = [session.cwd, session.sessionId, session.name, ...prompt];
+    return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), ...args]];
   }
   if (platform === "linux") {
-    const claude = ["claude", "--session-id", session.sessionId, ...(session.prompt ? ["--", session.prompt] : [])];
+    const claude = [
+      "claude",
+      "--session-id",
+      session.sessionId,
+      ...(session.name ? [`--name=${session.name}`] : []),
+      ...(session.prompt ? ["--", session.prompt] : []),
+    ];
     return ["gnome-terminal", [`--working-directory=${session.cwd}`, "--", ...claude]];
   }
   return null;

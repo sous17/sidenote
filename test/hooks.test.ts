@@ -1,7 +1,8 @@
 // End to end: the built launcher and CLI against a real server, in a scratch HOME.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -270,7 +271,7 @@ test("starting a session opens a terminal running claude in the session's folder
   const args = readFileSync(terminalArgs, "utf8").split("\0").slice(0, -1);
   if (process.platform === "darwin") {
     assert.equal(args[0], "-e");
-    assert.deepEqual(args.slice(-3), [home, session_id, "-v fix it"]);
+    assert.deepEqual(args.slice(-4), [home, session_id, "", "-v fix it"], "folder, id, no name, prompt");
   } else {
     assert.deepEqual(args, [
       `--working-directory=${home}`,
@@ -282,6 +283,35 @@ test("starting a session opens a terminal running claude in the session's folder
       "-v fix it",
     ]);
   }
+});
+
+test("a hook reports the Claude process it runs under, so the window can end the session", async () => {
+  // Stands in for Claude: node, under the name claude, running a hook the way Claude Code does.
+  const claude = join(home, "fakebin", "claude");
+  if (!existsSync(claude)) symlinkSync(process.execPath, claude);
+  const runHook = `
+    const { spawnSync } = require("node:child_process");
+    spawnSync(process.argv[1], ["hook-prompt"], { input: process.argv[2], stdio: ["pipe", "ignore", "ignore"] });
+    process.stdout.write(String(process.pid));`;
+  const child = spawn(claude, ["-e", runHook, launcher, hookInput({ prompt: "Go" })], {
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
+      SIDENOTE_NODE: process.execPath,
+    },
+  });
+  let pid = "";
+  child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
+  await once(child, "close");
+  assert.match(pid, /^\d+$/);
+
+  const state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
+  assert.equal(
+    state.sessions.find((row) => row.id === SESSION)?.process,
+    "ended",
+    "reported, and since ended: the stand-in exited after the hook",
+  );
 });
 
 test("clients starting the server at the same moment all end up on one server", async () => {

@@ -71,7 +71,7 @@ export class Store {
   }
 
   /** The sessions that ran in a folder, most recently active first, with what their rows show. */
-  folderSessions(folder: string): Omit<FolderSession, "status">[] {
+  folderSessions(folder: string): Omit<FolderSession, "status" | "process">[] {
     const pending = this.#pendingNotesPerSession();
     return this.listSessions()
       .filter((session) => folderName(session.cwd) === folder)
@@ -114,6 +114,27 @@ export class Store {
   touchSession(sessionId: string, name: string, cwd: string): void {
     this.#upsertSession(sessionId, { name, cwd, activeAt: this.#clock.now() });
     this.#changed();
+  }
+
+  /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
+  renameSession(sessionId: string, label: string): boolean {
+    const meta = this.#data.sessions.get(sessionId);
+    if (!meta) return false;
+    meta.label = label;
+    this.#changed();
+    return true;
+  }
+
+  /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
+  forgetSession(sessionId: string): boolean {
+    if (!this.#data.sessions.delete(sessionId)) return false;
+    const data = this.#data;
+    const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId).map((r) => r.id));
+    data.responses = data.responses.filter((r) => !dropped.has(r.id));
+    data.comments = data.comments.filter((c) => !dropped.has(c.response_id));
+    data.messages = data.messages.filter((m) => m.session_id !== sessionId);
+    this.#changed();
+    return true;
   }
 
   addResponse(reply: NewReply): { response: StoredResponse; newSession: boolean } {
@@ -235,7 +256,12 @@ export class Store {
   }
 
   #upsertSession(sessionId: string, update: { name: string; cwd: string; activeAt: EpochSeconds }): void {
-    const meta: SessionMeta = this.#data.sessions.get(sessionId) ?? { name: "", cwd: update.cwd, last_active: 0 };
+    const meta: SessionMeta = this.#data.sessions.get(sessionId) ?? {
+      name: "",
+      label: "",
+      cwd: update.cwd,
+      last_active: 0,
+    };
     if (update.name) meta.name = update.name;
     if (update.cwd) meta.cwd = update.cwd;
     meta.last_active = Math.max(meta.last_active, update.activeAt);

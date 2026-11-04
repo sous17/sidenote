@@ -43,7 +43,12 @@ note on its own, and each answer lands in that note's thread.
   folder, running Claude with the first prompt you type there, and selects the new session. Claude
   asks for permissions in that terminal; after its first reply you can carry on from the window.
   This needs GNOME Terminal on Linux, or Terminal on macOS, where the first start asks you to let
-  the app sidenote runs under control Terminal.
+  the app sidenote runs under control Terminal. A name you give it there also titles the terminal.
+- **Name, end and remove sessions.** The **⋯** on a session's row renames it, for example after a
+  ticket, with a name only sidenote shows. It also ends a running session, which stops its Claude
+  process even mid-turn and takes it off the list, and removes a session that has ended. A session
+  shows as ended once sidenote knows its process, which it learns from the session's next prompt
+  or reply.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -140,8 +145,11 @@ session; once Claude replies, the button turns on. Saved notes still go with you
 `/sidenote:open` once: a restart of sidenote retires the browser's token, and the window that
 opens hands it a new one, which every open sidenote tab picks up.
 
-**The list shows a session's first message, not its name.** Name the session with `/rename`;
-the list picks up the new name with Claude's next reply.
+**The list shows a session's first message, not its name.** Rename it from its **⋯**, or name
+it with `/rename` in Claude, which the list picks up with Claude's next reply.
+
+**End session is greyed out.** sidenote knows a session's process only once one of its hooks ran
+since sidenote started. Send a prompt in that session, or wait for its next reply.
 
 **Two folders share a window.** A window is named after the last part of the folder's path, so
 `~/work/shop` and `~/play/shop` share one. Hover over the folder name to see the selected
@@ -200,8 +208,11 @@ locked down:
 - **No shell for your prompt.** A new session's first prompt reaches `claude` as one argument
   after `--`, so it can't add options, and on Linux it never passes through a shell. On macOS,
   Terminal runs the command through your shell, so AppleScript's `quoted form of` quotes the
-  folder and the prompt first. Starting a session is the one thing the token allows beyond talking
-  to sessions that already run, and the terminal it opens is always in front of you.
+  folder and the prompt first.
+- **Only Claude's own processes.** Ending a session stops the process the session's own hooks
+  reported as its Claude, and only while that pid still belongs to the process that started at the
+  reported time. A request never names a pid. Beyond talking to running sessions, the token can
+  open the folders sidenote knows, start sessions in them, and end the sessions it knows.
 - **Inert replies.** Raw HTML in a reply is shown as text. The rendered markdown is sanitized
   with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own
   controls. The page's content security policy allows no inline or remote scripts, and every

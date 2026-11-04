@@ -9,7 +9,9 @@ import {
   parseNewNote,
   parseNewResponse,
   parsePrompt,
+  parseRename,
   parseSend,
+  parseStartSession,
   parseWaiter,
 } from "../src/server/requests.ts";
 import { FakeClock } from "./helpers.ts";
@@ -68,4 +70,27 @@ test("a batch of a message is bounded, and its ids checked", () => {
   assert.throws(() => parseProgress({ ...body, message_id: "../x" }), BadRequest);
   assert.throws(() => parseProgress({ ...body, index: -1 }), BadRequest);
   assert.throws(() => parseProgress({ ...body, delta: "x".repeat(20_001) }), BadRequest);
+});
+
+test("a name given in the window is one line, and empty removes it", () => {
+  assert.deepEqual(parseRename({ session_id: "s", label: "  DM-1782 \n OAuth fix " }), {
+    session_id: "s",
+    label: "DM-1782 OAuth fix",
+  });
+  assert.equal(parseRename({ session_id: "s", label: "" }).label, "");
+  assert.throws(() => parseRename({ session_id: "s", label: "x".repeat(LIMITS.sessionName + 1) }), BadRequest);
+  assert.throws(() => parseRename({ session_id: "s" }), BadRequest);
+  assert.equal(parseStartSession({ session_id: "s", name: " a\tb " }).name, "a b");
+});
+
+test("a reported Claude process is a pid above 1 and a start time, or nothing", () => {
+  const waiter = { session_id: "s", waiter_id: "ab".repeat(8) };
+  assert.deepEqual(parseWaiter({ ...waiter, claude_process: { pid: 42, started: "123" } }).claude_process, {
+    pid: 42,
+    started: "123",
+  });
+  assert.equal(parseWaiter(waiter).claude_process, undefined);
+  for (const claude_process of [{ pid: 1, started: "1" }, { pid: 4.2, started: "1" }, { pid: 42, started: "" }, 42]) {
+    assert.throws(() => parseWaiter({ ...waiter, claude_process }), BadRequest, JSON.stringify(claude_process));
+  }
 });

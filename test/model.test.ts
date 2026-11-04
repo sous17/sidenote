@@ -5,7 +5,7 @@ import type { Note, SessionState, StateSnapshot, StoredResponse, UserMessage } f
 
 function model(status: SessionState, messageAt: number | null, delivered: boolean, replyAt?: number): Model {
   const result = new Model("s");
-  const session = { id: "s", name: "", cwd: "/w", last_active: 0, status, send_requested: false };
+  const session = { id: "s", name: "", label: "", cwd: "/w", last_active: 0, status, send_requested: false };
   const responses = replyAt === undefined ? [] : [{ id: 1, created_at: replyAt } as StoredResponse];
   const messages =
     messageAt === null
@@ -85,9 +85,14 @@ test("Claude's messages show only while the reply is awaited", () => {
   assert.deepEqual(answered.progress(), [], "the reply took over, so the text isn't shown twice");
 });
 
-test("a session is called by its /rename name, else its first message, else its short id", () => {
+test("a session is called by its name in the window, its /rename name, its first message, or its id", () => {
   const id = "0123456789";
-  assert.equal(sessionLabel({ id, name: "auth", first_message: "Fix login" }), "auth");
-  assert.equal(sessionLabel({ id, name: "", first_message: "Fix login" }), "Fix login");
-  assert.equal(sessionLabel({ id, name: "", first_message: "" }), "Session 01234567");
+  const name = { id, label: "", name: "", first_message: "" };
+  assert.equal(
+    sessionLabel({ ...name, label: "DM-1782 OAuth fix", name: "auth", first_message: "Fix" }),
+    "DM-1782 OAuth fix",
+  );
+  assert.equal(sessionLabel({ ...name, name: "auth", first_message: "Fix login" }), "auth");
+  assert.equal(sessionLabel({ ...name, first_message: "Fix login" }), "Fix login");
+  assert.equal(sessionLabel(name), "Session 01234567");
 });

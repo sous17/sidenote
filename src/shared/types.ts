@@ -54,6 +54,8 @@ export type SessionState = "listening" | "busy" | "offline";
 export interface SessionMeta {
   /** The name given with /rename, or "" when the session has none. */
   name: string;
+  /** The name given in the window, which only sidenote shows; "" when it has none. */
+  label: string;
   cwd: string;
   /** When the session was last active; sessions idle too long are forgotten. */
   last_active: EpochSeconds;
@@ -83,6 +85,15 @@ export interface FolderSession extends SessionSummary {
   /** The session's first message, shortened, so sessions without a /rename name can be told apart. */
   first_message: string;
   pending_notes: number;
+  /** Whether sidenote knows the session's Claude process, and whether that still runs. */
+  process: "running" | "ended" | "unknown";
+}
+
+/** The Claude Code process a session runs in, as its hooks report it. */
+export interface ClaudeProcess {
+  pid: number;
+  /** When it started, so a later process that gets the same pid isn't mistaken for it. */
+  started: string;
 }
 
 /**
@@ -137,6 +148,7 @@ export interface NewResponseRequest {
   text: string;
   /** Only for backfilled replies; live replies are stamped by the server. */
   created_at?: EpochSeconds;
+  claude_process?: ClaudeProcess;
 }
 
 export interface NewResponseResult {
@@ -162,6 +174,7 @@ export interface ClaimRequest {
   session_id: string;
   /** What the user typed in the terminal, so the page can show it. */
   prompt?: string;
+  claude_process?: ClaudeProcess;
 }
 
 export interface ClaimResult {
@@ -184,11 +197,21 @@ export interface PromptResult {
 export interface WaiterRequest {
   session_id: string;
   waiter_id: string;
+  claude_process?: ClaudeProcess;
 }
 
-/** Opens a session's folder on the desktop. The server knows the folder; the page only names the session. */
-export interface OpenFolderRequest {
+/**
+ * Acts on one session: opens its folder, ends it, or removes it from the list. The server knows
+ * the folder and the process; the page only names the session.
+ */
+export interface SessionRequest {
   session_id: string;
+}
+
+/** Names a session in the window; an empty label removes the name. */
+export interface RenameSessionRequest {
+  session_id: string;
+  label: string;
 }
 
 /**
@@ -199,6 +222,8 @@ export interface StartSessionRequest {
   session_id: string;
   /** The new session's first prompt; empty or absent starts Claude without one. */
   prompt?: string;
+  /** Its name, in the window and in Claude Code; empty or absent leaves it unnamed. */
+  name?: string;
 }
 
 export interface StartSessionResult {

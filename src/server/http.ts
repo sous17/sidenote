@@ -30,6 +30,7 @@ import {
   type WaiterPollResult,
 } from "../shared/types.ts";
 import type { Delivery } from "./delivery.ts";
+import type { SessionProcesses } from "./processes.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
@@ -38,10 +39,11 @@ import {
   parseClaim,
   parseNewNote,
   parseNewResponse,
-  parseOpenFolder,
+  parseRename,
   parsePrompt,
   parseRedeem,
   parseSend,
+  parseSessionRequest,
   parseStartSession,
   parseTouchSession,
   parseWaiter,
@@ -85,6 +87,8 @@ export interface AppOptions {
   openFolder: (path: string) => void;
   /** Opens a terminal running a new Claude session; null where this machine has no terminal for it. */
   startSession: ((session: NewSession) => Promise<void>) | null;
+  /** The Claude process behind each session, so the page can end it. */
+  processes: SessionProcesses;
 }
 
 class HttpError extends Error {
@@ -114,7 +118,7 @@ interface Route {
 const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
-function routes({ store, delivery, launchCodes, token, openFolder, startSession }: AppOptions): Route[] {
+function routes({ store, delivery, launchCodes, token, openFolder, startSession, processes }: AppOptions): Route[] {
   /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
   const snapshot = (sessionId: string | null, folder: string | null): StateSnapshot => {
     const latest = folder === null ? undefined : store.folderSessions(folder)[0];
@@ -138,7 +142,11 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       version,
       session: { ...session, ...delivery.status(session.id) },
       folder: windowFolder,
-      sessions: store.folderSessions(windowFolder).map((row) => ({ ...row, status: delivery.status(row.id).status })),
+      sessions: store.folderSessions(windowFolder).map((row) => ({
+        ...row,
+        status: delivery.status(row.id).status,
+        process: processes.state(row.id),
+      })),
       can_start_sessions,
       ...store.sessionContent(session.id),
     };
@@ -159,6 +167,7 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       needsToken: true,
       handle: ({ query }) => {
         delivery.refresh();
+        processes.refresh();
         // The page passes the version it has; an unchanged store costs one empty reply.
         if (query.get("v") === String(store.revision.value)) return empty(204);
         return ok(snapshot(query.get("s"), query.get("f")));
@@ -187,6 +196,7 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       needsToken: true,
       handle: ({ body }) => {
         const input = parseNewResponse(body);
+        processes.record(input.session_id, input.claude_process);
         const { response, newSession } = store.addResponse({
           sessionId: input.session_id,
           sessionName: input.session_name,
@@ -218,7 +228,8 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, prompt: typed } = parseClaim(body);
+        const { session_id, prompt: typed, claude_process } = parseClaim(body);
+        processes.record(session_id, claude_process);
         delivery.markBusy(session_id);
         // A message still waiting from the page rides along with this terminal prompt.
         const prompt = store.claimMessages(session_id);
@@ -252,7 +263,8 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/waiters",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, waiter_id } = parseWaiter(body);
+        const { session_id, waiter_id, claude_process } = parseWaiter(body);
+        processes.record(session_id, claude_process);
         delivery.registerWaiter(session_id, waiter_id);
         return ok({ ok: true });
       },
@@ -297,7 +309,46 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/open-folder",
       needsToken: true,
       handle: ({ body }) => {
-        openFolder(recordedFolder(parseOpenFolder(body).session_id));
+        openFolder(recordedFolder(parseSessionRequest(body).session_id));
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/rename",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, label } = parseRename(body);
+        if (!store.renameSession(session_id, label)) throw new HttpError(404, "sidenote doesn't know this session");
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/end",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (processes.state(session_id) === "unknown") {
+          throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+        }
+        // Only the process the session's own hooks reported, and only while it is still that one.
+        const running = processes.running(session_id);
+        if (running) process.kill(running.pid, "SIGTERM");
+        processes.forget(session_id);
+        store.forgetSession(session_id);
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/forget",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (processes.running(session_id)) throw new HttpError(409, "this session is still running: end it instead");
+        processes.forget(session_id);
+        if (!store.forgetSession(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
         return empty(204);
       },
     },
@@ -306,17 +357,18 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession 
       path: "/api/sessions/start",
       needsToken: true,
       handle: async ({ body }) => {
-        const { session_id, prompt } = parseStartSession(body);
+        const { session_id, prompt, name } = parseStartSession(body);
         const cwd = recordedFolder(session_id);
         if (!startSession) throw new HttpError(501, "starting sessions needs GNOME Terminal on Linux, or macOS");
         const id = randomUUID();
         try {
-          await startSession({ cwd, sessionId: id, prompt });
+          await startSession({ cwd, sessionId: id, prompt, name });
         } catch (error) {
           throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
         }
         // Listed right away, so the page can select it before Claude's first reply.
         store.touchSession(id, "", cwd);
+        if (name) store.renameSession(id, name);
         return ok({ session_id: id } satisfies StartSessionResult, 201);
       },
     },
