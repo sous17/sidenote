@@ -1586,7 +1586,7 @@ summary.diff-head:hover {
   margin-bottom: 24px;
   padding: 8px 14px 10px;
   border-radius: 12px;
-  background: var(--sunken);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
 }
 .user-message-meta {
   display: flex;
