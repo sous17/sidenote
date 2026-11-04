@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lineToAnsi, type AnsiOptions } from "../src/tui/ansi.ts";
-import { PLAIN, type Line, type Span } from "../src/tui/lines.ts";
+import { MARK_COUNT, PLAIN, type Line, type Span, type Style } from "../src/tui/lines.ts";
 import { terminalOptions } from "../src/tui/main.ts";
 import { terminalSafe } from "../src/tui/sanitize.ts";
 import { displayWidth } from "../src/tui/width.ts";
@@ -80,15 +80,89 @@ test("the accent is the mockups' amber, never the terminal's magenta", () => {
   assert.equal(prompt, "\x1b[1;38;2;121;192;255m›\x1b[0m", "the user's words in #79c0ff");
 });
 
-test("sidenote's palette only on dark terminals that draw 24-bit color", () => {
+test("sidenote's palettes on terminals that draw 24-bit color", () => {
   const palette = (env: NodeJS.ProcessEnv): boolean | undefined => terminalOptions(env).truecolor;
   assert.equal(palette({ COLORTERM: "truecolor" }), true);
   assert.equal(palette({ TERM_PROGRAM: "iTerm.app" }), true);
   assert.equal(palette({ TERM_PROGRAM: "Apple_Terminal" }), false, "Terminal.app has 256 colors at most");
-  assert.equal(palette({ COLORTERM: "truecolor", COLORFGBG: "0;15" }), false, "a light background");
-  assert.equal(palette({ COLORTERM: "truecolor", COLORFGBG: "15;0" }), true, "a dark background");
+  assert.equal(palette({ COLORTERM: "truecolor", COLORFGBG: "0;15" }), true, "a light background has its own");
   assert.equal(palette({ SIDENOTE_COLOR: "basic", COLORTERM: "truecolor" }), false);
   assert.equal(palette({ SIDENOTE_COLOR: "truecolor" }), true);
+  assert.equal(palette({ SIDENOTE_COLOR: "light" }), true);
+  assert.equal(palette({ SIDENOTE_COLOR: "dark" }), true);
+});
+
+test("the theme starts from COLORFGBG, and SIDENOTE_COLOR fixes it", () => {
+  const options = (env: NodeJS.ProcessEnv): [boolean?, boolean?] => {
+    const { light, themeFixed } = terminalOptions(env);
+    return [light, themeFixed];
+  };
+  assert.deepEqual(options({}), [false, false]);
+  assert.deepEqual(options({ COLORFGBG: "0;15" }), [true, false]);
+  assert.deepEqual(options({ COLORFGBG: "0;7" }), [true, false]);
+  assert.deepEqual(options({ COLORFGBG: "15;0" }), [false, false]);
+  assert.deepEqual(options({ SIDENOTE_COLOR: "light", COLORFGBG: "15;0" }), [true, true]);
+  assert.deepEqual(options({ SIDENOTE_COLOR: "dark", COLORFGBG: "0;15" }), [false, true]);
+});
+
+/** WCAG contrast of two colors given as the 38;2;r;g;b or 48;2;r;g;b the palette writes. */
+function contrast(a: number[], b: number[]): number {
+  const luminance = (rgb: number[]): number => {
+    const [r, g, bl] = rgb.map((value) => {
+      const c = value / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }) as [number, number, number];
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (high + 0.05) / (low + 0.05);
+}
+
+const channels = (out: string, code: 38 | 48): number[] => {
+  const found = new RegExp(`${code};2;(\\d+);(\\d+);(\\d+)`).exec(out);
+  assert.ok(found, `no ${code} color in ${JSON.stringify(out)}`);
+  return found.slice(1).map(Number);
+};
+
+for (const [theme, light, page, text] of [
+  ["light", true, [255, 255, 255], [31, 35, 40]],
+  ["dark", false, [13, 17, 23], [230, 237, 243]],
+] as const) {
+  test(`the ${theme} palette stays readable on its background and on every note color`, () => {
+    const options: AnsiOptions = { ...COLOR, truecolor: true, light };
+    const paint = (style: Style): string => lineToAnsi({ spans: [{ text: "x", style }], block: 0 }, options);
+    const tones = ["accent", "muted", "link", "code", "add", "del", "hunk"] as const;
+    for (const tone of tones) {
+      const color = channels(paint({ tone }), 38);
+      assert.ok(contrast(color, [...page]) >= 4.5, `${tone} on the background`);
+    }
+    for (let mark = 0; mark < MARK_COUNT; mark += 1) {
+      const fill = channels(paint({ mark }), 48);
+      assert.ok(contrast([...text], fill) >= 4.5, `text on mark ${mark}`);
+      assert.ok(contrast(fill, [...page]) >= 1.1, `mark ${mark} shows against the background`);
+      if (light) {
+        for (const tone of tones) {
+          const color = channels(paint({ tone }), 38);
+          assert.ok(contrast(color, fill) >= 3, `${tone} on mark ${mark}`);
+        }
+      }
+    }
+  });
+}
+
+test("the two themes use different colors, and the note colors keep their order", () => {
+  const paint = (style: Style, light: boolean): string =>
+    lineToAnsi({ spans: [{ text: "x", style }], block: 0 }, { ...COLOR, truecolor: true, light });
+  assert.notEqual(paint({ tone: "accent" }, true), paint({ tone: "accent" }, false));
+  const hues = (light: boolean): number[] =>
+    Array.from({ length: MARK_COUNT }, (_, mark) => {
+      const [r, g, b] = channels(paint({ mark }, light), 48) as [number, number, number];
+      return Math.round((Math.atan2(Math.sqrt(3) * (g - b), 2 * r - g - b) * 180) / Math.PI);
+    });
+  hues(true).forEach((hue, mark) => {
+    const difference = Math.abs(hue - hues(false)[mark]!);
+    assert.ok(Math.min(difference, 360 - difference) < 40, `mark ${mark} keeps its hue`);
+  });
 });
 
 test("a line with hostile text comes out with only sidenote's own escape codes", () => {

@@ -153,7 +153,7 @@ export class App {
   constructor(options: AppOptions) {
     this.#api = options.api;
     this.#terminal = options.terminal;
-    this.#ansi = options.ansi;
+    this.#ansi = { ...options.ansi };
     this.#cwd = options.cwd;
     this.#chat = options.chat ?? null;
     this.#home = options.home ?? "";
@@ -234,6 +234,12 @@ export class App {
   async handleKey(key: Key): Promise<void> {
     // Before anything is reset: looking around doesn't cancel a delete being confirmed.
     if (key.name === "mouse") return;
+    if (key.name === "background") {
+      if (this.#ansi.themeFixed || key.light === undefined || key.light === Boolean(this.#ansi.light)) return;
+      this.#ansi.light = key.light;
+      this.render();
+      return;
+    }
     if (key.name === "wheelup" || key.name === "wheeldown") {
       this.#wheel(key.name === "wheelup" ? -WHEEL_ROWS : WHEEL_ROWS, key.column ?? 0);
       return;

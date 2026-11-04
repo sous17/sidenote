@@ -76,3 +76,18 @@ test("mouse reports are on only while the app has the terminal, so a shell or $E
   screen.stop();
   assert.equal(lastMouseState(), "\x1b[?1000l");
 });
+
+test("the background is asked for on starting, and again after $EDITOR", () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const screen = new Screen(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+  const asked = (): number => output.written.split("\x1b]11;?\x1b\\").length - 1;
+  screen.start(
+    () => {},
+    () => {},
+  );
+  assert.equal(asked(), 1);
+  screen.suspend(() => {});
+  assert.equal(asked(), 2);
+  screen.stop();
+});

@@ -9,11 +9,14 @@ export interface AnsiOptions {
   /** OSC 8 hyperlinks; terminals that lack them ignore the sequence. */
   hyperlinks: boolean;
   /**
-   * The terminal draws 24-bit color on a dark background, so sidenote can use its own palette
-   * (the one in the Margin mockups). Otherwise the terminal's 16 colors are used, which follow
-   * its light or dark theme.
+   * The terminal draws 24-bit color, so sidenote can use its own palettes (the dark one is the
+   * Margin mockups'). Otherwise the terminal's 16 colors are used, which follow its theme.
    */
   truecolor?: boolean;
+  /** The terminal's background is light, so the light palette is used. */
+  light?: boolean;
+  /** The user chose the theme, so the terminal's reported background doesn't change it. */
+  themeFixed?: boolean;
 }
 
 const rgb = (hex: string): string => {
@@ -32,6 +35,19 @@ const PALETTE = {
   addMark: `${rgb("#7ee787")};7`,
   delMark: `${rgb("#ffa198")};7`,
   hunk: rgb("#8b949e"),
+} satisfies Record<Tone, string>;
+
+/** GitHub-light's text colors, readable on white and on every mark below. */
+const LIGHT_PALETTE = {
+  accent: rgb("#7d5300"),
+  muted: rgb("#57606a"),
+  link: rgb("#0550ae"),
+  code: rgb("#0550ae"),
+  add: rgb("#116329"),
+  del: rgb("#a40e26"),
+  addMark: `${rgb("#116329")};7`,
+  delMark: `${rgb("#a40e26")};7`,
+  hunk: rgb("#57606a"),
 } satisfies Record<Tone, string>;
 
 /** The nearest of the terminal's own colors. Yellow, not magenta: most themes draw 35 pink. */
@@ -54,6 +70,9 @@ const background = (hex: string): string => rgb(hex).replace("38;", "48;");
 
 /** Dark enough for the palette's text to stay readable on them, and far enough apart to tell. */
 const MARKS = ["#5a4510", "#0f4a52", "#54265a", "#1e4d2b", "#5e2435", "#2c3a75"].map(background);
+
+/** The same hues as MARKS, in the same order, pale enough for dark text. */
+const LIGHT_MARKS = ["#ffe9a3", "#b9eeee", "#f2d6f7", "#c9f2d3", "#ffd8de", "#d6e0ff"].map(background);
 
 /** The terminal's own colors change with its theme, so these set the text color as well. */
 const BASIC_MARKS = ["30;43", "30;46", "30;45", "30;42", "97;44", "97;41"];
@@ -81,11 +100,11 @@ function sgr(style: Style, options: AnsiOptions, text: string): string {
   if (style.italic) codes.push("3");
   if (style.underline) codes.push("4");
   if (style.strike) codes.push("9");
-  const tones = options.truecolor ? PALETTE : TONES;
+  const tones = options.truecolor ? (options.light ? LIGHT_PALETTE : PALETTE) : TONES;
   const tone = style.tone && (options.color ? tones[style.tone] : UNCOLORED_TONES[style.tone]);
   if (tone) codes.push(tone);
   if (style.mark !== undefined) {
-    const marks = options.truecolor ? MARKS : BASIC_MARKS;
+    const marks = options.truecolor ? (options.light ? LIGHT_MARKS : MARKS) : BASIC_MARKS;
     if (options.color) codes.push(marks[style.mark % marks.length]!);
     // Without color the words are underlined, and a strip of spaces shouldn't be.
     else if (text.trim() && !style.underline) codes.push("4");

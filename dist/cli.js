@@ -528,17 +528,17 @@ function sgr(style, options, text) {
   if (style.italic) codes.push("3");
   if (style.underline) codes.push("4");
   if (style.strike) codes.push("9");
-  const tones = options.truecolor ? PALETTE : TONES;
+  const tones = options.truecolor ? options.light ? LIGHT_PALETTE : PALETTE : TONES;
   const tone = style.tone && (options.color ? tones[style.tone] : UNCOLORED_TONES[style.tone]);
   if (tone) codes.push(tone);
   if (style.mark !== void 0) {
-    const marks = options.truecolor ? MARKS : BASIC_MARKS;
+    const marks = options.truecolor ? options.light ? LIGHT_MARKS : MARKS : BASIC_MARKS;
     if (options.color) codes.push(marks[style.mark % marks.length]);
     else if (text.trim() && !style.underline) codes.push("4");
   }
   return codes.join(";");
 }
-var rgb, PALETTE, TONES, UNCOLORED_TONES, background, MARKS, BASIC_MARKS, LINKABLE;
+var rgb, PALETTE, LIGHT_PALETTE, TONES, UNCOLORED_TONES, background, MARKS, LIGHT_MARKS, BASIC_MARKS, LINKABLE;
 var init_ansi = __esm({
   "src/tui/ansi.ts"() {
     "use strict";
@@ -558,6 +558,17 @@ var init_ansi = __esm({
       delMark: `${rgb("#ffa198")};7`,
       hunk: rgb("#8b949e")
     };
+    LIGHT_PALETTE = {
+      accent: rgb("#7d5300"),
+      muted: rgb("#57606a"),
+      link: rgb("#0550ae"),
+      code: rgb("#0550ae"),
+      add: rgb("#116329"),
+      del: rgb("#a40e26"),
+      addMark: `${rgb("#116329")};7`,
+      delMark: `${rgb("#a40e26")};7`,
+      hunk: rgb("#57606a")
+    };
     TONES = {
       accent: "33",
       muted: "2",
@@ -572,6 +583,7 @@ var init_ansi = __esm({
     UNCOLORED_TONES = { addMark: "7", delMark: "7" };
     background = (hex) => rgb(hex).replace("38;", "48;");
     MARKS = ["#5a4510", "#0f4a52", "#54265a", "#1e4d2b", "#5e2435", "#2c3a75"].map(background);
+    LIGHT_MARKS = ["#ffe9a3", "#b9eeee", "#f2d6f7", "#c9f2d3", "#ffd8de", "#d6e0ff"].map(background);
     BASIC_MARKS = ["30;43", "30;46", "30;45", "30;42", "97;44", "97;41"];
     LINKABLE = /^https?:\/\/[!-~]+$/;
   }
@@ -3565,7 +3577,7 @@ var init_app = __esm({
       constructor(options) {
         this.#api = options.api;
         this.#terminal = options.terminal;
-        this.#ansi = options.ansi;
+        this.#ansi = { ...options.ansi };
         this.#cwd = options.cwd;
         this.#chat = options.chat ?? null;
         this.#home = options.home ?? "";
@@ -3635,6 +3647,12 @@ var init_app = __esm({
       // ---- Keys -----------------------------------------------------------------------------
       async handleKey(key2) {
         if (key2.name === "mouse") return;
+        if (key2.name === "background") {
+          if (this.#ansi.themeFixed || key2.light === void 0 || key2.light === Boolean(this.#ansi.light)) return;
+          this.#ansi.light = key2.light;
+          this.render();
+          return;
+        }
         if (key2.name === "wheelup" || key2.name === "wheeldown") {
           this.#wheel(key2.name === "wheelup" ? -WHEEL_ROWS : WHEEL_ROWS, key2.column ?? 0);
           return;
@@ -4605,6 +4623,13 @@ function parseKeys(data) {
       continue;
     }
     if (data[i] === "\x1B") {
+      const background2 = BACKGROUND.exec(data.slice(i));
+      if (background2) {
+        const light = isLight(background2[1]);
+        keys.push(key("background", light === void 0 ? {} : { light }));
+        i += background2[0].length;
+        continue;
+      }
       const mouse = MOUSE.exec(data.slice(i));
       if (mouse) {
         keys.push(fromMouse(Number(mouse[1]), Number(mouse[2]), mouse[3]));
@@ -4643,6 +4668,12 @@ function single(char) {
   if (code2 < 32) return key("unknown");
   return key(char, { text: char });
 }
+function isLight(report) {
+  const channels = COLOR_REPORT.exec(report)?.slice(1);
+  if (!channels) return void 0;
+  const [red, green, blue] = channels.map((hex) => Number.parseInt(hex, 16) / (16 ** hex.length - 1));
+  return 0.299 * red + 0.587 * green + 0.114 * blue > 0.5;
+}
 function fromMouse(button, column, final) {
   const direction = button & 3;
   if ((button & WHEEL) === 0 || direction > 1 || final !== "M") return key("mouse");
@@ -4663,7 +4694,7 @@ function fromCsi(params, final) {
   if (final === "Z") return key("tab", { ...mods, shift: true });
   return key(CSI_LETTERS.get(final) ?? "unknown", mods);
 }
-var PASTE_START, PASTE_END, CSI, MOUSE, WHEEL, CSI_LETTERS, CSI_TILDES, CSI_U_CODES;
+var PASTE_START, PASTE_END, CSI, MOUSE, WHEEL, BACKGROUND, COLOR_REPORT, CSI_LETTERS, CSI_TILDES, CSI_U_CODES;
 var init_keys = __esm({
   "src/tui/keys.ts"() {
     "use strict";
@@ -4672,6 +4703,8 @@ var init_keys = __esm({
     CSI = /^\x1b[[O]([0-9;]*)([A-Za-z~])/;
     MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
     WHEEL = 64;
+    BACKGROUND = /^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)/;
+    COLOR_REPORT = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i;
     CSI_LETTERS = /* @__PURE__ */ new Map([
       ["A", "up"],
       ["B", "down"],
@@ -4701,14 +4734,15 @@ var init_keys = __esm({
 });
 
 // src/tui/screen.ts
-var MOUSE_ON, MOUSE_OFF, ENTER, LEAVE, SYNC_START, SYNC_END, Screen;
+var MOUSE_ON, MOUSE_OFF, ASK_BACKGROUND, ENTER, LEAVE, SYNC_START, SYNC_END, Screen;
 var init_screen = __esm({
   "src/tui/screen.ts"() {
     "use strict";
     init_keys();
     MOUSE_ON = "\x1B[?1000h\x1B[?1006h";
     MOUSE_OFF = "\x1B[?1006l\x1B[?1000l";
-    ENTER = `\x1B[?1049h\x1B[?7l\x1B[?2004h${MOUSE_ON}\x1B[?25l\x1B[2J`;
+    ASK_BACKGROUND = "\x1B]11;?\x1B\\";
+    ENTER = `\x1B[?1049h\x1B[?7l\x1B[?2004h${MOUSE_ON}\x1B[?25l\x1B[2J${ASK_BACKGROUND}`;
     LEAVE = `${MOUSE_OFF}\x1B[?2004l\x1B[?7h\x1B[?25h\x1B[?1049l`;
     SYNC_START = "\x1B[?2026h";
     SYNC_END = "\x1B[?2026l";
@@ -4796,18 +4830,25 @@ function supportsHyperlinks(env) {
   return ["iTerm.app", "WezTerm", "vscode", "ghostty"].includes(program) || Boolean(env["KITTY_WINDOW_ID"] || env["WT_SESSION"]) || Number(env["VTE_VERSION"] ?? 0) >= 5e3;
 }
 function supportsPalette(env) {
-  if (env["SIDENOTE_COLOR"] === "basic") return false;
-  if (env["SIDENOTE_COLOR"] === "truecolor") return true;
-  const background2 = Number((env["COLORFGBG"] ?? "").split(";").pop());
-  if (background2 === 7 || background2 === 15) return false;
+  const choice = env["SIDENOTE_COLOR"];
+  if (choice === "basic") return false;
+  if (choice === "truecolor" || choice === "light" || choice === "dark") return true;
   const program = env["TERM_PROGRAM"] ?? "";
   return ["truecolor", "24bit"].includes(env["COLORTERM"] ?? "") || ["iTerm.app", "WezTerm", "vscode", "ghostty"].includes(program) || Boolean(env["KITTY_WINDOW_ID"] || env["WT_SESSION"]);
+}
+function startsLight(env) {
+  if (env["SIDENOTE_COLOR"] === "light") return true;
+  if (env["SIDENOTE_COLOR"] === "dark") return false;
+  const background2 = Number((env["COLORFGBG"] ?? "").split(";").pop());
+  return background2 === 7 || background2 === 15;
 }
 function terminalOptions(env) {
   return {
     color: !env["NO_COLOR"] && env["TERM"] !== "dumb",
     hyperlinks: supportsHyperlinks(env),
-    truecolor: supportsPalette(env)
+    truecolor: supportsPalette(env),
+    light: startsLight(env),
+    themeFixed: env["SIDENOTE_COLOR"] === "light" || env["SIDENOTE_COLOR"] === "dark"
   };
 }
 async function runTui(args) {

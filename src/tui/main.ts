@@ -26,15 +26,11 @@ function supportsHyperlinks(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
-/**
- * sidenote's own palette needs 24-bit color and a dark background: its amber and light blue
- * are unreadable on white. COLORFGBG ("15;0") is the only common hint of a light terminal.
- */
+/** sidenote's own palettes need 24-bit color. SIDENOTE_COLOR can say otherwise. */
 function supportsPalette(env: NodeJS.ProcessEnv): boolean {
-  if (env["SIDENOTE_COLOR"] === "basic") return false;
-  if (env["SIDENOTE_COLOR"] === "truecolor") return true;
-  const background = Number((env["COLORFGBG"] ?? "").split(";").pop());
-  if (background === 7 || background === 15) return false;
+  const choice = env["SIDENOTE_COLOR"];
+  if (choice === "basic") return false;
+  if (choice === "truecolor" || choice === "light" || choice === "dark") return true;
   const program = env["TERM_PROGRAM"] ?? "";
   return (
     ["truecolor", "24bit"].includes(env["COLORTERM"] ?? "") ||
@@ -43,11 +39,21 @@ function supportsPalette(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
+/** The first guess at the theme. Most terminals then report their real background to the app. */
+function startsLight(env: NodeJS.ProcessEnv): boolean {
+  if (env["SIDENOTE_COLOR"] === "light") return true;
+  if (env["SIDENOTE_COLOR"] === "dark") return false;
+  const background = Number((env["COLORFGBG"] ?? "").split(";").pop());
+  return background === 7 || background === 15;
+}
+
 export function terminalOptions(env: NodeJS.ProcessEnv): AnsiOptions {
   return {
     color: !env["NO_COLOR"] && env["TERM"] !== "dumb",
     hyperlinks: supportsHyperlinks(env),
     truecolor: supportsPalette(env),
+    light: startsLight(env),
+    themeFixed: env["SIDENOTE_COLOR"] === "light" || env["SIDENOTE_COLOR"] === "dark",
   };
 }
 

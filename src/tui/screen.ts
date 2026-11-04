@@ -7,7 +7,10 @@ import { parseKeys, type Key } from "./keys.ts";
 // nothing, which can't scroll from the prompt line. Selecting text then needs Option or Shift.
 const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_OFF = "\x1b[?1006l\x1b[?1000l";
-const ENTER = `\x1b[?1049h\x1b[?7l\x1b[?2004h${MOUSE_ON}\x1b[?25l\x1b[2J`;
+// Asks for the background color, the one way to know a light terminal in all of them. The answer
+// comes in as a key, so nothing waits for terminals that never answer.
+const ASK_BACKGROUND = "\x1b]11;?\x1b\\";
+const ENTER = `\x1b[?1049h\x1b[?7l\x1b[?2004h${MOUSE_ON}\x1b[?25l\x1b[2J${ASK_BACKGROUND}`;
 const LEAVE = `${MOUSE_OFF}\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l`;
 const SYNC_START = "\x1b[?2026h";
 const SYNC_END = "\x1b[?2026l";

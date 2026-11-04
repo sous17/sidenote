@@ -5,7 +5,8 @@
 export interface Key {
   /** The character typed, or a name: enter, tab, backspace, delete, escape, up, down, left,
    * right, home, end, pageup, pagedown, paste, wheelup, wheeldown, mouse (any other mouse
-   * report). Ctrl+letter is the letter with ctrl set. */
+   * report), background (the terminal's answer to Screen's question about its background).
+   * Ctrl+letter is the letter with ctrl set. */
   name: string;
   /** What to insert into text: the character typed, or the pasted text. */
   text: string;
@@ -14,6 +15,8 @@ export interface Key {
   shift: boolean;
   /** For the wheel: the column the pointer is on, from 0. */
   column?: number;
+  /** For background: whether it is light. Undefined if the answer can't be read. */
+  light?: boolean;
 }
 
 const PASTE_START = "\x1b[200~";
@@ -22,6 +25,9 @@ const CSI = /^\x1b[[O]([0-9;]*)([A-Za-z~])/;
 /** Button, column and row, each from 1, then M for a press and m for a release. */
 const MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
 const WHEEL = 64;
+/** The terminal's background color, as rgb:RRRR/GGGG/BBBB, ended by BEL or ST. */
+const BACKGROUND = /^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)/;
+const COLOR_REPORT = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i;
 
 const CSI_LETTERS: ReadonlyMap<string, string> = new Map([
   ["A", "up"],
@@ -65,6 +71,13 @@ export function parseKeys(data: string): Key[] {
       continue;
     }
     if (data[i] === "\x1b") {
+      const background = BACKGROUND.exec(data.slice(i));
+      if (background) {
+        const light = isLight(background[1]!);
+        keys.push(key("background", light === undefined ? {} : { light }));
+        i += background[0].length;
+        continue;
+      }
       const mouse = MOUSE.exec(data.slice(i));
       if (mouse) {
         keys.push(fromMouse(Number(mouse[1]), Number(mouse[2]), mouse[3]!));
@@ -104,6 +117,18 @@ function single(char: string): Key {
   if (code >= 0x01 && code <= 0x1a) return key(String.fromCharCode(code + 0x60), { ctrl: true });
   if (code < 0x20) return key("unknown");
   return key(char, { text: char });
+}
+
+/** Each channel has 1 to 4 hex digits, so it is scaled by its own length. */
+function isLight(report: string): boolean | undefined {
+  const channels = COLOR_REPORT.exec(report)?.slice(1);
+  if (!channels) return undefined;
+  const [red, green, blue] = channels.map((hex) => Number.parseInt(hex, 16) / (16 ** hex.length - 1)) as [
+    number,
+    number,
+    number,
+  ];
+  return 0.299 * red + 0.587 * green + 0.114 * blue > 0.5;
 }
 
 function fromMouse(button: number, column: number, final: string): Key {

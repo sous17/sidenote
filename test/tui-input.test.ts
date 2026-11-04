@@ -73,3 +73,15 @@ test("the wheel is read with the pointer's column, and other mouse reports do no
   assert.deepEqual(names("a\x1b[<64;1;1Mb"), ["a", "wheelup", "b"]);
   assert.equal(parseKeys("\x1b[<0;3;4M")[0]!.text, "", "a click inserts nothing");
 });
+
+test("the terminal's answer about its background is read, and never typed", () => {
+  const light = (data: string): boolean | undefined => parseKeys(data)[0]!.light;
+  assert.equal(light("\x1b]11;rgb:ffff/ffff/ffff\x1b\\"), true);
+  assert.equal(light("\x1b]11;rgb:0d0d/1111/1717\x07"), false, "ended by BEL");
+  assert.equal(light("\x1b]11;rgb:ff/fa/f0\x07"), true, "two digits a channel");
+  assert.equal(light("\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\"), false);
+  assert.equal(light("\x1b]11;rgba:ffff/ffff/ffff/ffff\x1b\\"), true);
+  assert.equal(light("\x1b]11;nonsense\x07"), undefined);
+  assert.deepEqual(names("a\x1b]11;rgb:ffff/ffff/ffff\x1b\\b"), ["a", "background", "b"]);
+  assert.equal(parseKeys("\x1b]11;rgb:ffff/ffff/ffff\x07")[0]!.text, "");
+});

@@ -837,3 +837,47 @@ test("clicks do nothing: no text, no lost message, and a delete stays armed", as
   await press(tui.app, "x");
   assert.deepEqual(api.deleted, [7], "the second x still confirms");
 });
+
+test("the app takes on the theme of the background the terminal reports, without losing what is typed", async () => {
+  const api = new FakeApi([reply(1, "Hello.")]);
+  const terminal = new FakeTerminal(130, 20);
+  const app = new App({
+    api,
+    chat: new FakeChat(),
+    terminal,
+    ansi: { color: true, hyperlinks: false, truecolor: true },
+    sessionId: SESSION,
+    cwd: "/home/me/w/demo",
+    home: "/home/me",
+    now: () => 1_000,
+  });
+  await app.refresh();
+  await app.refreshConversation();
+  await press(app, "half");
+  const dark = terminal.frame.join("\n");
+  assert.ok(dark.includes("38;2;227;179;65"), "the dark accent");
+
+  await press(app, "\x1b]11;rgb:ffff/ffff/ffff\x1b\\");
+  const light = terminal.frame.join("\n");
+  assert.ok(light.includes("38;2;125;83;0"), "the light accent");
+  assert.ok(!light.includes("38;2;227;179;65"));
+  assert.ok(terminal.has("you › half"), "nothing typed, nothing lost");
+
+  await press(app, "\x1b]11;rgb:0000/0000/0000\x1b\\");
+  assert.ok(terminal.frame.join("\n").includes("38;2;227;179;65"), "and back");
+});
+
+test("a theme the user chose isn't changed by the terminal's answer", async () => {
+  const terminal = new FakeTerminal(100, 20);
+  const app = new App({
+    api: new FakeApi([reply(1, "Hello.")]),
+    terminal,
+    ansi: { color: true, hyperlinks: false, truecolor: true, light: false, themeFixed: true },
+    sessionId: SESSION,
+    cwd: "/w/demo",
+  });
+  await app.refresh();
+  const before = [...terminal.frame];
+  await press(app, "\x1b]11;rgb:ffff/ffff/ffff\x1b\\");
+  assert.deepEqual(terminal.frame, before);
+});
