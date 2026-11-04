@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Model } from "../src/web/model.ts";
-import type { SessionState, StateSnapshot, StoredResponse, UserMessage } from "../src/shared/types.ts";
+import type { Note, SessionState, StateSnapshot, StoredResponse, UserMessage } from "../src/shared/types.ts";
 
 function model(status: SessionState, messageAt: number | null, delivered: boolean, replyAt?: number): Model {
   const result = new Model("s");
@@ -43,4 +43,25 @@ test("what Claude is doing shows only with the dots", () => {
   assert.equal(answered.activity(), "", "the reply arrived");
 
   assert.equal(model("busy", 10, true, 5).activity(), "", "no tool call yet");
+});
+
+test("a note sent with Send now shows the dots and what Claude is doing, until its reply", () => {
+  const note = { id: 3, delivered_at: 10, answered_by: null } as Note;
+  const working = model("busy", null, false, 5);
+  working.snapshot.comments = [note];
+  working.snapshot.session!.activity = "Editing a.ts";
+  assert.equal(working.awaitingReply(), true);
+  assert.equal(working.activity(), "Editing a.ts");
+
+  const answered = model("busy", null, false, 5);
+  answered.snapshot.comments = [{ ...note, answered_by: 1 }];
+  assert.equal(answered.awaitingReply(), false, "the reply arrived");
+
+  const pending = model("busy", null, false, 5);
+  pending.snapshot.comments = [{ ...note, delivered_at: null }];
+  assert.equal(pending.awaitingReply(), false, "not sent, so Claude isn't on it");
+
+  const idle = model("listening", null, false, 5);
+  idle.snapshot.comments = [note];
+  assert.equal(idle.awaitingReply(), false, "the turn ended");
 });

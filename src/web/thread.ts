@@ -1,7 +1,7 @@
 // The thread pane: one note's whole conversation beside the feed, with a reply box.
 import type { Note } from "../shared/types.ts";
 import { button, el, formatTime, tag } from "./dom.ts";
-import { createMeta, type Feed } from "./feed.ts";
+import { createMeta, createTypingIndicator, setTypingActivity, type Feed } from "./feed.ts";
 import { renderMarkdownInto } from "./markdown.ts";
 import { isAnswered, type Model } from "./model.ts";
 import { isSendNow, submitOnModEnter, type Sending } from "./sending.ts";
@@ -130,10 +130,19 @@ export class ThreadPane {
           ),
         );
       } else if (note.delivered_at !== null && note.answered_by === null && !next) {
-        timeline.push(el("div", "waiting", "Sent. Claude's reply will appear here."));
+        timeline.push(this.#waiting());
       }
     });
     this.#timeline.replaceChildren(...timeline);
+  }
+
+  /** Under a sent note: the dots and what Claude is doing, once it has the note. */
+  #waiting(): HTMLElement {
+    if (this.#model.sendStatus().status !== "busy")
+      return el("div", "waiting", "Sent. Claude's reply will appear here.");
+    const typing = createTypingIndicator();
+    setTypingActivity(typing, this.#model.activity());
+    return typing;
   }
 
   async #reply(sendNow: boolean): Promise<void> {
