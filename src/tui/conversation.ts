@@ -10,6 +10,7 @@ import { formatTime, plainText, plural } from "../shared/text.ts";
 import type { ConversationView, LivePart, Note, StoredResponse, TurnStep } from "../shared/types.ts";
 import { addAnswered, codeQuoteLine, limitRows, type FeedRow, type FeedView, type Target } from "./feed.ts";
 import { PLAIN, type Span, type Style } from "./lines.ts";
+import { markLines, noteMarks } from "./marks.ts";
 import type { RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { endedRows, permissionRows, promptRows, stepRows, type StepView } from "./turn.ts";
@@ -202,6 +203,8 @@ class Builder {
     const blockOf = (note: Note): number => (note.block_index < rendered.blocks.length ? note.block_index : -1);
     const byBlock = new Map<number, Note[]>();
     for (const root of roots) byBlock.set(blockOf(root), [...(byBlock.get(blockOf(root)) ?? []), root]);
+    const marks = noteMarks(roots);
+    const lines = markLines(rendered.lines, roots, marks);
 
     const stepsAfter = new Map<number, TurnStep[]>();
     for (const step of response.steps ?? []) {
@@ -246,7 +249,7 @@ class Builder {
 
     let file: number | undefined;
     let previousBlock = -1;
-    rendered.lines.forEach((line, i) => {
+    lines.forEach((line, i) => {
       if (line.block !== previousBlock) file = undefined;
       previousBlock = line.block;
       if (line.file !== undefined) file = line.file;
@@ -263,7 +266,7 @@ class Builder {
       if (endsBlock && (stepsAfter.has(line.block) || inlineNotes)) {
         closeRun();
         addSteps(line.block);
-        if (inlineNotes) for (const root of byBlock.get(line.block)!) this.#inlineNote(root);
+        if (inlineNotes) for (const root of byBlock.get(line.block)!) this.#inlineNote(root, marks.get(root.id));
       }
     });
     closeRun();
@@ -279,21 +282,22 @@ class Builder {
         .sort((a, b) => a.wanted - b.wanted || a.root.created_at - b.root.created_at);
       for (const { root, wanted } of placed) {
         const at = Math.max(wanted, nextFree);
-        const box = marginNote(model, root, MARGIN_WIDTH, `n:${root.id}` === this.#options.selectedKey);
+        const selected = `n:${root.id}` === this.#options.selectedKey;
+        const box = marginNote(model, root, MARGIN_WIDTH, selected, marks.get(root.id));
         while (rows.length < at + box.length) this.#push([]);
         box.forEach((spans, k) => (rows[at + k]!.right = spans));
         targets.push(noteTarget(root, response.id, blockOf(root), at, at + box.length, "right"));
         nextFree = at + box.length + 1;
       }
     } else {
-      for (const root of byBlock.get(-1) ?? []) this.#inlineNote(root);
+      for (const root of byBlock.get(-1) ?? []) this.#inlineNote(root, marks.get(root.id));
     }
     addAnswered(model, response, this.#view, "");
   }
 
-  #inlineNote(root: Note): void {
+  #inlineNote(root: Note, mark: number | undefined): void {
     const width = this.#layout.text - INLINE_INDENT;
-    const box = marginNote(this.#model, root, width, `n:${root.id}` === this.#options.selectedKey);
+    const box = marginNote(this.#model, root, width, `n:${root.id}` === this.#options.selectedKey, mark);
     const start = this.#rows.length;
     for (const spans of box) this.#push([{ text: " ".repeat(INLINE_INDENT), style: PLAIN }, ...spans]);
     this.#view.targets.push(noteTarget(root, root.response_id, root.block_index, start, this.#rows.length, "left"));
@@ -324,9 +328,9 @@ function noteTarget(
 
 /**
  * A note in the margin: ◆ while it waits to be sent, ◇ once sent, with the start of Claude's
- * answer and how many replies its thread has.
+ * answer and how many replies its thread has. Its first column is a strip in the note's color.
  */
-export function marginNote(model: Model, root: Note, width: number, selected: boolean): Span[][] {
+export function marginNote(model: Model, root: Note, width: number, selected: boolean, mark?: number): Span[][] {
   const thread = model.thread(root.id);
   const pending = thread.some((note) => note.delivered_at === null);
   const inner = Math.max(8, width - 2);
@@ -358,5 +362,6 @@ export function marginNote(model: Model, root: Note, width: number, selected: bo
         : "";
   const footer = [status, replies ? plural(replies, "reply", "replies") : "", selected ? "⏎ open" : ""].filter(Boolean);
   if (footer.length) rows.push([indent, { text: footer.join(" · "), style: MUTED }]);
-  return rows;
+  if (mark === undefined) return rows;
+  return rows.map(([first, ...rest]) => [{ ...first!, style: { ...first!.style, mark } }, ...rest]);
 }

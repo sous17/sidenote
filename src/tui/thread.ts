@@ -4,6 +4,7 @@ import { isAnswered, type Model } from "../shared/model.ts";
 import { formatTime } from "../shared/text.ts";
 import type { Note } from "../shared/types.ts";
 import { PLAIN, type Span, type Style } from "./lines.ts";
+import { markLines, noteMarks } from "./marks.ts";
 import { renderReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { wrapSpans } from "./wrap.ts";
@@ -29,8 +30,15 @@ export function buildThread(model: Model, rootId: number, width: number): Span[]
   blank();
   if (root.quote) {
     const quote = wrapSpans([{ text: terminalSafe(root.quote), style: { tone: "muted", italic: true } }], width - 2);
-    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "▌ ", style: MUTED }, ...spans]);
-    if (quote.length > QUOTE_ROWS) rows.push([{ text: "▌ …", style: MUTED }]);
+    const replyRoots = model.notes.filter((n) => n.response_id === root.response_id && n.parent_id === null);
+    const mark = noteMarks(replyRoots).get(root.id);
+    const bar: Style = { ...MUTED, ...(mark === undefined ? {} : { mark }) };
+    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "▌ ", style: bar }, ...spans]);
+    if (quote.length > QUOTE_ROWS)
+      rows.push([
+        { text: "▌ ", style: bar },
+        { text: "…", style: MUTED },
+      ]);
   } else {
     rows.push([{ text: "On the whole reply", style: { tone: "muted", italic: true } }]);
   }

@@ -4,6 +4,7 @@ import { answeredNoteIds, isAnswered, type Model } from "../shared/model.ts";
 import { formatTime, plainText, plural } from "../shared/text.ts";
 import type { Note, StoredResponse } from "../shared/types.ts";
 import { PLAIN, type Span, type Style } from "./lines.ts";
+import { markLines, noteMarks } from "./marks.ts";
 import type { RenderedReply } from "./render.ts";
 import { terminalSafe } from "./sanitize.ts";
 import { graphemes, graphemeWidth } from "./width.ts";
@@ -96,6 +97,8 @@ function addReply(model: Model, response: StoredResponse, view: FeedView, layout
   const blockOf = (note: Note): number => (note.block_index < rendered.blocks.length ? note.block_index : -1);
   const byBlock = new Map<number, Note[]>();
   for (const root of roots) byBlock.set(blockOf(root), [...(byBlock.get(blockOf(root)) ?? []), root]);
+  const marks = noteMarks(roots);
+  const lines = markLines(rendered.lines, roots, marks);
 
   const headerRow = rows.length;
   rows.push({ left: replyHeader(response, notes, roots.length, layout.leftWidth), right: [] });
@@ -141,7 +144,7 @@ function addReply(model: Model, response: StoredResponse, view: FeedView, layout
 
   let file: number | undefined;
   let previousBlock = -1;
-  rendered.lines.forEach((line, i) => {
+  lines.forEach((line, i) => {
     if (line.block !== previousBlock) file = undefined;
     previousBlock = line.block;
     if (line.file !== undefined) file = line.file;
@@ -155,7 +158,7 @@ function addReply(model: Model, response: StoredResponse, view: FeedView, layout
     rows.push({ left: line.spans, right: [] });
     if (!layout.margin && line.block >= 0 && lastLine.get(line.block) === i && byBlock.has(line.block)) {
       closeRun();
-      for (const root of byBlock.get(line.block)!) addInlineNote(model, root, view, layout);
+      for (const root of byBlock.get(line.block)!) addInlineNote(model, root, view, layout, marks.get(root.id));
     }
   });
   closeRun();
@@ -168,20 +171,20 @@ function addReply(model: Model, response: StoredResponse, view: FeedView, layout
       .sort((a, b) => a.wanted - b.wanted || a.root.created_at - b.root.created_at);
     for (const { root, wanted } of placed) {
       const at = Math.max(wanted, nextFree);
-      const box = noteBox(model, root, MARGIN_WIDTH, `n:${root.id}` === layout.selectedKey);
+      const box = noteBox(model, root, MARGIN_WIDTH, `n:${root.id}` === layout.selectedKey, marks.get(root.id));
       while (rows.length < at + box.length) rows.push(emptyRow());
       box.forEach((spans, k) => (rows[at + k]!.right = spans));
       targets.push(noteTarget(root, response.id, blockOf(root), at, at + box.length, "right"));
       nextFree = at + box.length + 1;
     }
   } else {
-    for (const root of byBlock.get(-1) ?? []) addInlineNote(model, root, view, layout);
+    for (const root of byBlock.get(-1) ?? []) addInlineNote(model, root, view, layout, marks.get(root.id));
   }
   addAnswered(model, response, view, "");
 }
 
-function addInlineNote(model: Model, root: Note, view: FeedView, layout: ReplyLayout): void {
-  const box = noteBox(model, root, layout.leftWidth - INLINE_INDENT, `n:${root.id}` === layout.selectedKey);
+function addInlineNote(model: Model, root: Note, view: FeedView, layout: ReplyLayout, mark: number | undefined): void {
+  const box = noteBox(model, root, layout.leftWidth - INLINE_INDENT, `n:${root.id}` === layout.selectedKey, mark);
   const start = view.rows.length;
   for (const spans of box)
     view.rows.push({ left: [{ text: " ".repeat(INLINE_INDENT), style: PLAIN }, ...spans], right: [] });
@@ -264,7 +267,7 @@ function replyHeader(response: StoredResponse, notes: Note[], roots: number, wid
 }
 
 /** A note in the feed: its quote, text, the latest answer, and whether it was sent. */
-export function noteBox(model: Model, root: Note, width: number, selected: boolean): Span[][] {
+export function noteBox(model: Model, root: Note, width: number, selected: boolean, mark?: number): Span[][] {
   const thread = model.thread(root.id);
   const pending = thread.some((note) => note.delivered_at === null);
   const inner = Math.max(8, width - 2);
@@ -292,7 +295,10 @@ export function noteBox(model: Model, root: Note, width: number, selected: boole
 
   const bar: Span = {
     text: selected ? "┃ " : "│ ",
-    style: selected ? { tone: "accent", bold: true } : { tone: pending ? "accent" : "muted" },
+    style: {
+      ...(selected ? { tone: "accent", bold: true } : { tone: pending ? "accent" : "muted" }),
+      ...(mark === undefined ? {} : { mark }),
+    },
   };
   return rows.map((spans) => [bar, ...spans]);
 }

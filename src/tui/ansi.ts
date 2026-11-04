@@ -50,6 +50,14 @@ const TONES = {
 /** Without color, the edited words of a diff line still stand out. */
 const UNCOLORED_TONES: Partial<Record<Tone, string>> = { addMark: "7", delMark: "7" };
 
+const background = (hex: string): string => rgb(hex).replace("38;", "48;");
+
+/** Dark enough for the palette's text to stay readable on them, and far enough apart to tell. */
+const MARKS = ["#5a4510", "#0f4a52", "#54265a", "#1e4d2b", "#5e2435", "#2c3a75"].map(background);
+
+/** The terminal's own colors change with its theme, so these set the text color as well. */
+const BASIC_MARKS = ["30;43", "30;46", "30;45", "30;42", "97;44", "97;41"];
+
 /** Only plain web links become clickable, and only with printable ASCII, which can't hold ESC. */
 const LINKABLE = /^https?:\/\/[!-~]+$/;
 
@@ -58,7 +66,7 @@ export function lineToAnsi(line: Line, options: AnsiOptions): string {
   for (const span of line.spans) {
     const text = terminalSafe(span.text).replace(/[\t\n]/g, " ");
     if (!text) continue;
-    const codes = sgr(span.style, options);
+    const codes = sgr(span.style, options, text);
     let piece = codes ? `\x1b[${codes}m${text}\x1b[0m` : text;
     const href = span.style.href;
     if (options.hyperlinks && href && LINKABLE.test(href)) piece = `\x1b]8;;${href}\x1b\\${piece}\x1b]8;;\x1b\\`;
@@ -67,7 +75,7 @@ export function lineToAnsi(line: Line, options: AnsiOptions): string {
   return out;
 }
 
-function sgr(style: Style, options: AnsiOptions): string {
+function sgr(style: Style, options: AnsiOptions, text: string): string {
   const codes: string[] = [];
   if (style.bold) codes.push("1");
   if (style.italic) codes.push("3");
@@ -76,5 +84,11 @@ function sgr(style: Style, options: AnsiOptions): string {
   const tones = options.truecolor ? PALETTE : TONES;
   const tone = style.tone && (options.color ? tones[style.tone] : UNCOLORED_TONES[style.tone]);
   if (tone) codes.push(tone);
+  if (style.mark !== undefined) {
+    const marks = options.truecolor ? MARKS : BASIC_MARKS;
+    if (options.color) codes.push(marks[style.mark % marks.length]!);
+    // Without color the words are underlined, and a strip of spaces shouldn't be.
+    else if (text.trim() && !style.underline) codes.push("4");
+  }
   return codes.join(";");
 }

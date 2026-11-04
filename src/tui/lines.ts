@@ -5,12 +5,17 @@
 /** A role, not a color: ansi.ts picks sidenote's palette or the terminal's own colors for it. */
 export type Tone = "accent" | "muted" | "link" | "code" | "add" | "del" | "addMark" | "delMark" | "hunk";
 
+/** How many colors notes take turns on: ansi.ts has one background for each. */
+export const MARK_COUNT = 6;
+
 export interface Style {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
   strike?: boolean;
   tone?: Tone;
+  /** A note's color, for the words it quotes and the strip beside it. See marks.ts. */
+  mark?: number;
   /** A link's target; ansi.ts makes it clickable only for http and https. */
   href?: string;
 }

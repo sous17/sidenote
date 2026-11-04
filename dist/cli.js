@@ -513,7 +513,7 @@ function lineToAnsi(line, options) {
   for (const span of line.spans) {
     const text = terminalSafe(span.text).replace(/[\t\n]/g, " ");
     if (!text) continue;
-    const codes = sgr(span.style, options);
+    const codes = sgr(span.style, options, text);
     let piece = codes ? `\x1B[${codes}m${text}\x1B[0m` : text;
     const href = span.style.href;
     if (options.hyperlinks && href && LINKABLE.test(href)) piece = `\x1B]8;;${href}\x1B\\${piece}\x1B]8;;\x1B\\`;
@@ -521,7 +521,7 @@ function lineToAnsi(line, options) {
   }
   return out;
 }
-function sgr(style, options) {
+function sgr(style, options, text) {
   const codes = [];
   if (style.bold) codes.push("1");
   if (style.italic) codes.push("3");
@@ -530,9 +530,14 @@ function sgr(style, options) {
   const tones = options.truecolor ? PALETTE : TONES;
   const tone = style.tone && (options.color ? tones[style.tone] : UNCOLORED_TONES[style.tone]);
   if (tone) codes.push(tone);
+  if (style.mark !== void 0) {
+    const marks = options.truecolor ? MARKS : BASIC_MARKS;
+    if (options.color) codes.push(marks[style.mark % marks.length]);
+    else if (text.trim() && !style.underline) codes.push("4");
+  }
   return codes.join(";");
 }
-var rgb, PALETTE, TONES, UNCOLORED_TONES, LINKABLE;
+var rgb, PALETTE, TONES, UNCOLORED_TONES, background, MARKS, BASIC_MARKS, LINKABLE;
 var init_ansi = __esm({
   "src/tui/ansi.ts"() {
     "use strict";
@@ -564,6 +569,9 @@ var init_ansi = __esm({
       hunk: "36"
     };
     UNCOLORED_TONES = { addMark: "7", delMark: "7" };
+    background = (hex) => rgb(hex).replace("38;", "48;");
+    MARKS = ["#5a4510", "#0f4a52", "#54265a", "#1e4d2b", "#5e2435", "#2c3a75"].map(background);
+    BASIC_MARKS = ["30;43", "30;46", "30;45", "30;42", "97;44", "97;41"];
     LINKABLE = /^https?:\/\/[!-~]+$/;
   }
 });
@@ -741,11 +749,100 @@ var init_editor = __esm({
 });
 
 // src/tui/lines.ts
-var PLAIN;
+var MARK_COUNT, PLAIN;
 var init_lines = __esm({
   "src/tui/lines.ts"() {
     "use strict";
+    MARK_COUNT = 6;
     PLAIN = {};
+  }
+});
+
+// src/tui/marks.ts
+function noteMarks(roots) {
+  const marks = /* @__PURE__ */ new Map();
+  const byText = /* @__PURE__ */ new Map();
+  for (const root of [...roots].sort((a3, b) => a3.created_at - b.created_at || a3.id - b.id)) {
+    if (root.block_index < 0) continue;
+    const text = `${root.block_index}
+${root.quote}`;
+    const mark = byText.get(text) ?? byText.size % MARK_COUNT;
+    byText.set(text, mark);
+    marks.set(root.id, mark);
+  }
+  return marks;
+}
+function markLines(lines, roots, marks) {
+  const marked = [...lines];
+  for (const root of [...roots].sort((a3, b) => a3.created_at - b.created_at || a3.id - b.id)) {
+    const mark = marks.get(root.id);
+    if (mark !== void 0) markQuote(marked, root.block_index, root.quote, mark);
+  }
+  return marked;
+}
+function markQuote(lines, block, quote, mark) {
+  const positions = [];
+  let text = "";
+  lines.forEach((line, index) => {
+    if (line.block !== block) return;
+    let at2 = 0;
+    line.spans.forEach((span, spanIndex) => {
+      const chars = graphemes(span.text);
+      if (spanIndex > 0 || !GUTTER.test(span.text)) {
+        chars.forEach((char, offset) => {
+          if (!char.trim()) return;
+          text += char;
+          for (let unit = 0; unit < char.length; unit += 1) positions.push({ line: index, at: at2 + offset });
+        });
+      }
+      at2 += chars.length;
+    });
+  });
+  if (!positions.length) return;
+  const range = findQuote(text, quote) ?? { start: 0, end: text.length };
+  const rows = /* @__PURE__ */ new Map();
+  for (const { line, at: at2 } of positions.slice(range.start, range.end)) {
+    const row = rows.get(line);
+    if (row) row.to = at2 + 1;
+    else rows.set(line, { from: at2, to: at2 + 1 });
+  }
+  for (const [index, { from, to }] of rows) {
+    lines[index] = { ...lines[index], spans: markSpans(lines[index].spans, from, to, mark) };
+  }
+}
+function findQuote(text, quote) {
+  const whole = quote.replace(/\s+/g, "");
+  for (const wanted of [whole, whole.replace(TRUNCATED, "")]) {
+    const start = wanted ? text.indexOf(wanted) : -1;
+    if (start >= 0) return { start, end: start + wanted.length };
+  }
+  return null;
+}
+function markSpans(spans, from, to, mark) {
+  const out = [];
+  let at2 = 0;
+  for (const span of spans) {
+    const chars = graphemes(span.text);
+    const start = Math.min(Math.max(from - at2, 0), chars.length);
+    const end = Math.min(Math.max(to - at2, 0), chars.length);
+    at2 += chars.length;
+    const pieces = [
+      { text: chars.slice(0, start).join(""), style: span.style },
+      { text: chars.slice(start, end).join(""), style: { ...span.style, mark } },
+      { text: chars.slice(end).join(""), style: span.style }
+    ];
+    out.push(...pieces.filter((piece) => piece.text));
+  }
+  return out;
+}
+var GUTTER, TRUNCATED;
+var init_marks = __esm({
+  "src/tui/marks.ts"() {
+    "use strict";
+    init_lines();
+    init_width();
+    GUTTER = /^[│┆▾▸] $/;
+    TRUNCATED = /…$/;
   }
 });
 
@@ -867,6 +964,8 @@ function addReply(model, response, view, layout) {
   const blockOf = (note) => note.block_index < rendered.blocks.length ? note.block_index : -1;
   const byBlock = /* @__PURE__ */ new Map();
   for (const root of roots) byBlock.set(blockOf(root), [...byBlock.get(blockOf(root)) ?? [], root]);
+  const marks = noteMarks(roots);
+  const lines = markLines(rendered.lines, roots, marks);
   const headerRow = rows.length;
   rows.push({ left: replyHeader(response, notes, roots.length, layout.leftWidth), right: [] });
   targets.push({
@@ -909,7 +1008,7 @@ function addReply(model, response, view, layout) {
   };
   let file;
   let previousBlock = -1;
-  rendered.lines.forEach((line, i) => {
+  lines.forEach((line, i) => {
     if (line.block !== previousBlock) file = void 0;
     previousBlock = line.block;
     if (line.file !== void 0) file = line.file;
@@ -923,7 +1022,7 @@ function addReply(model, response, view, layout) {
     rows.push({ left: line.spans, right: [] });
     if (!layout.margin && line.block >= 0 && lastLine.get(line.block) === i && byBlock.has(line.block)) {
       closeRun();
-      for (const root of byBlock.get(line.block)) addInlineNote(model, root, view, layout);
+      for (const root of byBlock.get(line.block)) addInlineNote(model, root, view, layout, marks.get(root.id));
     }
   });
   closeRun();
@@ -932,19 +1031,19 @@ function addReply(model, response, view, layout) {
     const placed = roots.map((root) => ({ root, wanted: blockOf(root) < 0 ? headerRow : firstRow.get(blockOf(root)) ?? headerRow })).sort((a3, b) => a3.wanted - b.wanted || a3.root.created_at - b.root.created_at);
     for (const { root, wanted } of placed) {
       const at2 = Math.max(wanted, nextFree);
-      const box = noteBox(model, root, MARGIN_WIDTH, `n:${root.id}` === layout.selectedKey);
+      const box = noteBox(model, root, MARGIN_WIDTH, `n:${root.id}` === layout.selectedKey, marks.get(root.id));
       while (rows.length < at2 + box.length) rows.push(emptyRow());
       box.forEach((spans, k) => rows[at2 + k].right = spans);
       targets.push(noteTarget(root, response.id, blockOf(root), at2, at2 + box.length, "right"));
       nextFree = at2 + box.length + 1;
     }
   } else {
-    for (const root of byBlock.get(-1) ?? []) addInlineNote(model, root, view, layout);
+    for (const root of byBlock.get(-1) ?? []) addInlineNote(model, root, view, layout, marks.get(root.id));
   }
   addAnswered(model, response, view, "");
 }
-function addInlineNote(model, root, view, layout) {
-  const box = noteBox(model, root, layout.leftWidth - INLINE_INDENT, `n:${root.id}` === layout.selectedKey);
+function addInlineNote(model, root, view, layout, mark) {
+  const box = noteBox(model, root, layout.leftWidth - INLINE_INDENT, `n:${root.id}` === layout.selectedKey, mark);
   const start = view.rows.length;
   for (const spans of box)
     view.rows.push({ left: [{ text: " ".repeat(INLINE_INDENT), style: PLAIN }, ...spans], right: [] });
@@ -1013,7 +1112,7 @@ function replyHeader(response, notes, roots, width) {
   if (used < width) spans.push({ text: ` ${"\u2500".repeat(width - used)}`, style: MUTED });
   return spans;
 }
-function noteBox(model, root, width, selected) {
+function noteBox(model, root, width, selected, mark) {
   const thread = model.thread(root.id);
   const pending = thread.some((note) => note.delivered_at === null);
   const inner = Math.max(8, width - 2);
@@ -1040,7 +1139,10 @@ function noteBox(model, root, width, selected) {
   rows.push([{ text: footer, style: pending ? { tone: "accent" } : MUTED }]);
   const bar = {
     text: selected ? "\u2503 " : "\u2502 ",
-    style: selected ? { tone: "accent", bold: true } : { tone: pending ? "accent" : "muted" }
+    style: {
+      ...selected ? { tone: "accent", bold: true } : { tone: pending ? "accent" : "muted" },
+      ...mark === void 0 ? {} : { mark }
+    }
   };
   return rows.map((spans) => [bar, ...spans]);
 }
@@ -1075,6 +1177,7 @@ var init_feed = __esm({
     init_model();
     init_text();
     init_lines();
+    init_marks();
     init_sanitize();
     init_width();
     init_wrap();
@@ -2909,8 +3012,15 @@ function buildThread(model, rootId, width) {
   blank();
   if (root.quote) {
     const quote = wrapSpans([{ text: terminalSafe(root.quote), style: { tone: "muted", italic: true } }], width - 2);
-    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "\u258C ", style: MUTED3 }, ...spans]);
-    if (quote.length > QUOTE_ROWS) rows.push([{ text: "\u258C \u2026", style: MUTED3 }]);
+    const replyRoots = model.notes.filter((n) => n.response_id === root.response_id && n.parent_id === null);
+    const mark = noteMarks(replyRoots).get(root.id);
+    const bar = { ...MUTED3, ...mark === void 0 ? {} : { mark } };
+    for (const spans of quote.slice(0, QUOTE_ROWS)) rows.push([{ text: "\u258C ", style: bar }, ...spans]);
+    if (quote.length > QUOTE_ROWS)
+      rows.push([
+        { text: "\u258C ", style: bar },
+        { text: "\u2026", style: MUTED3 }
+      ]);
   } else {
     rows.push([{ text: "On the whole reply", style: { tone: "muted", italic: true } }]);
   }
@@ -2961,6 +3071,7 @@ var init_thread = __esm({
     init_model();
     init_text();
     init_lines();
+    init_marks();
     init_render();
     init_sanitize();
     init_wrap();
@@ -3091,7 +3202,7 @@ function noteTarget2(root, responseId, block, start, end, side) {
     quote: root.quote
   };
 }
-function marginNote(model, root, width, selected) {
+function marginNote(model, root, width, selected, mark) {
   const thread = model.thread(root.id);
   const pending = thread.some((note) => note.delivered_at === null);
   const inner = Math.max(8, width - 2);
@@ -3116,7 +3227,8 @@ function marginNote(model, root, width, selected) {
   const status = thread.some((note) => model.isQueued(note)) ? "sending\u2026" : pending ? "waits for your next message" : thread.some((note) => note.answered_by === null) ? "sent, waiting for Claude" : "";
   const footer = [status, replies ? plural(replies, "reply", "replies") : "", selected ? "\u23CE open" : ""].filter(Boolean);
   if (footer.length) rows.push([indent, { text: footer.join(" \xB7 "), style: MUTED5 }]);
-  return rows;
+  if (mark === void 0) return rows;
+  return rows.map(([first, ...rest]) => [{ ...first, style: { ...first.style, mark } }, ...rest]);
 }
 var CONVERSATION_MARGIN_MIN_WIDTH, LEAD_MIN_WIDTH, LEAD_WIDTH, CURSOR_WIDTH, MARGIN_WIDTH2, MARGIN_GAP2, INLINE_INDENT2, NOTE_BODY_ROWS2, NOTE_ANSWER_ROWS2, MUTED5, ACCENT2, Builder;
 var init_conversation = __esm({
@@ -3126,6 +3238,7 @@ var init_conversation = __esm({
     init_text();
     init_feed();
     init_lines();
+    init_marks();
     init_sanitize();
     init_turn();
     init_wrap();
@@ -3258,6 +3371,8 @@ var init_conversation = __esm({
         const blockOf = (note) => note.block_index < rendered.blocks.length ? note.block_index : -1;
         const byBlock = /* @__PURE__ */ new Map();
         for (const root of roots) byBlock.set(blockOf(root), [...byBlock.get(blockOf(root)) ?? [], root]);
+        const marks = noteMarks(roots);
+        const lines = markLines(rendered.lines, roots, marks);
         const stepsAfter = /* @__PURE__ */ new Map();
         for (const step of response.steps ?? []) {
           const block = Math.min(step.after_block, rendered.blocks.length - 1);
@@ -3299,7 +3414,7 @@ var init_conversation = __esm({
         };
         let file;
         let previousBlock = -1;
-        rendered.lines.forEach((line, i) => {
+        lines.forEach((line, i) => {
           if (line.block !== previousBlock) file = void 0;
           previousBlock = line.block;
           if (line.file !== void 0) file = line.file;
@@ -3316,7 +3431,7 @@ var init_conversation = __esm({
           if (endsBlock && (stepsAfter.has(line.block) || inlineNotes)) {
             closeRun();
             addSteps(line.block);
-            if (inlineNotes) for (const root of byBlock.get(line.block)) this.#inlineNote(root);
+            if (inlineNotes) for (const root of byBlock.get(line.block)) this.#inlineNote(root, marks.get(root.id));
           }
         });
         closeRun();
@@ -3328,20 +3443,21 @@ var init_conversation = __esm({
           const placed = roots.map((root) => ({ root, wanted: blockOf(root) < 0 ? replyStart : firstRow.get(blockOf(root)) ?? replyStart })).sort((a3, b) => a3.wanted - b.wanted || a3.root.created_at - b.root.created_at);
           for (const { root, wanted } of placed) {
             const at2 = Math.max(wanted, nextFree);
-            const box = marginNote(model, root, MARGIN_WIDTH2, `n:${root.id}` === this.#options.selectedKey);
+            const selected = `n:${root.id}` === this.#options.selectedKey;
+            const box = marginNote(model, root, MARGIN_WIDTH2, selected, marks.get(root.id));
             while (rows.length < at2 + box.length) this.#push([]);
             box.forEach((spans, k) => rows[at2 + k].right = spans);
             targets.push(noteTarget2(root, response.id, blockOf(root), at2, at2 + box.length, "right"));
             nextFree = at2 + box.length + 1;
           }
         } else {
-          for (const root of byBlock.get(-1) ?? []) this.#inlineNote(root);
+          for (const root of byBlock.get(-1) ?? []) this.#inlineNote(root, marks.get(root.id));
         }
         addAnswered(model, response, this.#view, "");
       }
-      #inlineNote(root) {
+      #inlineNote(root, mark) {
         const width = this.#layout.text - INLINE_INDENT2;
-        const box = marginNote(this.#model, root, width, `n:${root.id}` === this.#options.selectedKey);
+        const box = marginNote(this.#model, root, width, `n:${root.id}` === this.#options.selectedKey, mark);
         const start = this.#rows.length;
         for (const spans of box) this.#push([{ text: " ".repeat(INLINE_INDENT2), style: PLAIN }, ...spans]);
         this.#view.targets.push(noteTarget2(root, root.response_id, root.block_index, start, this.#rows.length, "left"));
@@ -3375,7 +3491,7 @@ function errorText(error) {
   const text = error instanceof Error ? error.message : String(error);
   return `Couldn't do that: ${text.replace(/\s+/g, " ")}`;
 }
-var MAX_QUOTE_CHARS, GUTTER, EDITOR_MAX_ROWS, PROMPT_LABEL, REPLY_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED6, ACCENT3, App;
+var MAX_QUOTE_CHARS, GUTTER2, EDITOR_MAX_ROWS, PROMPT_LABEL, REPLY_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED6, ACCENT3, App;
 var init_app = __esm({
   "src/tui/app.ts"() {
     "use strict";
@@ -3391,7 +3507,7 @@ var init_app = __esm({
     init_conversation();
     init_wrap();
     MAX_QUOTE_CHARS = 600;
-    GUTTER = 2;
+    GUTTER2 = 2;
     EDITOR_MAX_ROWS = 6;
     PROMPT_LABEL = "you \u203A ";
     REPLY_LABEL = "reply \u203A ";
@@ -4099,7 +4215,7 @@ var init_app = __esm({
           render,
           renderMarkdown: (markdown, width) => renderReply(markdown, { width }),
           live: conversation
-        }) : buildFeed(model, { width: columns - GUTTER, selectedKey: this.#selected, render });
+        }) : buildFeed(model, { width: columns - GUTTER2, selectedKey: this.#selected, render });
         this.#feed = feed;
         if (this.#showReply !== null && feed.replyStarts.has(this.#showReply)) {
           const id = this.#showReply;
@@ -4141,14 +4257,14 @@ var init_app = __esm({
           const leadWidth = feed.leadWidth ?? 0;
           const spans = [...leadSpans(content.lead ?? [], leadWidth), gutter, ...content.left];
           if (feed.marginRule) {
-            const pad = leadWidth + GUTTER + feed.leftWidth + 1 - spansWidth(spans);
+            const pad = leadWidth + GUTTER2 + feed.leftWidth + 1 - spansWidth(spans);
             spans.push(
               { text: " ".repeat(Math.max(1, pad)), style: PLAIN },
               { text: "\u2502 ", style: MUTED6 },
               ...content.right
             );
           } else if (content.right.length) {
-            const pad = GUTTER + feed.leftWidth + 3 - spansWidth(spans);
+            const pad = GUTTER2 + feed.leftWidth + 3 - spansWidth(spans);
             spans.push({ text: " ".repeat(Math.max(1, pad)), style: PLAIN }, ...content.right);
           }
           out.push(spans);
@@ -4156,7 +4272,7 @@ var init_app = __esm({
         return out;
       }
       #threadBody(columns, height) {
-        const rows = this.#model && this.#threadRoot !== null ? buildThread(this.#model, this.#threadRoot, columns - GUTTER) : null;
+        const rows = this.#model && this.#threadRoot !== null ? buildThread(this.#model, this.#threadRoot, columns - GUTTER2) : null;
         if (!rows) {
           this.#closeThread();
           return this.#feedBody(columns, height);
@@ -4340,7 +4456,7 @@ var init_app = __esm({
         if (at2 < this.#scroll) this.#scroll = at2;
         else if (at2 + box.length > this.#scroll + height) this.#scroll = at2 + box.length - height;
         this.#scroll = this.#clampScroll(this.#scroll);
-        const marginColumn = (feed.leadWidth ?? 0) + GUTTER + feed.leftWidth + 1 + 2;
+        const marginColumn = (feed.leadWidth ?? 0) + GUTTER2 + feed.leftWidth + 1 + 2;
         this.#composerCursor = {
           row: 1 + at2 + 1 + layout.cursorRow - editing.scroll - this.#scroll,
           column: marginColumn + 2 + layout.cursorColumn
@@ -4635,8 +4751,8 @@ function supportsHyperlinks(env) {
 function supportsPalette(env) {
   if (env["SIDENOTE_COLOR"] === "basic") return false;
   if (env["SIDENOTE_COLOR"] === "truecolor") return true;
-  const background = Number((env["COLORFGBG"] ?? "").split(";").pop());
-  if (background === 7 || background === 15) return false;
+  const background2 = Number((env["COLORFGBG"] ?? "").split(";").pop());
+  if (background2 === 7 || background2 === 15) return false;
   const program = env["TERM_PROGRAM"] ?? "";
   return ["truecolor", "24bit"].includes(env["COLORTERM"] ?? "") || ["iTerm.app", "WezTerm", "vscode", "ghostty"].includes(program) || Boolean(env["KITTY_WINDOW_ID"] || env["WT_SESSION"]);
 }
