@@ -1,6 +1,6 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync5, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,8 @@ var paths = {
   portFile: () => join(stateDir(), "port"),
   logFile: () => join(stateDir(), "server.log"),
   enabledFlag: () => join(stateDir(), "enabled"),
-  transcriptsDir: () => join(homedir(), ".claude", "projects")
+  transcriptsDir: () => join(homedir(), ".claude", "projects"),
+  claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json")
 };
 
 // src/node/process.ts
@@ -141,10 +142,28 @@ function onPath(name) {
 
 // src/agent/claude.ts
 import { spawn as spawn3 } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
 import { createInterface } from "node:readline";
 var HEADLESS_ENV = "SIDENOTE_HEADLESS";
 var CLOSE_GRACE_MS = 3e3;
 var STDERR_TAIL_CHARS = 2e3;
+var STARTING_MODES = /* @__PURE__ */ new Set(["auto", "acceptEdits", "dontAsk", "plan"]);
+function startingMode(settingsFile) {
+  let contents;
+  try {
+    contents = readFileSync2(settingsFile, "utf8");
+  } catch (error) {
+    return error.code === "ENOENT" ? "auto" : null;
+  }
+  try {
+    const settings = JSON.parse(contents);
+    const chosen = settings.permissions?.defaultMode;
+    if (chosen === void 0) return "auto";
+    return typeof chosen === "string" && STARTING_MODES.has(chosen) ? chosen : null;
+  } catch {
+    return null;
+  }
+}
 function claudeArgs(options) {
   return [
     "-p",
@@ -156,6 +175,7 @@ function claudeArgs(options) {
     "--include-partial-messages",
     "--permission-prompt-tool",
     "stdio",
+    ...options.permissionMode ? ["--permission-mode", options.permissionMode] : [],
     ...options.resume ? ["--resume", options.sessionId] : ["--session-id", options.sessionId],
     ...options.instructions ? ["--append-system-prompt", options.instructions] : []
   ];
@@ -164,12 +184,16 @@ var ClaudeAgent = class {
   name = "Claude Code";
   #command;
   #instructions;
+  #settingsFile;
   constructor(options = {}) {
     this.#command = options.command ?? process.env["SIDENOTE_CLAUDE"] ?? "claude";
     this.#instructions = options.instructions ?? "";
+    this.#settingsFile = options.settingsFile ?? paths.claudeSettings();
   }
   start(options, onEvent) {
-    const child = spawn3(this.#command, claudeArgs({ ...options, instructions: this.#instructions }), {
+    const permissionMode = startingMode(this.#settingsFile);
+    const args = claudeArgs({ ...options, instructions: this.#instructions, permissionMode });
+    const child = spawn3(this.#command, args, {
       cwd: options.cwd,
       env: { ...process.env, [HEADLESS_ENV]: "1" },
       stdio: ["pipe", "pipe", "pipe"]
@@ -2079,7 +2103,7 @@ function folderName(cwd) {
 }
 
 // src/server/persistence.ts
-import { existsSync, mkdirSync, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 function emptyStore() {
   return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
@@ -2135,7 +2159,7 @@ var StoreFiles = class {
   load() {
     mkdirSync(this.#sessionsDir, { recursive: true, mode: 448 });
     if (existsSync(this.#legacyFile)) {
-      const data = migrate(JSON.parse(readFileSync2(this.#legacyFile, "utf8")));
+      const data = migrate(JSON.parse(readFileSync3(this.#legacyFile, "utf8")));
       this.save(data);
       renameSync(this.#legacyFile, `${this.#legacyFile}.migrated`);
       return data;
@@ -2150,7 +2174,7 @@ var StoreFiles = class {
     for (const entry of readdirSync(this.#sessionsDir)) {
       const id = entry.endsWith(".json") ? entry.slice(0, -".json".length) : "";
       if (!SESSION_ID_PATTERN.test(id)) continue;
-      const contents = readFileSync2(join3(this.#sessionsDir, entry), "utf8");
+      const contents = readFileSync3(join3(this.#sessionsDir, entry), "utf8");
       const file = parseSessionFile(contents);
       if (!file) {
         console.error(`skipping ${entry}: it isn't a session file`);
@@ -2188,7 +2212,7 @@ var StoreFiles = class {
   /** 1 when the file is missing or damaged: migrate then starts past the highest id it finds. */
   #readNextId() {
     try {
-      return JSON.parse(readFileSync2(this.#idsFile, "utf8")).next_id ?? 1;
+      return JSON.parse(readFileSync3(this.#idsFile, "utf8")).next_id ?? 1;
     } catch {
       return 1;
     }
@@ -3573,11 +3597,11 @@ var LaunchCodes = class {
 };
 
 // src/server/lock.ts
-import { closeSync, openSync, readFileSync as readFileSync3, rmSync as rmSync2, statSync as statSync2, writeSync } from "node:fs";
+import { closeSync, openSync, readFileSync as readFileSync4, rmSync as rmSync2, statSync as statSync2, writeSync } from "node:fs";
 var STARTUP_GRACE_MS = 3e4;
 function readLock(lockFile) {
   try {
-    const [pid = "", started = ""] = readFileSync3(lockFile, "utf8").split("\n");
+    const [pid = "", started = ""] = readFileSync4(lockFile, "utf8").split("\n");
     return { pid: Number.parseInt(pid, 10), started };
   } catch {
     return null;
@@ -3671,7 +3695,7 @@ function listenOn(server, port) {
 async function listen(server) {
   let preferred = 0;
   try {
-    preferred = Number.parseInt(readFileSync4(paths.portFile(), "utf8"), 10) || 0;
+    preferred = Number.parseInt(readFileSync5(paths.portFile(), "utf8"), 10) || 0;
   } catch {
   }
   try {
@@ -3683,7 +3707,7 @@ async function listen(server) {
 }
 function registeredPid() {
   try {
-    return JSON.parse(readFileSync4(paths.serverFile(), "utf8")).pid;
+    return JSON.parse(readFileSync5(paths.serverFile(), "utf8")).pid;
   } catch {
     return null;
   }

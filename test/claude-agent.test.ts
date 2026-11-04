@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ClaudeAgent, ClaudeStream, claudeArgs } from "../src/agent/claude.ts";
+import { ClaudeAgent, ClaudeStream, claudeArgs, startingMode } from "../src/agent/claude.ts";
 import type { AgentDriver, AgentEvent } from "../src/agent/driver.ts";
+import { paths } from "../src/node/paths.ts";
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-claude.mjs");
 
@@ -117,14 +118,60 @@ test("starts new sessions with their id and resumes earlier ones", () => {
   assert.deepEqual(resumed.slice(-4), ["--resume", "abc", "--append-system-prompt", "Use diffs."]);
 });
 
+test("sessions start in auto mode, as at the terminal, unless the user's settings chose a mode", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sidenote-settings-"));
+  const file = join(dir, "settings.json");
+  const modeFor = (contents: string): string | null => {
+    writeFileSync(file, contents);
+    return startingMode(file);
+  };
+  const withMode = (defaultMode: unknown): string => JSON.stringify({ permissions: { defaultMode } });
+
+  assert.equal(startingMode(join(dir, "missing.json")), "auto", "no settings file");
+  assert.equal(modeFor("{}"), "auto");
+  assert.equal(modeFor('{"permissions":{"allow":["Bash(ls)"]}}'), "auto", "rules alone choose no mode");
+  for (const mode of ["auto", "acceptEdits", "dontAsk", "plan"]) assert.equal(modeFor(withMode(mode)), mode);
+
+  assert.equal(modeFor(withMode("manual")), null, "the user asked to be asked");
+  assert.equal(modeFor(withMode("default")), null);
+  assert.equal(modeFor(withMode("bypassPermissions")), null, "sidenote never turns the checks off");
+  assert.equal(modeFor(withMode("--dangerously-skip-permissions")), null, "only known modes reach the command");
+  assert.equal(modeFor(withMode(7)), null);
+  assert.equal(modeFor("{ not json"), null, "a choice we can't read still keeps it asking");
+  assert.equal(modeFor("null"), null);
+  assert.equal(startingMode(dir), null, "unreadable, not missing");
+});
+
+test("the mode goes to Claude Code as a flag, and no mode passes none", () => {
+  const start = { sessionId: "abc", cwd: "/w", resume: false };
+  const args = claudeArgs({ ...start, permissionMode: "auto" });
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "auto");
+  assert.equal(claudeArgs({ ...start, permissionMode: null }).includes("--permission-mode"), false);
+  assert.equal(claudeArgs(start).includes("--permission-mode"), false);
+});
+
+test("Claude Code's settings are found through CLAUDE_CONFIG_DIR when it is set", (t) => {
+  const before = process.env["CLAUDE_CONFIG_DIR"];
+  t.after(() => {
+    if (before === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+    else process.env["CLAUDE_CONFIG_DIR"] = before;
+  });
+  process.env["CLAUDE_CONFIG_DIR"] = "/w/config";
+  assert.equal(paths.claudeSettings(), "/w/config/settings.json");
+  delete process.env["CLAUDE_CONFIG_DIR"];
+  assert.match(paths.claudeSettings(), /\/\.claude\/settings\.json$/);
+});
+
 /** Runs the fake claude, collecting its events; next() waits for the next one of a type. */
-function startFake(resume = false) {
+function startFake(resume = false, settings?: object) {
   const dir = mkdtempSync(join(tmpdir(), "sidenote-agent-"));
+  const settingsFile = join(dir, "settings.json");
+  if (settings) writeFileSync(settingsFile, JSON.stringify(settings));
   const logFile = join(dir, "log.jsonl");
   process.env["FAKE_CLAUDE_LOG"] = logFile;
   const events: AgentEvent[] = [];
   const waiters: Array<() => void> = [];
-  const agent = new ClaudeAgent({ command: FAKE_CLAUDE, instructions: "Use diffs." });
+  const agent = new ClaudeAgent({ command: FAKE_CLAUDE, instructions: "Use diffs.", settingsFile });
   const driver: AgentDriver = agent.start({ sessionId: "sess-1", cwd: dir, resume }, (event) => {
     events.push(event);
     for (const wake of waiters.splice(0)) wake();
@@ -147,6 +194,22 @@ function startFake(resume = false) {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
   return { dir, driver, events, next, log };
 }
+
+test("a new process gets the mode from the settings at that moment", async () => {
+  for (const [settings, expected] of [
+    [undefined, "auto"],
+    [{ permissions: { defaultMode: "acceptEdits" } }, "acceptEdits"],
+    [{ permissions: { defaultMode: "manual" } }, undefined],
+  ] as const) {
+    const { driver, next, log } = startFake(false, settings);
+    driver.send("hello");
+    await next("turn_end");
+    driver.close();
+    const args = log()[0]!["args"] as string[];
+    const flag = args.indexOf("--permission-mode");
+    assert.equal(flag < 0 ? undefined : args[flag + 1], expected);
+  }
+});
 
 test("runs Claude Code headless: messages, streamed replies and the session's folder", async () => {
   const { dir, driver, next, log } = startFake();

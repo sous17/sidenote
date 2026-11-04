@@ -6,8 +6,11 @@
 //   with `--permission-prompt-tool stdio`, the way the Agent SDK runs Claude Code. The answer is
 //   a control response on stdin.
 // - An `interrupt` control request ends the turn; the process stays up for the next message.
+// - Sessions start in auto mode where the user's settings don't choose one: see startingMode.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { paths } from "../node/paths.ts";
 import type {
   Agent,
   AgentDriver,
@@ -24,7 +27,37 @@ export const HEADLESS_ENV = "SIDENOTE_HEADLESS";
 const CLOSE_GRACE_MS = 3000;
 const STDERR_TAIL_CHARS = 2000;
 
-export function claudeArgs(options: StartOptions & { instructions?: string }): string[] {
+/** The modes a user's settings can start a session in. Others leave Claude Code asking. */
+const STARTING_MODES: ReadonlySet<string> = new Set(["auto", "acceptEdits", "dontAsk", "plan"]);
+
+/**
+ * The permission mode a session starts in, or null to pass none, which asks about each command.
+ * `claude -p` starts in manual mode while the terminal starts in auto, so without this every
+ * command would wait for a key. Claude Code falls back to asking where auto isn't available.
+ *
+ * bypassPermissions is left out on purpose: sidenote doesn't turn checks off on the user's behalf.
+ * Settings that can't be read keep it asking too, as they may hold a choice we can't see.
+ */
+export function startingMode(settingsFile: string): string | null {
+  let contents: string;
+  try {
+    contents = readFileSync(settingsFile, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "auto" : null;
+  }
+  try {
+    const settings = JSON.parse(contents) as { permissions?: { defaultMode?: unknown } };
+    const chosen = settings.permissions?.defaultMode;
+    if (chosen === undefined) return "auto";
+    return typeof chosen === "string" && STARTING_MODES.has(chosen) ? chosen : null;
+  } catch {
+    return null;
+  }
+}
+
+export function claudeArgs(
+  options: StartOptions & { instructions?: string; permissionMode?: string | null },
+): string[] {
   return [
     "-p",
     "--input-format",
@@ -35,6 +68,7 @@ export function claudeArgs(options: StartOptions & { instructions?: string }): s
     "--include-partial-messages",
     "--permission-prompt-tool",
     "stdio",
+    ...(options.permissionMode ? ["--permission-mode", options.permissionMode] : []),
     ...(options.resume ? ["--resume", options.sessionId] : ["--session-id", options.sessionId]),
     ...(options.instructions ? ["--append-system-prompt", options.instructions] : []),
   ];
@@ -44,14 +78,19 @@ export class ClaudeAgent implements Agent {
   readonly name = "Claude Code";
   readonly #command: string;
   readonly #instructions: string;
+  readonly #settingsFile: string;
 
-  constructor(options: { command?: string; instructions?: string } = {}) {
+  constructor(options: { command?: string; instructions?: string; settingsFile?: string } = {}) {
     this.#command = options.command ?? process.env["SIDENOTE_CLAUDE"] ?? "claude";
     this.#instructions = options.instructions ?? "";
+    this.#settingsFile = options.settingsFile ?? paths.claudeSettings();
   }
 
   start(options: StartOptions, onEvent: (event: AgentEvent) => void): AgentDriver {
-    const child = spawn(this.#command, claudeArgs({ ...options, instructions: this.#instructions }), {
+    // Read for each session, so a changed setting applies without restarting the server.
+    const permissionMode = startingMode(this.#settingsFile);
+    const args = claudeArgs({ ...options, instructions: this.#instructions, permissionMode });
+    const child = spawn(this.#command, args, {
       cwd: options.cwd,
       env: { ...process.env, [HEADLESS_ENV]: "1" },
       stdio: ["pipe", "pipe", "pipe"],

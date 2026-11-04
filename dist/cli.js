@@ -28,7 +28,8 @@ var init_paths = __esm({
       portFile: () => join(stateDir(), "port"),
       logFile: () => join(stateDir(), "server.log"),
       enabledFlag: () => join(stateDir(), "enabled"),
-      transcriptsDir: () => join(homedir(), ".claude", "projects")
+      transcriptsDir: () => join(homedir(), ".claude", "projects"),
+      claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json")
     };
   }
 });
@@ -4900,6 +4901,7 @@ import { setTimeout as sleep4 } from "node:timers/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/agent/claude.ts
+init_paths();
 var HEADLESS_ENV = "SIDENOTE_HEADLESS";
 
 // src/cli/main.ts
