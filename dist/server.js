@@ -603,7 +603,7 @@ ${text2}` : text2).length > MAX_PROMPT_CHARS) return "too-long";
 // src/server/host.ts
 import { randomUUID } from "node:crypto";
 
-// ../../../../../../../Users/sourajitsaha/workspace/sidenote/node_modules/marked/lib/marked.esm.js
+// node_modules/marked/lib/marked.esm.js
 function v() {
   return { async: false, breaks: false, extensions: null, gfm: true, hooks: null, pedantic: false, renderer: null, silent: false, tokenizer: null, walkTokens: null };
 }

@@ -1088,7 +1088,7 @@ var init_feed = __esm({
   }
 });
 
-// ../../../../../../../Users/sourajitsaha/workspace/sidenote/node_modules/marked/lib/marked.esm.js
+// node_modules/marked/lib/marked.esm.js
 function v() {
   return { async: false, breaks: false, extensions: null, gfm: true, hooks: null, pedantic: false, renderer: null, silent: false, tokenizer: null, walkTokens: null };
 }
@@ -1240,7 +1240,7 @@ function zt(...a3) {
 }
 var y, B, Me, T, Ce, Ee, Ie, U, Be, ne, me, xe, De, re, qe, se, Ze, ve, K, ie, He, be, Ge, Ne, Qe, oe, ke, je, Fe, Ue, Ke, Re, We, $, H, W, Xe, Ve, Te, Je, Ye, et, Oe, tt, nt, rt, st, we, it, ot, at, lt, ut, pt, ct, ht, dt, kt, gt, ft, mt, xt, bt, Pe, Y, Rt, Tt, Ot, ge, wt, Pt, fe, yt, St, ae, _t, te, $t, X, G, Lt, ye, _, O, L, M, w, A, J, q, Tn, On, wn, Pn, Sn, _n;
 var init_marked_esm = __esm({
-  "../../../../../../../Users/sourajitsaha/workspace/sidenote/node_modules/marked/lib/marked.esm.js"() {
+  "node_modules/marked/lib/marked.esm.js"() {
     y = v();
     B = { exec: () => null };
     Me = ((a3 = "") => {
