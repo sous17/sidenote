@@ -4,12 +4,6 @@ import type { ClaimedNote, EpochSeconds } from "./types.ts";
 export const MAX_CONTEXT_CHARS = 9500;
 
 /**
- * The longest message the page can send to a terminal session. It reaches Claude through the
- * same capped hook output as notes, so it leaves room for the framing and some notes.
- */
-export const MAX_PROMPT_CHARS = 8000;
-
-/**
  * Code changes should come as diffs, which the sidenote window draws step by step: each
  * explanation, then the change it describes (see src/web/diffview.ts).
  */

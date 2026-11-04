@@ -6,8 +6,13 @@
 // wakes Claude. Everything here is in memory: a restarted server simply has no waiters until each
 // session's next turn ends. Notes and messages themselves live in the store, so they survive.
 import { systemClock, type Clock } from "../node/clock.ts";
-import { MAX_PROMPT_CHARS } from "../shared/format.ts";
-import type { ProgressRequest, SendStatus, SessionState, WaiterPollResult } from "../shared/types.ts";
+import {
+  MAX_PROMPT_CHARS,
+  type ProgressRequest,
+  type SendStatus,
+  type SessionState,
+  type WaiterPollResult,
+} from "../shared/types.ts";
 import { liveProgress } from "./split.ts";
 import type { Store } from "./store.ts";
 
@@ -135,6 +140,14 @@ export class Delivery {
     for (const id of targets) this.#requested.add(id);
     if (targets.length) this.#store.revision.bump();
     return targets;
+  }
+
+  /** The session's Claude is gone, so nothing may wake it: its waiter exits at its next poll. */
+  forgetSession(sessionId: string): void {
+    this.#waiters.delete(sessionId);
+    this.#busy.delete(sessionId);
+    this.#requested.delete(sessionId);
+    this.#forgetTurn(sessionId);
   }
 
   #forgetTurn(sessionId: string): void {

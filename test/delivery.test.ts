@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LISTENER_STALE_MS } from "../src/server/delivery.ts";
-import { MAX_PROMPT_CHARS } from "../src/shared/format.ts";
+import { MAX_PROMPT_CHARS } from "../src/shared/types.ts";
 import { SESSION, fixture, noteOn, reply } from "./helpers.ts";
 
 test("a listening waiter gets the notes, and the session turns busy", () => {
@@ -207,4 +207,15 @@ test("a session sidenote runs reaches pages through the status it reports", () =
   activity = "Editing a.ts";
   delivery.refresh(statusOf);
   assert.ok(store.revision.value > before);
+});
+
+test("a forgotten session's waiter exits, so a send can't wake the Claude that moved on", () => {
+  const { store, delivery } = fixture();
+  noteOn(store, reply(store, "Para one.").id);
+  delivery.registerWaiter(SESSION, "w1");
+  delivery.requestSend([SESSION]);
+  delivery.forgetSession(SESSION);
+  assert.deepEqual(delivery.status(SESSION), { status: "offline", send_requested: false });
+  assert.equal(delivery.pollWaiter(SESSION, "w1").action, "exit");
+  assert.equal(store.sessionsWithPendingNotes().has(SESSION), true, "the note itself stays unsent");
 });

@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { after, before, test } from "node:test";
+import { basename } from "node:path";
+import { after, before, describe, test } from "node:test";
 import { Delivery } from "../src/server/delivery.ts";
 import { SessionHost } from "../src/server/host.ts";
 import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
+import { SessionProcesses } from "../src/server/processes.ts";
 import { Store } from "../src/server/store.ts";
 import type { ConversationView, SendResult, StartConversationResult, StateSnapshot } from "../src/shared/types.ts";
 import { SidenoteClient } from "../src/cli/client.ts";
@@ -31,6 +33,9 @@ function app(host: SessionHost) {
     token: TOKEN,
     allowedHosts: new Set([`127.0.0.1:${port}`]),
     webDir: folder,
+    openFolder: () => {},
+    startSession: null,
+    processes: new SessionProcesses({ pidInUse: () => false, isSameProcess: () => false }, store.revision),
   });
 }
 
@@ -146,4 +151,54 @@ test("the terminal starts its session again when the server restarted", async ()
   assert.deepEqual(restarted.sent, ["Still there?"]);
   const view = await api.conversation(57, id, false);
   assert.equal(view?.live?.prompt, "Still there?");
+});
+
+describe("sessions sidenote runs in a folder window", () => {
+  const running = new FakeAgent();
+
+  before(() => {
+    server.removeAllListeners("request");
+    server.on("request", app(new SessionHost({ store, agent: running })));
+  });
+
+  const rowOf = async (id: string) => {
+    const { body } = await call<StateSnapshot>("GET", `/api/state?v=-1&s=&f=${basename(folder)}`);
+    return body.sessions.find((row) => row.id === id);
+  };
+
+  test("are listed with their own status, and named by what the user typed", async () => {
+    const id = await start();
+    assert.deepEqual(
+      [(await rowOf(id))?.status, (await rowOf(id))?.process],
+      ["listening", "running"],
+      "sidenote can end it, though no hook reported a process",
+    );
+    await call("POST", "/api/conversation/messages", { session_id: id, text: "Fix  the\nlogin" });
+    assert.equal((await rowOf(id))?.status, "busy");
+    running.reply("Done.");
+    assert.equal((await rowOf(id))?.first_message, "Fix the login");
+  });
+
+  test("end with their agent and leave the list; removing one that runs is refused", async () => {
+    const id = await start();
+    await call("POST", "/api/conversation/messages", { session_id: id, text: "Hi" });
+    assert.equal((await call("POST", "/api/sessions/forget", { session_id: id })).status, 409);
+    assert.ok(await rowOf(id));
+
+    const closed = running.closed;
+    assert.equal((await call("POST", "/api/sessions/end", { session_id: id })).status, 204);
+    assert.equal(running.closed, closed + 1);
+    running.emit({ type: "exit", message: "closed" });
+    assert.equal(await rowOf(id), undefined);
+    assert.equal((await call("GET", `/api/conversation?s=${id}`)).status, 404);
+  });
+
+  test("a long poll on the state wakes when the store changes", async () => {
+    const id = await start();
+    const { body } = await call<StateSnapshot>("GET", `/api/state?v=-1&s=${id}`);
+    const poll = call<StateSnapshot>("GET", `/api/state?v=${body.version}&s=${id}&wait=1`);
+    await call("POST", "/api/conversation/messages", { session_id: id, text: "Hi" });
+    running.reply("Done.");
+    assert.equal((await poll).status, 200);
+  });
 });

@@ -7,13 +7,18 @@
 // - Bodies are size-limited JSON objects, parsed by requests.ts before any handler runs.
 // - Every response carries nosniff, no-referrer and same-origin headers; the page also gets a
 //   content security policy that allows no inline or remote scripts.
-import { timingSafeEqual } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import type { NewSession } from "../node/terminal.ts";
+import { folderName } from "../shared/folders.ts";
 import {
+  MAX_PROMPT_CHARS,
   TOKEN_HEADER,
   type ClaimResult,
+  type ClearedSessionResult,
   type ConversationView,
   type ErrorResult,
   type LaunchCodeResult,
@@ -21,14 +26,16 @@ import {
   type PromptResult,
   type RedeemResult,
   type SendResult,
+  type SendStatus,
   type SessionListResult,
   type StartConversationResult,
+  type StartSessionResult,
   type StateSnapshot,
   type WaiterPollResult,
 } from "../shared/types.ts";
-import { MAX_PROMPT_CHARS } from "../shared/format.ts";
 import type { Delivery } from "./delivery.ts";
 import { HostError, UnknownSession, type SessionHost } from "./host.ts";
+import type { SessionProcesses } from "./processes.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
@@ -38,12 +45,14 @@ import {
   parseConversationMessage,
   parseNewNote,
   parseNewResponse,
+  parseRename,
   parsePrompt,
   parseRedeem,
   parsePermissionAnswer,
   parseSend,
-  parseSessionOnly,
   parseStartConversation,
+  parseSessionRequest,
+  parseStartSession,
   parseTouchSession,
   parseWaiter,
 } from "./requests.ts";
@@ -52,6 +61,7 @@ import type { Store } from "./store.ts";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** A long poll (wait=1) is answered at the latest after this, so proxies and timeouts never cut it. */
 export const LONG_POLL_MS = 25_000;
+const FOLDER_PATH = /^\/[^/]+$/;
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -80,10 +90,18 @@ export interface AppOptions {
   host: SessionHost;
   launchCodes: LaunchCodes;
   token: string;
+  /** Called for each API request that passed the token check. */
+  onActivity?: () => void;
   /** Host header values to accept. Filled in by main.ts once the port is known. */
   allowedHosts: ReadonlySet<string>;
   /** Directory holding index.html and the page's other files. */
   webDir: string;
+  /** Opens a folder on the desktop, with whatever app the system opens folders with. */
+  openFolder: (path: string) => void;
+  /** Opens a terminal running a new Claude session; null where this machine has no terminal for it. */
+  startSession: ((session: NewSession) => Promise<void>) | null;
+  /** The Claude process behind each session, so the page can end it. */
+  processes: SessionProcesses;
 }
 
 class HttpError extends Error {
@@ -113,15 +131,58 @@ interface Route {
 const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
-function routes({ store, delivery, host, launchCodes, token }: AppOptions): Route[] {
-  const snapshot = (sessionId: string | null): StateSnapshot => {
-    const session = sessionId ? store.session(sessionId) : undefined;
-    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [], messages: [] };
+function routes({
+  store,
+  delivery,
+  host,
+  launchCodes,
+  token,
+  openFolder,
+  startSession,
+  processes,
+}: AppOptions): Route[] {
+  const statusOf = (sessionId: string): SendStatus => host.sendStatus(sessionId) ?? delivery.status(sessionId);
+
+  /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
+  const snapshot = (sessionId: string | null, folder: string | null): StateSnapshot => {
+    const latest = folder === null ? undefined : store.folderSessions(folder)[0];
+    const session = store.session(sessionId ?? "") ?? store.session(latest?.id ?? "");
+    const version = store.revision.value;
+    const can_start_sessions = startSession !== null;
+    if (!session) {
+      return {
+        version,
+        session: null,
+        folder: folder ?? "",
+        sessions: [],
+        can_start_sessions,
+        responses: [],
+        comments: [],
+        messages: [],
+      };
+    }
+    const windowFolder = folderName(session.cwd);
     return {
-      version: store.revision.value,
-      session: { ...session, ...(host.sendStatus(session.id) ?? delivery.status(session.id)) },
+      version,
+      session: { ...session, ...statusOf(session.id) },
+      folder: windowFolder,
+      sessions: store.folderSessions(windowFolder).map((row) => ({
+        ...row,
+        status: statusOf(row.id).status,
+        // A session sidenote runs has no hooks to report its process, and sidenote can end it itself.
+        process: host.owns(row.id) ? "running" : processes.state(row.id),
+      })),
+      can_start_sessions,
       ...store.sessionContent(session.id),
     };
+  };
+
+  /** The folder sidenote recorded for a session, if it still exists. Requests never name a path. */
+  const recordedFolder = (sessionId: string): string => {
+    const cwd = store.session(sessionId)?.cwd;
+    if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HttpError(404, `${cwd} no longer exists`);
+    return cwd;
   };
 
   return [
@@ -130,14 +191,15 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       path: "/api/state",
       needsToken: true,
       handle: async ({ query }) => {
-        delivery.refresh((id) => host.sendStatus(id) ?? delivery.status(id));
+        delivery.refresh(statusOf);
+        processes.refresh();
         // The page passes the version it has; an unchanged store costs one empty reply.
         const known = query.get("v");
         if (known === String(store.revision.value) && query.get("wait") === "1") {
           await store.revision.waitPast(Number(known), LONG_POLL_MS);
         }
         if (known === String(store.revision.value)) return empty(204);
-        return ok(snapshot(query.get("s")));
+        return ok(snapshot(query.get("s"), query.get("f")));
       },
     },
     {
@@ -161,10 +223,11 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       method: "POST",
       path: "/api/conversations",
       needsToken: true,
-      handle: async ({ body }) => {
+      handle: ({ body }) => {
         const input = parseStartConversation(body);
-        const folder = await stat(input.cwd).catch(() => null);
-        if (!folder?.isDirectory()) throw new HttpError(400, "cwd is not a folder");
+        if (!statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
+          throw new HttpError(400, "cwd is not a folder");
+        }
         return ok({ session_id: host.open(input.cwd, input.session_id) } satisfies StartConversationResult, 201);
       },
     },
@@ -182,7 +245,7 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       method: "POST",
       path: "/api/conversation/interrupt",
       needsToken: true,
-      handle: ({ body }) => ok({ queued: host.interrupt(parseSessionOnly(body).session_id) }),
+      handle: ({ body }) => ok({ queued: host.interrupt(parseSessionRequest(body).session_id) }),
     },
     {
       method: "POST",
@@ -219,6 +282,7 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       needsToken: true,
       handle: ({ body }) => {
         const input = parseNewResponse(body);
+        processes.record(input.session_id, input.claude_process);
         const { response, newSession } = store.addResponse({
           sessionId: input.session_id,
           sessionName: input.session_name,
@@ -250,7 +314,8 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, prompt: typed } = parseClaim(body);
+        const { session_id, prompt: typed, claude_process } = parseClaim(body);
+        processes.record(session_id, claude_process);
         delivery.markBusy(session_id);
         // A message still waiting from the page rides along with this terminal prompt.
         const prompt = store.claimMessages(session_id);
@@ -284,7 +349,8 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       path: "/api/waiters",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, waiter_id } = parseWaiter(body);
+        const { session_id, waiter_id, claude_process } = parseWaiter(body);
+        processes.record(session_id, claude_process);
         delivery.registerWaiter(session_id, waiter_id);
         return ok({ ok: true });
       },
@@ -338,6 +404,94 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
     },
     {
       method: "POST",
+      path: "/api/open-folder",
+      needsToken: true,
+      handle: ({ body }) => {
+        openFolder(recordedFolder(parseSessionRequest(body).session_id));
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/rename",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, label } = parseRename(body);
+        if (!store.renameSession(session_id, label)) throw new HttpError(404, "sidenote doesn't know this session");
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/end",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (host.end(session_id)) {
+          store.forgetSession(session_id);
+          return empty(204);
+        }
+        if (processes.state(session_id) === "unknown") {
+          throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+        }
+        // Only the process the session's own hooks reported, and only while it is still that one.
+        const running = processes.running(session_id);
+        if (running) process.kill(running.pid, "SIGTERM");
+        processes.forget(session_id);
+        store.forgetSession(session_id);
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/forget",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (host.owns(session_id) || processes.running(session_id)) {
+          throw new HttpError(409, "this session is still running: end it instead");
+        }
+        processes.forget(session_id);
+        if (!store.forgetSession(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/cleared",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        // Claude moved on to a new session either way, so a kept session must not wake it.
+        delivery.forgetSession(session_id);
+        processes.forget(session_id);
+        // Words the user wrote and Claude never saw aren't cleared away unasked.
+        const forgotten = !store.hasUnsent(session_id) && store.forgetSession(session_id);
+        return ok({ forgotten } satisfies ClearedSessionResult);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/start",
+      needsToken: true,
+      handle: async ({ body }) => {
+        const { session_id, prompt, name } = parseStartSession(body);
+        const cwd = recordedFolder(session_id);
+        if (!startSession) throw new HttpError(501, "starting sessions needs GNOME Terminal on Linux, or macOS");
+        const id = randomUUID();
+        try {
+          await startSession({ cwd, sessionId: id, prompt, name });
+        } catch (error) {
+          throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
+        }
+        // Listed right away, so the page can select it before Claude's first reply.
+        store.touchSession(id, "", cwd);
+        if (name) store.renameSession(id, name);
+        return ok({ session_id: id } satisfies StartSessionResult, 201);
+      },
+    },
+    {
+      method: "POST",
       path: "/api/launch",
       needsToken: true,
       handle: () => ok({ code: launchCodes.issue() } satisfies LaunchCodeResult),
@@ -376,6 +530,8 @@ export function createApp(options: AppOptions): RequestListener {
     });
     if (!route) throw new HttpError(404);
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    // Only a real client counts: a stale tab, refused above, mustn't keep the server running.
+    if (route.needsToken) options.onActivity?.();
     const body = request.method === "POST" ? await readJson(request) : undefined;
     return route.handle({ body, query: url.searchParams, param });
   };
@@ -385,7 +541,11 @@ export function createApp(options: AppOptions): RequestListener {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) return send(response, await serveApi(request, url));
     if (request.method !== "GET") throw new HttpError(405);
-    if (url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
+    // "/<folder>" is a folder's window; the page reads the folder from its own path. The path as
+    // sent is checked, so "/static/../x", which URL parsing turns into "/x", isn't taken for one.
+    if (url.pathname === "/" || FOLDER_PATH.test((request.url ?? "").split("?")[0]!)) {
+      return sendFile(response, resolve(webDir, "index.html"));
+    }
     if (url.pathname.startsWith("/static/")) return sendFile(response, staticPath(webDir, url.pathname));
     throw new HttpError(404);
   };

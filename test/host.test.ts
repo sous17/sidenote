@@ -232,3 +232,36 @@ test("a turn's text and latest tool call reach the page", () => {
   assert.equal(host.sendStatus(id)?.progress, undefined, "the reply took over");
   assert.ok(store.revision.value > 0);
 });
+
+test("ending a session closes its agent, and what the process still reports stores nothing", () => {
+  const { store, agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Hi there");
+  const replies = store.sessionContent(id).responses.length;
+
+  assert.equal(host.end(id), true);
+  assert.equal(agent.closed, 1);
+  assert.equal(host.owns(id), false);
+  store.forgetSession(id);
+  agent.emit({ type: "exit", message: "closed" });
+  assert.equal(store.session(id), undefined, "the unfinished turn doesn't bring the session back");
+  assert.equal(store.sessionContent(id).responses.length, replies);
+  assert.equal(host.end(id), false, "already gone");
+});
+
+test("only a turn in progress counts as working: not an idle agent, nor a prompt nobody may answer", () => {
+  const { agent, host } = setup();
+  const id = host.open("/w/shop");
+  assert.equal(host.working(), false);
+  host.message(id, "Hi there");
+  assert.equal(host.working(), true);
+  agent.emit({
+    type: "permission",
+    request: { request_id: "r1", tool_name: "Bash", description: "", input: { command: "ls" } },
+  });
+  assert.equal(host.working(), false);
+  host.answer(id, "r1", "allow");
+  assert.equal(host.working(), true);
+  agent.reply("Done.");
+  assert.equal(host.working(), false);
+});

@@ -1,8 +1,9 @@
 // Single-use launch codes, so the API token never appears in a page URL.
 //
-// To open a window, the CLI asks for a code and opens `/?s=<session>#launch=<code>`. The fragment
-// is never sent over the network; the page trades the code for the token once and keeps the token
-// in the tab's sessionStorage. Browser history, synced history and `ps` only ever see a spent code.
+// To open a window, the CLI asks for a code and opens `/<folder>?s=<session>#launch=<code>`. The
+// fragment is never sent over the network; the page trades the code for the token once and keeps
+// the token in the origin's localStorage. Browser history, synced history and `ps` only ever see a
+// spent code.
 import { randomBytes } from "node:crypto";
 import { systemClock, type Clock } from "../node/clock.ts";
 

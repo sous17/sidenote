@@ -5,9 +5,19 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { HEADLESS_ENV } from "../agent/claude.ts";
 import { paths } from "../node/paths.ts";
+import { folderName } from "../shared/folders.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
-import { hookActivity, hookProgress, hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import {
+  hookActivity,
+  hookClear,
+  hookProgress,
+  hookPrompt,
+  hookSession,
+  hookStop,
+  hookWait,
+  type HookInput,
+} from "./hooks.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -32,6 +42,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote backfill [session]  import the session's earlier replies
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
+  sidenote hook-clear          SessionEnd hook: forget the session on /clear
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
@@ -40,7 +51,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
 
-const NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+const NOT_RUNNING = "sidenote is off; use /sidenote:on first.";
 const SERVER_STOP_TIMEOUT_MS = 5000;
 
 /** The launcher, next to dist/: the plugin's bin/ isn't on the user's PATH. */
@@ -79,13 +90,19 @@ async function touchSession(client: SidenoteClient, sessionId: string): Promise<
 }
 
 /** Opens the given session's browser window, or the latest one's. Says what it did. */
-async function show(client: SidenoteClient, requested: string | undefined): Promise<string> {
+async function openWindow(client: SidenoteClient, requested: string | undefined): Promise<string> {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? (await latestSession(client));
   const { session } = await fetchState(client, sessionId);
-  openBrowser(await client.windowUrl(sessionId));
-  const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
-  return `Opened the ${label} window in your browser (${client.origin}).`;
+  const cwd = session?.cwd ?? "";
+  openBrowser(await client.windowUrl(sessionId, cwd));
+  const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
+  return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
+}
+
+/** The server, started if sidenote is on: it stops by itself when idle. Null when sidenote is off. */
+async function enabledClient(): Promise<SidenoteClient | null> {
+  return isEnabled() ? (await SidenoteClient.ensure()).client : null;
 }
 
 /** Asks the server to stop, and returns its pid if there was one to ask. */
@@ -119,7 +136,7 @@ async function turnOn(): Promise<string> {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
   writeFileSync(paths.enabledFlag(), "");
   const { client } = await SidenoteClient.ensure();
-  return show(client, sessionArgument());
+  return openWindow(client, sessionArgument());
 }
 
 const commands: Record<string, () => Promise<void>> = {
@@ -144,8 +161,8 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async open() {
-    const client = await SidenoteClient.connect();
-    console.log(client ? await show(client, sessionArgument()) : NOT_RUNNING);
+    const client = await enabledClient();
+    console.log(client ? await openWindow(client, sessionArgument()) : NOT_RUNNING);
   },
 
   async status() {
@@ -165,6 +182,7 @@ const commands: Record<string, () => Promise<void>> = {
       return;
     }
     console.log(`session: ${session.name || "(unnamed)"} · ${session.id.slice(0, 8)} · ${session.cwd}`);
+    console.log(`window:  ${client.windowAddress(session.cwd)}`);
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
@@ -173,7 +191,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {
-    const client = await SidenoteClient.connect();
+    const client = await enabledClient();
     if (!client) {
       console.log(NOT_RUNNING);
       return;
@@ -218,6 +236,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
+  "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
   "hook-progress": () => runHook(hookProgress),

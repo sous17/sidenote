@@ -156,6 +156,12 @@ export class Feed {
     flash(element);
   }
 
+  /** For another tab's session: its replies arrive like a first load, at the end and without flashing. */
+  reset(): void {
+    this.#firstRender = true;
+    this.#newReply.hidden = true;
+  }
+
   /** The element that scrolls the feed: the feed itself in the split view, the page otherwise. */
   scroller(): Element {
     return this.#app.classList.contains("split") && window.innerWidth >= SPLIT_MIN_WIDTH

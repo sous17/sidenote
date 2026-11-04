@@ -187,6 +187,22 @@ export class SessionHost {
     return true;
   }
 
+  /** Ends the session's agent process and lets go of it. False if this server doesn't run it. */
+  end(sessionId: string): boolean {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return false;
+    // First, so the turn its process leaves unfinished isn't stored for a session that is gone.
+    this.#sessions.delete(sessionId);
+    session.driver?.close();
+    this.#changed();
+    return true;
+  }
+
+  /** Whether an agent is in a turn: it needs this server, even with no client watching. */
+  working(): boolean {
+    return [...this.#sessions.values()].some((session) => session.state === "working");
+  }
+
   /** Ends every agent process, when the server shuts down. */
   closeAll(): void {
     for (const session of this.#sessions.values()) session.driver?.close();
@@ -223,6 +239,7 @@ export class SessionHost {
   }
 
   #event(session: Hosted, event: AgentEvent): void {
+    if (this.#sessions.get(session.id) !== session) return;
     const parts = session.live?.parts;
     const last = parts?.at(-1);
     switch (event.type) {

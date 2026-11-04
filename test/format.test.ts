@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_CONTEXT_CHARS, formatNotesForClaude, formatPromptForClaude } from "../src/shared/format.ts";
+import { MAX_CONTEXT_CHARS, formatNotesForClaude, formatPromptForClaude, isWakeText } from "../src/shared/format.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
 function claimed(overrides: Partial<ClaimedNote> = {}): ClaimedNote {
@@ -64,4 +64,10 @@ test("a message from the page reads as the user's own, with notes asked to be an
   const long = formatPromptForClaude("p".repeat(8000), [claimed({ body: "n".repeat(5000) })]);
   assert.ok(long.length <= MAX_CONTEXT_CHARS + 100);
   assert.ok(long.includes("p".repeat(8000)), "the message comes first, so truncation only cuts notes");
+});
+
+test("sidenote's own wake-up texts are told apart from what the user typed", () => {
+  assert.equal(isWakeText(formatNotesForClaude([claimed()], { sendNow: true })), true);
+  assert.equal(isWakeText(formatPromptForClaude("hello", [])), true);
+  assert.equal(isWakeText("Why does the import skip empty rows?"), false);
 });

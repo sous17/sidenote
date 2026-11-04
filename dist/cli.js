@@ -23,7 +23,6 @@ var init_paths = __esm({
     stateDir = () => join(homedir(), ".sidenote");
     paths = {
       stateDir,
-      storeFile: () => join(stateDir(), "store.json"),
       serverFile: () => join(stateDir(), "server.json"),
       lockFile: () => join(stateDir(), "server.lock"),
       portFile: () => join(stateDir(), "port"),
@@ -34,37 +33,151 @@ var init_paths = __esm({
   }
 });
 
+// src/shared/folders.ts
+function folderName(cwd) {
+  return cwd.split("/").filter(Boolean).pop() ?? "";
+}
+function folderPath(folder) {
+  return folder ? `/${encodeURIComponent(folder)}` : "/";
+}
+var init_folders = __esm({
+  "src/shared/folders.ts"() {
+    "use strict";
+  }
+});
+
+// src/node/open.ts
+import { spawn } from "node:child_process";
+function openWithSystem(target, onError) {
+  const [command2, args] = process.platform === "darwin" ? ["open", [target]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", target]] : ["xdg-open", [target]];
+  const child = spawn(command2, args, { detached: true, stdio: "ignore" });
+  child.on("error", onError);
+  child.unref();
+}
+var init_open = __esm({
+  "src/node/open.ts"() {
+    "use strict";
+  }
+});
+
+// src/node/process.ts
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+function processInfo(pid, platform = process.platform) {
+  try {
+    return platform === "linux" ? linuxInfo(pid) : platform === "darwin" ? psInfo(pid) : null;
+  } catch {
+    return null;
+  }
+}
+function linuxInfo(pid) {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const fields = stat.slice(close + 2).split(" ");
+  return {
+    ppid: Number(fields[1]),
+    started: fields[19],
+    name: stat.slice(stat.indexOf("(") + 1, close),
+    args: readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+  };
+}
+function psInfo(pid) {
+  const ps = (field) => spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  const ppid = ps("ppid");
+  if (!ppid) return null;
+  return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
+}
+function isClaude(info) {
+  const base = (path) => path.split("/").pop() ?? "";
+  return base(info.name) === "claude" || base(info.args.split(" ")[0] ?? "") === "claude" || /@anthropic-ai\/claude-code\/cli\.js/.test(info.args);
+}
+function findClaude(pid, info) {
+  let current = pid;
+  for (let depth = 0; depth < MAX_DEPTH && current > 1; depth += 1) {
+    const found = info(current);
+    if (!found) return null;
+    if (isClaude(found)) return { pid: current, started: found.started };
+    current = found.ppid;
+  }
+  return null;
+}
+function claudeProcess() {
+  return findClaude(process.ppid, (pid) => processInfo(pid));
+}
+function pidInUse(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+var MAX_DEPTH;
+var init_process = __esm({
+  "src/node/process.ts"() {
+    "use strict";
+    MAX_DEPTH = 8;
+  }
+});
+
+// src/server/lock.ts
+import { closeSync, openSync, readFileSync as readFileSync2, rmSync, statSync, writeSync } from "node:fs";
+function readLock(lockFile) {
+  try {
+    const [pid = "", started = ""] = readFileSync2(lockFile, "utf8").split("\n");
+    return { pid: Number.parseInt(pid, 10), started };
+  } catch {
+    return null;
+  }
+}
+function isOwner(pid, started) {
+  const info = processInfo(pid);
+  if (!info) return false;
+  return started ? info.started === started : info.args.includes("server.js");
+}
+function serverLockOwner(lockFile) {
+  const lock = readLock(lockFile);
+  return lock && !Number.isNaN(lock.pid) && isOwner(lock.pid, lock.started) ? lock.pid : null;
+}
+var init_lock = __esm({
+  "src/server/lock.ts"() {
+    "use strict";
+    init_process();
+  }
+});
+
 // src/shared/types.ts
-var TOKEN_HEADER, LAUNCH_FRAGMENT_KEY, SESSION_ID_PATTERN;
+var TOKEN_HEADER, LAUNCH_FRAGMENT_KEY, PAGE_HOST, SESSION_ID_PATTERN;
 var init_types = __esm({
   "src/shared/types.ts"() {
     "use strict";
     TOKEN_HEADER = "X-Review-Token";
     LAUNCH_FRAGMENT_KEY = "launch";
+    PAGE_HOST = "sidenote.localhost";
     SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
   }
 });
 
 // src/cli/client.ts
-import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync } from "node:fs";
+import { spawn as spawn2 } from "node:child_process";
+import { mkdirSync, openSync as openSync2, readFileSync as readFileSync3 } from "node:fs";
 import { dirname, join as join2 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 function readServerInfo() {
   try {
-    return JSON.parse(readFileSync(paths.serverFile(), "utf8"));
+    return JSON.parse(readFileSync3(paths.serverFile(), "utf8"));
   } catch {
     return null;
   }
 }
 function serverPid() {
-  return readServerInfo()?.pid ?? null;
+  return serverLockOwner(paths.lockFile());
 }
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
-  const log = openSync(paths.logFile(), "a", 384);
-  spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
+  const log = openSync2(paths.logFile(), "a", 384);
+  spawn2(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const client = await SidenoteClient.connect();
@@ -74,16 +187,16 @@ async function startServer() {
   throw new Error(`the sidenote server did not start; see ${paths.logFile()}`);
 }
 function openBrowser(url) {
-  const [command2, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
-  const child = spawn(command2, args, { detached: true, stdio: "ignore" });
-  child.on("error", () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
-  child.unref();
+  openWithSystem(url, () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
 }
 var SERVER_START_TIMEOUT_MS, REQUEST_TIMEOUT_MS, SERVER_SCRIPT, ApiError, SidenoteClient;
 var init_client = __esm({
   "src/cli/client.ts"() {
     "use strict";
+    init_open();
     init_paths();
+    init_lock();
+    init_folders();
     init_types();
     SERVER_START_TIMEOUT_MS = 1e4;
     REQUEST_TIMEOUT_MS = 3e3;
@@ -132,13 +245,20 @@ var init_client = __esm({
         return this.#request("DELETE", path);
       }
       /**
+       * The address of the window for a folder. Only browsers get the page host: Node may resolve it
+       * to ::1, where the server doesn't listen, so the CLI's own requests stay on 127.0.0.1.
+       */
+      windowAddress(cwd) {
+        return `http://${PAGE_HOST}:${this.#server.port}${folderPath(folderName(cwd))}`;
+      }
+      /**
        * A one-time link to a session's window. The launch code sits in the URL fragment, which the
        * browser never sends to the server; the page trades it for the token once.
        */
-      async windowUrl(sessionId) {
+      async windowUrl(sessionId, cwd = "") {
         const { code: code2 } = await this.post("/api/launch", {});
         const query = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
-        return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code2}`;
+        return `${this.windowAddress(cwd)}${query}#${LAUNCH_FRAGMENT_KEY}=${code2}`;
       }
       async #request(method, path, body, timeoutMs = REQUEST_TIMEOUT_MS) {
         const response = await fetch(this.origin + path, {
@@ -260,17 +380,35 @@ function answeredNoteIds(model, response) {
   for (const note of model.notes) if (note.answered_by === response.id) ids.add(note.id);
   return ids;
 }
-var Model;
+var EMPTY_SNAPSHOT, Model;
 var init_model = __esm({
   "src/shared/model.ts"() {
     "use strict";
+    EMPTY_SNAPSHOT = {
+      version: -1,
+      session: null,
+      folder: "",
+      sessions: [],
+      can_start_sessions: false,
+      responses: [],
+      comments: [],
+      messages: []
+    };
     Model = class {
+      /** The selected session; "" until the server names the folder's latest. */
       sessionId;
-      snapshot = { version: -1, session: null, responses: [], comments: [], messages: [] };
+      snapshot = EMPTY_SNAPSHOT;
       /** The root note whose thread is open in the pane, if any. */
       openThreadId = null;
       constructor(sessionId) {
         this.sessionId = sessionId;
+      }
+      /** Switches to another of the folder's sessions; its state arrives with the next refresh. */
+      select(sessionId) {
+        this.sessionId = sessionId;
+        const { folder, sessions, can_start_sessions } = this.snapshot;
+        this.snapshot = { ...EMPTY_SNAPSHOT, folder, sessions, can_start_sessions };
+        this.openThreadId = null;
       }
       get notes() {
         return this.snapshot.comments;
@@ -950,7 +1088,7 @@ var init_feed = __esm({
   }
 });
 
-// node_modules/marked/lib/marked.esm.js
+// ../../../../../../../Users/sourajitsaha/workspace/sidenote/node_modules/marked/lib/marked.esm.js
 function v() {
   return { async: false, breaks: false, extensions: null, gfm: true, hooks: null, pedantic: false, renderer: null, silent: false, tokenizer: null, walkTokens: null };
 }
@@ -1102,7 +1240,7 @@ function zt(...a3) {
 }
 var y, B, Me, T, Ce, Ee, Ie, U, Be, ne, me, xe, De, re, qe, se, Ze, ve, K, ie, He, be, Ge, Ne, Qe, oe, ke, je, Fe, Ue, Ke, Re, We, $, H, W, Xe, Ve, Te, Je, Ye, et, Oe, tt, nt, rt, st, we, it, ot, at, lt, ut, pt, ct, ht, dt, kt, gt, ft, mt, xt, bt, Pe, Y, Rt, Tt, Ot, ge, wt, Pt, fe, yt, St, ae, _t, te, $t, X, G, Lt, ye, _, O, L, M, w, A, J, q, Tn, On, wn, Pn, Sn, _n;
 var init_marked_esm = __esm({
-  "node_modules/marked/lib/marked.esm.js"() {
+  "../../../../../../../Users/sourajitsaha/workspace/sidenote/node_modules/marked/lib/marked.esm.js"() {
     y = v();
     B = { exec: () => null };
     Me = ((a3 = "") => {
@@ -4483,8 +4621,8 @@ __export(main_exports, {
   runTui: () => runTui,
   terminalOptions: () => terminalOptions
 });
-import { spawnSync } from "node:child_process";
-import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync4, rmSync, writeFileSync } from "node:fs";
+import { spawnSync as spawnSync2 } from "node:child_process";
+import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync6, rmSync as rmSync2, writeFileSync } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
 import { join as join4 } from "node:path";
 import { setTimeout as sleep3 } from "node:timers/promises";
@@ -4617,12 +4755,12 @@ function editInEditor(text) {
   const file = join4(dir, "note.md");
   try {
     writeFileSync(file, text, { mode: 384 });
-    const result = spawnSync(editor[0], [...editor.slice(1), file], { stdio: "inherit" });
-    return result.status === 0 ? readFileSync4(file, "utf8") : null;
+    const result = spawnSync2(editor[0], [...editor.slice(1), file], { stdio: "inherit" });
+    return result.status === 0 ? readFileSync6(file, "utf8") : null;
   } catch {
     return null;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync2(dir, { recursive: true, force: true });
   }
 }
 var POLL_INTERVAL_MS;
@@ -4640,7 +4778,7 @@ var init_main = __esm({
 });
 
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname as dirname2, join as join5 } from "node:path";
 import { setTimeout as sleep4 } from "node:timers/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -4650,12 +4788,14 @@ var HEADLESS_ENV = "SIDENOTE_HEADLESS";
 
 // src/cli/main.ts
 init_paths();
+init_folders();
 init_client();
 
 // src/cli/hooks.ts
+init_process();
 init_client();
 import { randomBytes } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
 
 // src/shared/format.ts
@@ -4791,7 +4931,7 @@ function firstLine(text) {
 }
 
 // src/cli/transcript.ts
-import { existsSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync, readdirSync, readFileSync as readFileSync4 } from "node:fs";
 import { join as join3 } from "node:path";
 var QUESTION_TOOLS = /* @__PURE__ */ new Set(["AskUserQuestion", "ExitPlanMode"]);
 function findTranscript(transcriptsDir, sessionId) {
@@ -4863,7 +5003,7 @@ function cwdFromTranscript(transcript) {
   return "";
 }
 function readTranscript(file) {
-  return readFileSync2(file, "utf8");
+  return readFileSync4(file, "utf8");
 }
 function isUserPrompt(entry2) {
   if (entry2.isMeta) return false;
@@ -4875,10 +5015,14 @@ function isUserPrompt(entry2) {
 // src/cli/hooks.ts
 var WAITER_POLL_MS = 1e3;
 var MAX_SHOWN_PROMPT_CHARS = 1e5;
+function reportedProcess() {
+  const found = claudeProcess();
+  return found ? { claude_process: found } : {};
+}
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
-    return sessionNameFromTranscript(readFileSync3(transcriptPath, "utf8"));
+    return sessionNameFromTranscript(readFileSync5(transcriptPath, "utf8"));
   } catch {
     return "";
   }
@@ -4892,11 +5036,17 @@ async function hookStop(input) {
     session_id: sessionId,
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
-    text
+    text,
+    ...reportedProcess()
   };
   const result = await client.post("/api/responses", reply);
-  if (!started && !result.new_session) return;
-  openBrowser(await client.windowUrl(sessionId));
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
+}
+async function hookClear(input) {
+  if (input.reason !== "clear" || !input.session_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  await client.post("/api/sessions/cleared", { session_id: input.session_id });
 }
 async function hookSession() {
   const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
@@ -4904,9 +5054,9 @@ async function hookSession() {
 `);
 }
 async function hookPrompt(input) {
-  const client = await SidenoteClient.connect();
-  if (!client || !input.session_id) return;
-  const claim = { session_id: input.session_id };
+  if (!input.session_id) return;
+  const { client } = await SidenoteClient.ensure();
+  const claim = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post("/api/claim", claim);
   if (!comments.length && prompt === void 0) return;
@@ -4941,10 +5091,16 @@ async function hookWait(input) {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
-  const waiter = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  const waiter = {
+    session_id: input.session_id,
+    waiter_id: randomBytes(8).toString("hex"),
+    ...reportedProcess()
+  };
   await client.post("/api/waiters", waiter);
+  const owner = claudeProcess();
   for (; ; ) {
     await sleep2(WAITER_POLL_MS);
+    if (owner && !pidInUse(owner.pid)) return;
     let result;
     try {
       result = await client.post("/api/waiters/poll", waiter);
@@ -4987,6 +5143,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote backfill [session]  import the session's earlier replies
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
+  sidenote hook-clear          SessionEnd hook: forget the session on /clear
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
@@ -4994,7 +5151,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
-var NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+var NOT_RUNNING = "sidenote is off; use /sidenote:on first.";
 var SERVER_STOP_TIMEOUT_MS = 5e3;
 var LAUNCHER = join5(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
 function shellQuote(text) {
@@ -5021,13 +5178,17 @@ async function touchSession(client, sessionId) {
     cwd: cwdFromTranscript(transcript)
   });
 }
-async function show(client, requested) {
+async function openWindow(client, requested) {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? await latestSession(client);
   const { session } = await fetchState(client, sessionId);
-  openBrowser(await client.windowUrl(sessionId));
-  const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
-  return `Opened the ${label} window in your browser (${client.origin}).`;
+  const cwd = session?.cwd ?? "";
+  openBrowser(await client.windowUrl(sessionId, cwd));
+  const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
+  return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
+}
+async function enabledClient() {
+  return isEnabled() ? (await SidenoteClient.ensure()).client : null;
 }
 function stopServer() {
   const pid = serverPid();
@@ -5055,14 +5216,14 @@ async function turnOn() {
   mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
   writeFileSync2(paths.enabledFlag(), "");
   const { client } = await SidenoteClient.ensure();
-  return show(client, sessionArgument2());
+  return openWindow(client, sessionArgument2());
 }
 var commands = {
   async on() {
     console.log(`sidenote is on. ${await turnOn()}`);
   },
   async off() {
-    rmSync2(paths.enabledFlag(), { force: true });
+    rmSync3(paths.enabledFlag(), { force: true });
     stopServer();
     console.log("sidenote is off. Unsent notes are kept and go out after the next /sidenote:on.");
   },
@@ -5076,8 +5237,8 @@ var commands = {
     console.log(`sidenote restarted. ${await turnOn()}`);
   },
   async open() {
-    const client = await SidenoteClient.connect();
-    console.log(client ? await show(client, sessionArgument2()) : NOT_RUNNING);
+    const client = await enabledClient();
+    console.log(client ? await openWindow(client, sessionArgument2()) : NOT_RUNNING);
   },
   async status() {
     console.log(`enabled: ${isEnabled() ? "yes" : "no"}`);
@@ -5096,6 +5257,7 @@ var commands = {
       return;
     }
     console.log(`session: ${session.name || "(unnamed)"} \xB7 ${session.id.slice(0, 8)} \xB7 ${session.cwd}`);
+    console.log(`window:  ${client.windowAddress(session.cwd)}`);
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c2) => c2.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
@@ -5103,7 +5265,7 @@ var commands = {
   },
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {
-    const client = await SidenoteClient.connect();
+    const client = await enabledClient();
     if (!client) {
       console.log(NOT_RUNNING);
       return;
@@ -5144,6 +5306,7 @@ var commands = {
   },
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
+  "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
   "hook-progress": () => runHook(hookProgress),

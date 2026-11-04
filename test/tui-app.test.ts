@@ -40,7 +40,18 @@ class FakeApi implements TuiApi {
   constructor(responses: StoredResponse[], comments: Note[] = [], status: SessionState = "listening") {
     this.snapshot = {
       version: 1,
-      session: { id: SESSION, name: "auth-refactor", cwd: "/w/demo", last_active: 0, status, send_requested: false },
+      session: {
+        id: SESSION,
+        name: "auth-refactor",
+        label: "",
+        cwd: "/w/demo",
+        last_active: 0,
+        status,
+        send_requested: false,
+      },
+      folder: "demo",
+      sessions: [],
+      can_start_sessions: false,
       responses,
       comments,
       messages: [],
@@ -338,10 +349,10 @@ test("without a session, waits for one in this folder", async () => {
   const app = new App({ api, terminal, ansi: { color: true, hyperlinks: true }, sessionId: null, cwd: "/w/demo" });
   await app.refresh();
   assert.ok(terminal.has("Waiting for a Claude Code session in demo."));
-  api.sessionList = [{ id: "other", name: "", cwd: "/w/elsewhere", last_active: 2 }];
+  api.sessionList = [{ id: "other", name: "", label: "", cwd: "/w/elsewhere", last_active: 2 }];
   await app.refresh();
   assert.equal(app.sessionId, null, "a session in another folder isn't this one");
-  api.sessionList.push({ id: SESSION, name: "", cwd: "/w/demo", last_active: 1 });
+  api.sessionList.push({ id: SESSION, name: "", label: "", cwd: "/w/demo", last_active: 1 });
   await app.refresh();
   assert.equal(app.sessionId, SESSION);
   assert.deepEqual(terminal.selected, ["First reply."]);

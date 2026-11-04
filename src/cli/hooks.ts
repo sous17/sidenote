@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type {
   ActivityRequest,
   ClaimRequest,
+  ClaudeProcess,
   ProgressRequest,
   ClaimResult,
   NewResponseRequest,
@@ -12,6 +13,7 @@ import type {
   WaiterPollResult,
   WaiterRequest,
 } from "../shared/types.ts";
+import { claudeProcess, pidInUse } from "../node/process.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "../shared/format.ts";
 import { MAX_PROGRESS_DELTA_CHARS, toolActivity } from "../shared/tools.ts";
@@ -29,6 +31,8 @@ export interface HookInput {
   last_assistant_message?: string;
   /** UserPromptSubmit: what the user typed. */
   prompt?: string;
+  /** SessionEnd: why the session ended. */
+  reason?: string;
   /** PreToolUse: the call Claude is about to make. */
   tool_name?: string;
   tool_input?: Record<string, unknown>;
@@ -38,6 +42,12 @@ export interface HookInput {
   message_id?: string;
   index?: number;
   delta?: string;
+}
+
+/** The Claude process this hook runs under, so the window can end its session. */
+function reportedProcess(): { claude_process?: ClaudeProcess } {
+  const found = claudeProcess();
+  return found ? { claude_process: found } : {};
 }
 
 /** The session's /rename name, or "" if the transcript can't be read or has none. */
@@ -61,10 +71,22 @@ export async function hookStop(input: HookInput): Promise<void> {
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
     text,
+    ...reportedProcess(),
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
-  if (!started && !result.new_session) return;
-  openBrowser(await client.windowUrl(sessionId));
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
+}
+
+/**
+ * SessionEnd, only for /clear: the session is over, so its window lets go of it. Claude Code gives
+ * these hooks 1.5 seconds and a plugin can't raise that, so a stopped server is left alone: retention
+ * forgets the session later.
+ */
+export async function hookClear(input: HookInput): Promise<void> {
+  if (input.reason !== "clear" || !input.session_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  await client.post("/api/sessions/cleared", { session_id: input.session_id });
 }
 
 /** SessionStart: tells Claude how to show code changes so the window can draw them as diffs. */
@@ -75,9 +97,10 @@ export async function hookSession(): Promise<void> {
 
 /** UserPromptSubmit: shows the prompt in the window, and attaches pending notes to it as context. */
 export async function hookPrompt(input: HookInput): Promise<void> {
-  const client = await SidenoteClient.connect();
-  if (!client || !input.session_id) return;
-  const claim: ClaimRequest = { session_id: input.session_id };
+  if (!input.session_id) return;
+  // The server stops when idle, and saved notes must still go with this prompt.
+  const { client } = await SidenoteClient.ensure();
+  const claim: ClaimRequest = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post<ClaimResult>("/api/claim", claim);
   if (!comments.length && prompt === undefined) return;
@@ -129,10 +152,17 @@ export async function hookWait(input: HookInput): Promise<void> {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
-  const waiter: WaiterRequest = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  const waiter: WaiterRequest = {
+    session_id: input.session_id,
+    waiter_id: randomBytes(8).toString("hex"),
+    ...reportedProcess(),
+  };
   await client.post("/api/waiters", waiter);
+  // A waiter left behind by a Claude that died would keep the server, and "listening", alive.
+  const owner = claudeProcess();
   for (;;) {
     await sleep(WAITER_POLL_MS);
+    if (owner && !pidInUse(owner.pid)) return;
     let result: WaiterPollResult;
     try {
       result = await client.post<WaiterPollResult>("/api/waiters/poll", waiter);

@@ -1,16 +1,18 @@
 // Sessions, replies and notes, with retention limits. Send now coordination lives in delivery.ts.
 import { systemClock, type Clock } from "../node/clock.ts";
+import { folderName } from "../shared/folders.ts";
 import type {
   ClaimedNote,
   EpochSeconds,
   Note,
   SessionMeta,
   SessionSummary,
+  FolderSession,
   StoredResponse,
   TurnStep,
   UserMessage,
 } from "../shared/types.ts";
-import { emptyStore, loadStore, saveStore, type StoreData } from "./persistence.ts";
+import { StoreFiles, emptyStore, type StoreData } from "./persistence.ts";
 import type { ParsedNote } from "./requests.ts";
 import { splitNoteAnswers } from "./split.ts";
 
@@ -18,6 +20,8 @@ import { splitNoteAnswers } from "./split.ts";
 export const MAX_RESPONSES_PER_SESSION = 100;
 /** A session with no activity for this long is forgotten, with its replies and notes. */
 export const SESSION_RETENTION_SECONDS = 7 * 24 * 60 * 60;
+/** Enough of a session's first message to recognize the session by in its tab. */
+const FIRST_MESSAGE_CHARS = 80;
 
 /** A counter clients poll with, so unchanged state costs one 204. */
 export class Revision {
@@ -65,14 +69,14 @@ export interface NewReply {
 export class Store {
   readonly revision = new Revision();
   readonly #data: StoreData;
-  readonly #file: string | undefined;
+  readonly #files: StoreFiles | undefined;
   readonly #clock: Clock;
 
-  /** Without a file, the store lives in memory only (tests). */
-  constructor(options: { file?: string; clock?: Clock } = {}) {
-    this.#file = options.file;
+  /** Without a directory, the store lives in memory only (tests). */
+  constructor(options: { dir?: string; clock?: Clock } = {}) {
+    this.#files = options.dir === undefined ? undefined : new StoreFiles(options.dir);
     this.#clock = options.clock ?? systemClock;
-    this.#data = this.#file ? loadStore(this.#file) : emptyStore();
+    this.#data = this.#files?.load() ?? emptyStore();
     if (this.#prune()) this.#persist();
   }
 
@@ -88,6 +92,18 @@ export class Store {
     return [...this.#data.sessions]
       .map(([id, meta]) => ({ id, ...meta }))
       .sort((a, b) => b.last_active - a.last_active);
+  }
+
+  /** The sessions that ran in a folder, most recently active first, with what their rows show. */
+  folderSessions(folder: string): Omit<FolderSession, "status" | "process">[] {
+    const pending = this.#pendingNotesPerSession();
+    return this.listSessions()
+      .filter((session) => folderName(session.cwd) === folder)
+      .map((session) => ({
+        ...session,
+        first_message: this.#firstMessage(session.id).replace(/\s+/g, " ").trim().slice(0, FIRST_MESSAGE_CHARS),
+        pending_notes: pending.get(session.id) ?? 0,
+      }));
   }
 
   /** One session's replies and messages, oldest first, and the notes on the replies. */
@@ -108,15 +124,14 @@ export class Store {
       .join("\n\n");
   }
 
+  /** Whether the session holds notes or messages that never reached Claude. */
+  hasUnsent(sessionId: string): boolean {
+    return this.#pendingNotesPerSession().has(sessionId) || this.#waitingMessages(sessionId).length > 0;
+  }
+
   /** Sessions with notes that haven't been sent to Claude yet. */
   sessionsWithPendingNotes(): Set<string> {
-    const sessionOf = this.#sessionOfResponse();
-    const pending = new Set<string>();
-    for (const note of this.#data.comments) {
-      const sessionId = sessionOf.get(note.response_id);
-      if (note.delivered_at === null && sessionId !== undefined) pending.add(sessionId);
-    }
-    return pending;
+    return new Set(this.#pendingNotesPerSession().keys());
   }
 
   // ---- Writing ---------------------------------------------------------------------------
@@ -125,6 +140,29 @@ export class Store {
   touchSession(sessionId: string, name: string, cwd: string): void {
     this.#upsertSession(sessionId, { name, cwd, activeAt: this.#clock.now() });
     this.#changed();
+  }
+
+  /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
+  renameSession(sessionId: string, label: string): boolean {
+    const meta = this.#data.sessions.get(sessionId);
+    if (!meta) return false;
+    meta.label = label;
+    this.#changed();
+    return true;
+  }
+
+  /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
+  forgetSession(sessionId: string): boolean {
+    const data = this.#data;
+    // A session's first prompt comes before the first reply that makes the session known.
+    const known = data.sessions.delete(sessionId) || data.messages.some((m) => m.session_id === sessionId);
+    if (!known) return false;
+    const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId).map((r) => r.id));
+    data.responses = data.responses.filter((r) => !dropped.has(r.id));
+    data.comments = data.comments.filter((c) => !dropped.has(c.response_id));
+    data.messages = data.messages.filter((m) => m.session_id !== sessionId);
+    this.#changed();
+    return true;
   }
 
   addResponse(reply: NewReply): { response: StoredResponse; newSession: boolean } {
@@ -253,7 +291,12 @@ export class Store {
   }
 
   #upsertSession(sessionId: string, update: { name: string; cwd: string; activeAt: EpochSeconds }): void {
-    const meta: SessionMeta = this.#data.sessions.get(sessionId) ?? { name: "", cwd: update.cwd, last_active: 0 };
+    const meta: SessionMeta = this.#data.sessions.get(sessionId) ?? {
+      name: "",
+      label: "",
+      cwd: update.cwd,
+      last_active: 0,
+    };
     if (update.name) meta.name = update.name;
     if (update.cwd) meta.cwd = update.cwd;
     meta.last_active = Math.max(meta.last_active, update.activeAt);
@@ -312,6 +355,24 @@ export class Store {
     return data.responses.length + data.sessions.size + data.messages.length !== before;
   }
 
+  /** A session sidenote runs keeps what the user typed on each reply, not as a message of its own. */
+  #firstMessage(sessionId: string): string {
+    const message = this.#data.messages.find((m) => m.session_id === sessionId);
+    if (message) return message.text;
+    return this.#data.responses.find((r) => r.session_id === sessionId && r.prompt?.trim())?.prompt ?? "";
+  }
+
+  #pendingNotesPerSession(): Map<string, number> {
+    const sessionOf = this.#sessionOfResponse();
+    const pending = new Map<string, number>();
+    for (const note of this.#data.comments) {
+      const sessionId = sessionOf.get(note.response_id);
+      if (note.delivered_at === null && sessionId !== undefined)
+        pending.set(sessionId, (pending.get(sessionId) ?? 0) + 1);
+    }
+    return pending;
+  }
+
   #sessionOfResponse(): Map<number, string> {
     return new Map(this.#data.responses.map((r) => [r.id, r.session_id] as const));
   }
@@ -326,6 +387,6 @@ export class Store {
   }
 
   #persist(): void {
-    if (this.#file) saveStore(this.#file, this.#data);
+    this.#files?.save(this.#data);
   }
 }

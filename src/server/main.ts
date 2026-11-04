@@ -4,16 +4,21 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
-import type { ServerInfo } from "../shared/types.ts";
+import { isSameProcess, pidInUse } from "../node/process.ts";
+import { canStartSessions, startInTerminal, terminalCommand } from "../node/terminal.ts";
 import { ClaudeAgent } from "../agent/claude.ts";
 import { sessionContext } from "../shared/format.ts";
+import { PAGE_HOST, type ServerInfo } from "../shared/types.ts";
 import { Delivery } from "./delivery.ts";
 import { SessionHost } from "./host.ts";
 import { createApp } from "./http.ts";
+import { SessionProcesses } from "./processes.ts";
 import { LaunchCodes } from "./launch.ts";
-import { acquireServerLock, releaseServerLock } from "./lock.ts";
+import { acquireServerLock, holdServerLock, releaseServerLock } from "./lock.ts";
 import { Store } from "./store.ts";
+import { ServerWatch, WATCH_INTERVAL_MS } from "./watch.ts";
 
 // Bundled to dist/server.js, next to the page files in dist/web.
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "web");
@@ -45,24 +50,35 @@ async function listen(server: Server): Promise<number> {
   }
 }
 
-function removeServerFile(): void {
+function registeredPid(): number | null {
   try {
-    const current = JSON.parse(readFileSync(paths.serverFile(), "utf8")) as ServerInfo;
-    if (current.pid === process.pid) rmSync(paths.serverFile());
+    return (JSON.parse(readFileSync(paths.serverFile(), "utf8")) as ServerInfo).pid;
   } catch {
-    // Already gone, or another server's.
+    return null;
   }
+}
+
+function removeServerFile(): void {
+  if (registeredPid() === process.pid) rmSync(paths.serverFile(), { force: true });
 }
 
 async function main(): Promise<void> {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
   // Whoever started this one finds the running server through server.json.
-  if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
+  if (!acquireServerLock(paths.lockFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
-  const store = new Store({ file: paths.storeFile() });
+  const store = new Store({ dir: paths.stateDir() });
   const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
   const token = randomBytes(32).toString("base64url");
   const allowedHosts = new Set<string>();
+  let serverInfo = "";
+  const register = (): void => writeFileSync(paths.serverFile(), serverInfo, { mode: 0o600 });
+  const watch = new ServerWatch({
+    holdsLock: () => holdServerLock(paths.lockFile()),
+    isRegistered: () => registeredPid() === process.pid,
+    register,
+    working: () => host.working(),
+  });
   const server = createServer(
     createApp({
       store,
@@ -72,6 +88,12 @@ async function main(): Promise<void> {
       token,
       allowedHosts,
       webDir: WEB_DIR,
+      onActivity: () => watch.active(),
+      openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
+      processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+      startSession: canStartSessions()
+        ? (session) => startInTerminal(terminalCommand(process.platform, session)!)
+        : null,
     }),
   );
   // Long-lived keep-alive sockets would otherwise hold shutdown open.
@@ -80,10 +102,10 @@ async function main(): Promise<void> {
   const port = await listen(server);
   allowedHosts.add(`127.0.0.1:${port}`);
   allowedHosts.add(`localhost:${port}`);
+  allowedHosts.add(`${PAGE_HOST}:${port}`);
   writeFileSync(paths.portFile(), String(port), { mode: 0o600 });
-  writeFileSync(paths.serverFile(), JSON.stringify({ port, token, pid: process.pid } satisfies ServerInfo), {
-    mode: 0o600,
-  });
+  serverInfo = JSON.stringify({ port, token, pid: process.pid } satisfies ServerInfo);
+  register();
   console.error(`sidenote listening on http://127.0.0.1:${port}`);
 
   const shutDown = (): void => {
@@ -95,6 +117,19 @@ async function main(): Promise<void> {
   };
   process.on("SIGTERM", shutDown);
   process.on("SIGINT", shutDown);
+
+  const interval = Number(process.env["SIDENOTE_WATCH_INTERVAL_MS"]) || WATCH_INTERVAL_MS;
+  setInterval(() => {
+    let reason: string | null;
+    try {
+      reason = watch.tick();
+    } catch (error) {
+      reason = `its files can't be reached: ${String(error)}`;
+    }
+    if (!reason) return;
+    console.error(`sidenote stopping: ${reason}`);
+    shutDown();
+  }, interval);
 }
 
 main().catch((error: unknown) => {

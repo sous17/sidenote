@@ -1,5 +1,5 @@
 // The contract between the server, the hooks and the page.
-// Field names are snake_case because they are also the on-disk format of ~/.sidenote/store.json.
+// Field names are snake_case because they are also the on-disk format of ~/.sidenote/sessions/.
 
 /** Seconds since the epoch, with a fraction. */
 export type EpochSeconds = number;
@@ -75,6 +75,8 @@ export type SessionState = "listening" | "busy" | "offline";
 export interface SessionMeta {
   /** The name given with /rename, or "" when the session has none. */
   name: string;
+  /** The name given in the window, which only sidenote shows; "" when it has none. */
+  label: string;
   cwd: string;
   /** When the session was last active; sessions idle too long are forgotten. */
   last_active: EpochSeconds;
@@ -100,11 +102,37 @@ export interface SendStatus {
 /** The session a page shows, with its Send now status. */
 export type SessionView = SessionSummary & SendStatus;
 
-/** One session's replies and notes. Each page shows exactly one session. */
+/** A row in a folder's session list: one of the sessions that ran in that folder. */
+export interface FolderSession extends SessionSummary {
+  status: SessionState;
+  /** The session's first message, shortened, so sessions without a /rename name can be told apart. */
+  first_message: string;
+  pending_notes: number;
+  /** Whether sidenote knows the session's Claude process, and whether that still runs. */
+  process: "running" | "ended" | "unknown";
+}
+
+/** The Claude Code process a session runs in, as its hooks report it. */
+export interface ClaudeProcess {
+  pid: number;
+  /** When it started, so a later process that gets the same pid isn't mistaken for it. */
+  started: string;
+}
+
+/**
+ * A folder's window: its sessions, and the replies and notes of the one selected. Each page shows
+ * one folder, and one of its sessions at a time.
+ */
 export interface StateSnapshot {
   version: number;
-  /** null when the page names no session, or one sidenote has never seen or has forgotten. */
+  /** The session asked for, else the folder's latest; null when sidenote knows neither. */
   session: SessionView | null;
+  /** The window's folder by name; "" when the session's folder is unknown. */
+  folder: string;
+  /** The folder's sessions, most recently active first. */
+  sessions: FolderSession[];
+  /** Whether the page can start a new session in the folder: there is a terminal to open. */
+  can_start_sessions: boolean;
   responses: StoredResponse[];
   comments: Note[];
   /** What the user sent Claude in this session, oldest first. */
@@ -213,6 +241,7 @@ export interface NewResponseRequest {
   text: string;
   /** Only for backfilled replies; live replies are stamped by the server. */
   created_at?: EpochSeconds;
+  claude_process?: ClaudeProcess;
 }
 
 export interface NewResponseResult {
@@ -238,6 +267,7 @@ export interface ClaimRequest {
   session_id: string;
   /** What the user typed in the terminal, so the page can show it. */
   prompt?: string;
+  claude_process?: ClaudeProcess;
 }
 
 export interface ClaimResult {
@@ -260,6 +290,38 @@ export interface PromptResult {
 export interface WaiterRequest {
   session_id: string;
   waiter_id: string;
+  claude_process?: ClaudeProcess;
+}
+
+/**
+ * Acts on one session: opens its folder, ends it, or removes it from the list. The server knows
+ * the folder and the process; the page only names the session.
+ */
+export interface SessionRequest {
+  session_id: string;
+}
+
+/** Names a session in the window; an empty label removes the name. */
+export interface RenameSessionRequest {
+  session_id: string;
+  label: string;
+}
+
+/**
+ * Starts a new session in a terminal, in the folder of the session named, which the server knows;
+ * the page never sends a path.
+ */
+export interface StartSessionRequest {
+  session_id: string;
+  /** The new session's first prompt; empty or absent starts Claude without one. */
+  prompt?: string;
+  /** Its name, in the window and in Claude Code; empty or absent leaves it unnamed. */
+  name?: string;
+}
+
+export interface StartSessionResult {
+  /** The new session's id, which the server gave Claude, so the page can select it right away. */
+  session_id: string;
 }
 
 export type WaiterAction = "exit" | "wait" | "send";
@@ -292,6 +354,11 @@ export interface RedeemResult {
   token: string;
 }
 
+/** /clear ended a session: forgotten is false when it was kept for its unsent notes or messages. */
+export interface ClearedSessionResult {
+  forgotten: boolean;
+}
+
 export interface ErrorResult {
   error: string;
 }
@@ -307,8 +374,17 @@ export interface ServerInfo {
 
 export const TOKEN_HEADER = "X-Review-Token";
 
+/**
+ * The longest message the page can send. It reaches Claude through the same capped hook output as
+ * notes, so it leaves room for the framing and some notes.
+ */
+export const MAX_PROMPT_CHARS = 8000;
+
 /** URL fragment key that carries a launch code to a newly opened page. */
 export const LAUNCH_FRAGMENT_KEY = "launch";
+
+/** The host windows open on. Browsers resolve *.localhost to this machine without any setup. */
+export const PAGE_HOST = "sidenote.localhost";
 
 /** Session ids are Claude Code UUIDs; anything else is refused. */
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

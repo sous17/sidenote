@@ -1,18 +1,37 @@
 // End to end: the built launcher and CLI against a real server, in a scratch HOME.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { Note, RedeemResult, ServerInfo, StateSnapshot } from "../src/shared/types.ts";
+import {
+  PAGE_HOST,
+  type Note,
+  type RedeemResult,
+  type ServerInfo,
+  type StartSessionResult,
+  type StateSnapshot,
+} from "../src/shared/types.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const launcher = join(root, "bin", "sidenote");
 const home = mkdtempSync(join(tmpdir(), "sidenote-home-"));
 const opened = join(home, "opened.txt");
+const terminalArgs = join(home, "terminal-args");
 const SESSION = "e2e-session";
 
 interface Run {
@@ -55,20 +74,37 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
   return (await response.json()) as T;
 }
 
+/** fetch() can't set Host, so this goes through node:http. */
+function statusWithHost(host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port: server().port, path: "/demo", headers: { Host: host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 let openedCount = 0;
 
-/** The next URL the stand-in browser is asked to open. The opener runs detached, so wait for it. */
-async function lastOpened(): Promise<URL> {
+/** The next thing the stand-in opener is asked to open. The opener runs detached, so wait for it. */
+async function nextOpened(): Promise<string> {
   const deadline = Date.now() + 5000;
   for (;;) {
     const lines = existsSync(opened) ? readFileSync(opened, "utf8").trim().split("\n") : [];
     if (lines.length > openedCount) {
       openedCount = lines.length;
-      return new URL(lines.at(-1)!);
+      return lines.at(-1)!;
     }
-    if (Date.now() > deadline) throw new Error("the browser was not opened");
+    if (Date.now() > deadline) throw new Error("nothing was opened");
     await sleep(50);
   }
+}
+
+/** The next URL the stand-in browser is asked to open. */
+async function lastOpened(): Promise<URL> {
+  return new URL(await nextOpened());
 }
 
 before(() => {
@@ -78,6 +114,11 @@ before(() => {
   for (const opener of ["open", "xdg-open"]) {
     writeFileSync(join(home, "fakebin", opener), `#!/bin/sh\necho "$1" >> "${opened}"\n`);
     chmodSync(join(home, "fakebin", opener), 0o755);
+  }
+  // Stand-ins for the terminals: record the arguments instead of opening a window.
+  for (const terminal of ["gnome-terminal", "osascript"]) {
+    writeFileSync(join(home, "fakebin", terminal), `#!/bin/sh\nprintf '%s\\0' "$@" > "${terminalArgs}"\n`);
+    chmodSync(join(home, "fakebin", terminal), 0o755);
   }
 });
 
@@ -97,12 +138,16 @@ test("windows open with a single-use launch code, never the token", async () => 
   assert.equal(on.code, 0);
   assert.match(on.stdout, /sidenote is on\. Opened the sidenote window/);
   const url = await lastOpened();
+  assert.equal(url.host, `${PAGE_HOST}:${server().port}`);
+  assert.equal(url.pathname, "/");
   assert.equal(url.search, "", "no session yet");
   assert.match(url.hash, /^#launch=[\w-]{32}$/);
   assert.ok(!url.href.includes(server().token));
+  assert.equal(await statusWithHost(`${PAGE_HOST}:${server().port}`), 200, "the server answers its page host");
 
+  // Node may resolve the page host to ::1, where the server doesn't listen.
   const redeem = (): Promise<Response> =>
-    fetch(`${url.origin}/api/launch/redeem`, {
+    fetch(`http://127.0.0.1:${server().port}/api/launch/redeem`, {
       method: "POST",
       body: JSON.stringify({ code: url.hash.slice("#launch=".length) }),
     });
@@ -130,7 +175,9 @@ test("hooks skip sessions sidenote runs headless", async () => {
 test("Stop, Send now waking Claude with exit code 2, and a terminal prompt instead", async () => {
   // Claude finishes a session's first reply: the hook posts it and opens that session's window.
   assert.equal((await run(["hook-stop"], hookInput({ last_assistant_message: "Para one." }))).code, 0);
-  assert.equal((await lastOpened()).searchParams.get("s"), SESSION);
+  const url = await lastOpened();
+  assert.equal(url.pathname, "/demo", "the window is the session's folder");
+  assert.equal(url.searchParams.get("s"), SESSION);
   const waiter = run(["hook-wait"], hookInput({}));
   await sleep(1500);
   let state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
@@ -215,10 +262,79 @@ test("status and open act on the session", async () => {
   assert.match(status.stdout, /replies: 3/);
   assert.match(status.stdout, /pending notes: 0/);
   assert.match(status.stdout, new RegExp(`terminal: '${launcher}' tui ${SESSION}\n`), "the command for sidenote tui");
+  assert.match(status.stdout, new RegExp(`window: +http://${PAGE_HOST}:\\d+/demo\\n`));
   assert.doesNotMatch(status.stdout, new RegExp(server().token), "status never prints the token");
 
   await run(["open"]);
   assert.equal((await lastOpened()).searchParams.get("s"), SESSION, "open without a session picks the latest");
+});
+
+test("the server opens a session's folder with the system's opener", async () => {
+  await api("POST", "/api/sessions", { session_id: "folder-session", cwd: home });
+  const { port, token } = server();
+  const response = await fetch(`http://127.0.0.1:${port}/api/open-folder`, {
+    method: "POST",
+    headers: { "X-Review-Token": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: "folder-session" }),
+  });
+  assert.equal(response.status, 204);
+  assert.equal(await nextOpened(), home);
+});
+
+test("starting a session opens a terminal running claude in the session's folder", async () => {
+  await api("POST", "/api/sessions", { session_id: "folder-session", cwd: home });
+  const { port, token } = server();
+  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/start`, {
+    method: "POST",
+    headers: { "X-Review-Token": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: "folder-session", prompt: "-v fix it" }),
+  });
+  assert.equal(response.status, 201);
+  const { session_id } = (await response.json()) as StartSessionResult;
+  const args = readFileSync(terminalArgs, "utf8").split("\0").slice(0, -1);
+  if (process.platform === "darwin") {
+    assert.equal(args[0], "-e");
+    assert.deepEqual(args.slice(-4), [home, session_id, "", "-v fix it"], "folder, id, no name, prompt");
+  } else {
+    assert.deepEqual(args, [
+      `--working-directory=${home}`,
+      "--",
+      "claude",
+      "--session-id",
+      session_id,
+      "--",
+      "-v fix it",
+    ]);
+  }
+});
+
+test("a hook reports the Claude process it runs under, so the window can end the session", async () => {
+  // Stands in for Claude: node, under the name claude, running a hook the way Claude Code does.
+  const claude = join(home, "fakebin", "claude");
+  if (!existsSync(claude)) symlinkSync(process.execPath, claude);
+  const runHook = `
+    const { spawnSync } = require("node:child_process");
+    spawnSync(process.argv[1], ["hook-prompt"], { input: process.argv[2], stdio: ["pipe", "ignore", "ignore"] });
+    process.stdout.write(String(process.pid));`;
+  const child = spawn(claude, ["-e", runHook, launcher, hookInput({ prompt: "Go" })], {
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
+      SIDENOTE_NODE: process.execPath,
+    },
+  });
+  let pid = "";
+  child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
+  await once(child, "close");
+  assert.match(pid, /^\d+$/);
+
+  const state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
+  assert.equal(
+    state.sessions.find((row) => row.id === SESSION)?.process,
+    "ended",
+    "reported, and since ended: the stand-in exited after the hook",
+  );
 });
 
 test("clients starting the server at the same moment all end up on one server", async () => {
@@ -284,6 +400,85 @@ test("restart replaces the server, keeps the replies and opens the window", asyn
   assert.ok(await lastOpened());
   const state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
   assert.ok(state.responses.length > 0);
+});
+
+test("/clear forgets the session it ended, and other ways of ending keep it", async () => {
+  const clearInput = (session_id: string, reason: string): string => hookInput({ session_id, reason });
+  const known = async (id: string): Promise<boolean> =>
+    (await api<StateSnapshot>("GET", `/api/state?v=-1&s=${id}`)).session !== null;
+
+  for (const id of ["to-clear", "to-exit"]) {
+    await run(["hook-stop"], hookInput({ session_id: id, last_assistant_message: "Hi." }));
+    await nextOpened();
+  }
+  assert.ok(existsSync(join(home, ".sidenote", "sessions", "to-clear.json")));
+
+  assert.equal((await run(["hook-clear"], clearInput("to-exit", "prompt_input_exit"))).code, 0);
+  assert.equal(await known("to-exit"), true);
+  assert.equal((await run(["hook-clear"], clearInput("to-clear", "clear"))).code, 0);
+  assert.equal(await known("to-clear"), false);
+  assert.equal(existsSync(join(home, ".sidenote", "sessions", "to-clear.json")), false);
+});
+
+test("off and restart reach a server whose server.json is gone", async () => {
+  const stale = server();
+  rmSync(join(home, ".sidenote", "server.json"));
+  assert.match((await run(["restart"])).stdout, /sidenote restarted/);
+  await nextOpened();
+  assert.notEqual(server().pid, stale.pid);
+  assert.throws(() => process.kill(stale.pid, 0), "the old server is gone, not left beside the new one");
+});
+
+test("a stopped server comes back for a prompt, so saved notes still go with it", async () => {
+  await run(["hook-stop"], hookInput({ session_id: "after-idle", last_assistant_message: "Para." }));
+  await nextOpened();
+  const { responses } = await api<StateSnapshot>("GET", "/api/state?v=-1&s=after-idle");
+  await api("POST", "/api/comments", { response_id: responses[0]!.id, block_index: 0, quote: "", body: "Saved." });
+  process.kill(server().pid, "SIGTERM");
+  await sleep(300);
+
+  const prompt = await run(["hook-prompt"], hookInput({ session_id: "after-idle", prompt: "next" }));
+  assert.match(prompt.stdout, /Saved\./);
+});
+
+test("/sidenote:open starts a server that stopped, unless sidenote is off", async () => {
+  process.kill(server().pid, "SIGTERM");
+  await sleep(300);
+  assert.match((await run(["open", SESSION])).stdout, /Opened the/);
+  await nextOpened();
+  await run(["off"]);
+  await sleep(300);
+  assert.match((await run(["open", SESSION])).stdout, /sidenote is off/);
+  await run(["on", SESSION]);
+  await nextOpened();
+});
+
+test("a waiter stops when its Claude dies, so it can't keep the server running", async () => {
+  // Stands in for Claude: node, under the name claude, leaving a waiter behind when it exits.
+  // The name is a symlink to the real node binary: only ever run it, never write to it.
+  const claude = join(home, "fakebin", "claude");
+  if (!existsSync(claude)) symlinkSync(process.execPath, claude);
+  const leaveWaiter = `
+    const { spawn } = require("node:child_process");
+    const waiter = spawn(process.argv[1], ["hook-wait"], { stdio: ["pipe", "ignore", "ignore"], detached: true });
+    waiter.stdin.end(process.argv[2]);
+    waiter.unref();
+    process.stdout.write(String(waiter.pid));
+    setTimeout(() => process.exit(0), 1500);`;
+  const child = spawn(claude, ["-e", leaveWaiter, launcher, hookInput({ session_id: "orphan" })], {
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
+      SIDENOTE_NODE: process.execPath,
+    },
+  });
+  let pid = "";
+  child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
+  await once(child, "close");
+  await sleep(2500);
+  assert.match(pid, /^\d+$/);
+  assert.throws(() => process.kill(Number(pid), 0), "the waiter is gone");
 });
 
 test("off stops the server and hooks go quiet", async () => {

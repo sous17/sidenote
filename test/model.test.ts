@@ -1,17 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Model } from "../src/shared/model.ts";
+import { Model, sessionLabel } from "../src/shared/model.ts";
 import type { Note, SessionState, StateSnapshot, StoredResponse, UserMessage } from "../src/shared/types.ts";
 
 function model(status: SessionState, messageAt: number | null, delivered: boolean, replyAt?: number): Model {
   const result = new Model("s");
-  const session = { id: "s", name: "", cwd: "/w", last_active: 0, status, send_requested: false };
+  const session = { id: "s", name: "", label: "", cwd: "/w", last_active: 0, status, send_requested: false };
   const responses = replyAt === undefined ? [] : [{ id: 1, created_at: replyAt } as StoredResponse];
   const messages =
     messageAt === null
       ? []
       : [{ id: 2, created_at: messageAt, delivered_at: delivered ? messageAt : null } as UserMessage];
-  result.snapshot = { version: 1, session, responses, comments: [], messages } satisfies StateSnapshot;
+  result.snapshot = {
+    version: 1,
+    session,
+    folder: "w",
+    sessions: [],
+    can_start_sessions: false,
+    responses,
+    comments: [],
+    messages,
+  } satisfies StateSnapshot;
   return result;
 }
 
@@ -84,4 +93,16 @@ test("Claude's messages show only while the reply is awaited", () => {
   const answered = model("busy", 10, true, 20);
   answered.snapshot.session!.progress = ["Looking."];
   assert.deepEqual(answered.progress(), [], "the reply took over, so the text isn't shown twice");
+});
+
+test("a session is called by its name in the window, its /rename name, its first message, or its id", () => {
+  const id = "0123456789";
+  const name = { id, label: "", name: "", first_message: "" };
+  assert.equal(
+    sessionLabel({ ...name, label: "DM-1782 OAuth fix", name: "auth", first_message: "Fix" }),
+    "DM-1782 OAuth fix",
+  );
+  assert.equal(sessionLabel({ ...name, name: "auth", first_message: "Fix login" }), "auth");
+  assert.equal(sessionLabel({ ...name, first_message: "Fix login" }), "Fix login");
+  assert.equal(sessionLabel(name), "Session 01234567");
 });

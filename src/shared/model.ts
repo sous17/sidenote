@@ -1,17 +1,37 @@
 // A session's state as the page and the terminal see it: the latest snapshot from the server, the
 // open thread, and questions about them.
-import type { Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "./types.ts";
+import type { FolderSession, Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "./types.ts";
 
 export type AnsweredNote = Note & { answered_by: number };
 
+const EMPTY_SNAPSHOT: StateSnapshot = {
+  version: -1,
+  session: null,
+  folder: "",
+  sessions: [],
+  can_start_sessions: false,
+  responses: [],
+  comments: [],
+  messages: [],
+};
+
 export class Model {
-  readonly sessionId: string;
-  snapshot: StateSnapshot = { version: -1, session: null, responses: [], comments: [], messages: [] };
+  /** The selected session; "" until the server names the folder's latest. */
+  sessionId: string;
+  snapshot: StateSnapshot = EMPTY_SNAPSHOT;
   /** The root note whose thread is open in the pane, if any. */
   openThreadId: number | null = null;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
+  }
+
+  /** Switches to another of the folder's sessions; its state arrives with the next refresh. */
+  select(sessionId: string): void {
+    this.sessionId = sessionId;
+    const { folder, sessions, can_start_sessions } = this.snapshot;
+    this.snapshot = { ...EMPTY_SNAPSHOT, folder, sessions, can_start_sessions };
+    this.openThreadId = null;
   }
 
   get notes(): readonly Note[] {
@@ -100,4 +120,9 @@ export function answeredNoteIds(model: Model, response: StoredResponse): Set<num
   const ids = new Set(Object.keys(response.note_answers).map(Number));
   for (const note of model.notes) if (note.answered_by === response.id) ids.add(note.id);
   return ids;
+}
+
+/** What a session is called: the name given in the window, its /rename name, its first message, or its short id. */
+export function sessionLabel(session: Pick<FolderSession, "id" | "label" | "name" | "first_message">): string {
+  return session.label || session.name || session.first_message || `Session ${session.id.slice(0, 8)}`;
 }
