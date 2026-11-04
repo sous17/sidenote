@@ -28,6 +28,7 @@
   --shadow: 0 1px 2px rgb(27 28 42 / 0.06), 0 4px 16px rgb(27 28 42 / 0.05);
   --topbar-height: 52px;
   --margin-width: 280px;
+  --panel-width: 260px;
   --margin-gap: 28px;
   color-scheme: light;
 }
@@ -133,16 +134,62 @@ button {
   color: var(--text);
 }
 
-/* The session this window shows: its /rename name, then folder and short id. */
-.session-title {
+/* The panel button, then the window's folder and selected session. */
+.window-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+  flex: 1 1 0;
   min-width: 0;
   padding-left: 16px;
   border-left: 1px solid var(--border);
 }
-.session-name {
+.panel-toggle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.panel-toggle:hover,
+.panel-toggle[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--sunken);
+}
+.panel-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+/* How many sessions the folder has, while there is more than one to choose from. */
+.panel-toggle:not([data-count="0"]):not([data-count="1"])::after {
+  content: attr(data-count);
+  position: absolute;
+  top: -6px;
+  right: -7px;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.folder-name {
+  flex: none;
+  max-width: 220px;
   font-weight: 600;
   font-size: 15px;
   color: var(--text);
@@ -150,13 +197,139 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.session-detail {
-  font-size: 12px;
+.folder-name:empty,
+.session-name:empty {
+  display: none;
+}
+.session-name {
+  min-width: 0;
   color: var(--muted);
-  font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.session-name::before {
+  content: "› ";
+}
+/* The session list: docked beside the feed in a wide window, over it otherwise. panel.ts decides. */
+.session-panel {
+  position: fixed;
+  top: var(--topbar-height);
+  bottom: 0;
+  left: 0;
+  z-index: 9;
+  display: none;
+  flex-direction: column;
+  width: var(--panel-width);
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+body[data-panel="docked"] .session-panel,
+body[data-panel="overlay"] .session-panel {
+  display: flex;
+}
+body[data-panel="overlay"] .session-panel {
+  box-shadow: var(--shadow);
+}
+body[data-panel="docked"] .app {
+  margin-left: var(--panel-width);
+}
+.session-panel-head {
+  margin: 0;
+  padding: 14px 16px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.session-list {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  padding: 0 8px 16px;
+  overflow-y: auto;
+}
+.session-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.session-row:hover {
+  background: var(--sunken);
+}
+.session-row[aria-current="true"] {
+  background: var(--sunken);
+  border-color: var(--border);
+}
+.session-row-text {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.session-row-label {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+.session-row[aria-current="true"] .session-row-label {
+  font-weight: 600;
+}
+.session-row-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* Hollow: not listening. Filled: listening. Pulsing: Claude is working. */
+.status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+}
+.session-row[data-status="listening"] .status-dot {
+  border-color: var(--sent-ink);
+  background: var(--sent-ink);
+}
+.session-row[data-status="busy"] .status-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+@keyframes status-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.note-count {
+  flex: none;
+  min-width: 18px;
+  margin-top: 1px;
+  padding: 0 5px;
+  border: 1px solid var(--note-border);
+  border-radius: 999px;
+  background: var(--note);
+  color: var(--pending-ink);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
 }
 
 .topbar-end {
@@ -858,10 +1031,14 @@ li.block:hover:has(li.block:hover) {
     padding: 0 14px;
     gap: 10px;
   }
-  .session-title {
+  .window-title {
+    gap: 8px;
     padding-left: 10px;
   }
-  .session-detail {
+  .folder-name {
+    max-width: 110px;
+  }
+  .session-name {
     display: none;
   }
   .feed-inner {

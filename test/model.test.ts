@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Model } from "../src/web/model.ts";
+import { Model, sessionLabel } from "../src/web/model.ts";
 import type { Note, SessionState, StateSnapshot, StoredResponse, UserMessage } from "../src/shared/types.ts";
 
 function model(status: SessionState, messageAt: number | null, delivered: boolean, replyAt?: number): Model {
@@ -11,7 +11,15 @@ function model(status: SessionState, messageAt: number | null, delivered: boolea
     messageAt === null
       ? []
       : [{ id: 2, created_at: messageAt, delivered_at: delivered ? messageAt : null } as UserMessage];
-  result.snapshot = { version: 1, session, responses, comments: [], messages } satisfies StateSnapshot;
+  result.snapshot = {
+    version: 1,
+    session,
+    folder: "w",
+    sessions: [],
+    responses,
+    comments: [],
+    messages,
+  } satisfies StateSnapshot;
   return result;
 }
 
@@ -74,4 +82,11 @@ test("Claude's messages show only while the reply is awaited", () => {
   const answered = model("busy", 10, true, 20);
   answered.snapshot.session!.progress = ["Looking."];
   assert.deepEqual(answered.progress(), [], "the reply took over, so the text isn't shown twice");
+});
+
+test("a session is called by its /rename name, else its first message, else its short id", () => {
+  const id = "0123456789";
+  assert.equal(sessionLabel({ id, name: "auth", first_message: "Fix login" }), "auth");
+  assert.equal(sessionLabel({ id, name: "", first_message: "Fix login" }), "Fix login");
+  assert.equal(sessionLabel({ id, name: "", first_message: "" }), "Session 01234567");
 });

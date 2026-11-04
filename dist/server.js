@@ -194,6 +194,11 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
+// src/shared/folders.ts
+function folderName(cwd) {
+  return cwd.split("/").filter(Boolean).pop() ?? "";
+}
+
 // src/shared/tools.ts
 var MAX_ACTIVITY_CHARS = 200;
 var MAX_PROGRESS_DELTA_CHARS = 2e4;
@@ -360,12 +365,18 @@ var HttpError = class extends Error {
 var ok = (body, status = 200) => ({ status, body });
 var empty = (status) => ({ status });
 function routes({ store, delivery, launchCodes, token }) {
-  const snapshot = (sessionId2) => {
-    const session = sessionId2 ? store.session(sessionId2) : void 0;
-    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [], messages: [] };
+  const snapshot = (sessionId2, folder) => {
+    const latest = folder === null ? void 0 : store.folderSessions(folder)[0];
+    const session = store.session(sessionId2 ?? "") ?? store.session(latest?.id ?? "");
+    const version = store.revision.value;
+    if (!session)
+      return { version, session: null, folder: folder ?? "", sessions: [], responses: [], comments: [], messages: [] };
+    const windowFolder = folderName(session.cwd);
     return {
-      version: store.revision.value,
+      version,
       session: { ...session, ...delivery.status(session.id) },
+      folder: windowFolder,
+      sessions: store.folderSessions(windowFolder).map((row) => ({ ...row, status: delivery.status(row.id).status })),
       ...store.sessionContent(session.id)
     };
   };
@@ -377,7 +388,7 @@ function routes({ store, delivery, launchCodes, token }) {
       handle: ({ query }) => {
         delivery.refresh();
         if (query.get("v") === String(store.revision.value)) return empty(204);
-        return ok(snapshot(query.get("s")));
+        return ok(snapshot(query.get("s"), query.get("f")));
       }
     },
     {
@@ -755,6 +766,7 @@ function migrate(file) {
 // src/server/store.ts
 var MAX_RESPONSES_PER_SESSION = 100;
 var SESSION_RETENTION_SECONDS = 7 * 24 * 60 * 60;
+var FIRST_MESSAGE_CHARS = 80;
 var Revision = class {
   #value = 0;
   get value() {
@@ -785,6 +797,15 @@ var Store = class {
   listSessions() {
     return [...this.#data.sessions].map(([id, meta]) => ({ id, ...meta })).sort((a, b) => b.last_active - a.last_active);
   }
+  /** The sessions that ran in a folder, most recently active first, with what their rows show. */
+  folderSessions(folder) {
+    const pending = this.#pendingNotesPerSession();
+    return this.listSessions().filter((session) => folderName(session.cwd) === folder).map((session) => ({
+      ...session,
+      first_message: (this.#data.messages.find((m) => m.session_id === session.id)?.text ?? "").replace(/\s+/g, " ").trim().slice(0, FIRST_MESSAGE_CHARS),
+      pending_notes: pending.get(session.id) ?? 0
+    }));
+  }
   /** One session's replies and messages, oldest first, and the notes on the replies. */
   sessionContent(sessionId2) {
     const responses = this.#data.responses.filter((r) => r.session_id === sessionId2);
@@ -801,13 +822,7 @@ var Store = class {
   }
   /** Sessions with notes that haven't been sent to Claude yet. */
   sessionsWithPendingNotes() {
-    const sessionOf = this.#sessionOfResponse();
-    const pending = /* @__PURE__ */ new Set();
-    for (const note of this.#data.comments) {
-      const sessionId2 = sessionOf.get(note.response_id);
-      if (note.delivered_at === null && sessionId2 !== void 0) pending.add(sessionId2);
-    }
-    return pending;
+    return new Set(this.#pendingNotesPerSession().keys());
   }
   // ---- Writing ---------------------------------------------------------------------------
   /** Remembers a session before its first reply, e.g. when /sidenote:on opens its window. */
@@ -975,6 +990,16 @@ var Store = class {
     }
     data.messages = keptMessages.reverse();
     return data.responses.length + data.sessions.size + data.messages.length !== before;
+  }
+  #pendingNotesPerSession() {
+    const sessionOf = this.#sessionOfResponse();
+    const pending = /* @__PURE__ */ new Map();
+    for (const note of this.#data.comments) {
+      const sessionId2 = sessionOf.get(note.response_id);
+      if (note.delivered_at === null && sessionId2 !== void 0)
+        pending.set(sessionId2, (pending.get(sessionId2) ?? 0) + 1);
+    }
+    return pending;
   }
   #sessionOfResponse() {
     return new Map(this.#data.responses.map((r) => [r.id, r.session_id]));

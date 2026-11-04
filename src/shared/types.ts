@@ -77,11 +77,26 @@ export interface SendStatus {
 /** The session a page shows, with its Send now status. */
 export type SessionView = SessionSummary & SendStatus;
 
-/** One session's replies and notes. Each page shows exactly one session. */
+/** A row in a folder's session list: one of the sessions that ran in that folder. */
+export interface FolderSession extends SessionSummary {
+  status: SessionState;
+  /** The session's first message, shortened, so sessions without a /rename name can be told apart. */
+  first_message: string;
+  pending_notes: number;
+}
+
+/**
+ * A folder's window: its sessions, and the replies and notes of the one selected. Each page shows
+ * one folder, and one of its sessions at a time.
+ */
 export interface StateSnapshot {
   version: number;
-  /** null when the page names no session, or one sidenote has never seen or has forgotten. */
+  /** The session asked for, else the folder's latest; null when sidenote knows neither. */
   session: SessionView | null;
+  /** The window's folder by name; "" when the session's folder is unknown. */
+  folder: string;
+  /** The folder's sessions, most recently active first. */
+  sessions: FolderSession[];
   responses: StoredResponse[];
   comments: Note[];
   /** What the user sent Claude in this session, oldest first. */

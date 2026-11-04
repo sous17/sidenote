@@ -45,8 +45,7 @@ export class PromptBox {
     this.#send = options.send;
     this.#hint = options.hint;
 
-    this.#field.value = readDraft(this.#model.sessionId);
-    this.#fitHeight();
+    this.load();
     this.#field.addEventListener("input", () => {
       this.#error = "";
       writeDraft(this.#model.sessionId, this.#field.value);
@@ -64,6 +63,13 @@ export class PromptBox {
       event.preventDefault();
       void this.#submit();
     });
+  }
+
+  /** Shows the draft of the selected session. */
+  load(): void {
+    this.#field.value = readDraft(this.#model.sessionId);
+    this.#error = "";
+    this.#fitHeight();
   }
 
   render(): void {

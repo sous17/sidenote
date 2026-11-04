@@ -11,6 +11,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import { folderName } from "../shared/folders.ts";
 import {
   MAX_PROMPT_CHARS,
   TOKEN_HEADER,
@@ -105,12 +106,19 @@ const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
 function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
-  const snapshot = (sessionId: string | null): StateSnapshot => {
-    const session = sessionId ? store.session(sessionId) : undefined;
-    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [], messages: [] };
+  /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
+  const snapshot = (sessionId: string | null, folder: string | null): StateSnapshot => {
+    const latest = folder === null ? undefined : store.folderSessions(folder)[0];
+    const session = store.session(sessionId ?? "") ?? store.session(latest?.id ?? "");
+    const version = store.revision.value;
+    if (!session)
+      return { version, session: null, folder: folder ?? "", sessions: [], responses: [], comments: [], messages: [] };
+    const windowFolder = folderName(session.cwd);
     return {
-      version: store.revision.value,
+      version,
       session: { ...session, ...delivery.status(session.id) },
+      folder: windowFolder,
+      sessions: store.folderSessions(windowFolder).map((row) => ({ ...row, status: delivery.status(row.id).status })),
       ...store.sessionContent(session.id),
     };
   };
@@ -124,7 +132,7 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
         delivery.refresh();
         // The page passes the version it has; an unchanged store costs one empty reply.
         if (query.get("v") === String(store.revision.value)) return empty(204);
-        return ok(snapshot(query.get("s")));
+        return ok(snapshot(query.get("s"), query.get("f")));
       },
     },
     {

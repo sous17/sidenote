@@ -92,6 +92,28 @@ describe("sessions", () => {
       [SESSION, "session-b"],
     );
   });
+
+  test("a folder's sessions are those whose cwd ends in it, latest first, with what their rows show", () => {
+    const { clock, store } = fixture();
+    reply(store, "a", { sessionId: "older" });
+    store.addMessage("older", "  Fix the\nlogin   bug ", "terminal");
+    noteOn(store, reply(store, "b", { sessionId: "older" }).id);
+    clock.advanceDays(1);
+    reply(store, "c", { sessionId: "elsewhere", cwd: "/w/other" });
+    reply(store, "d", { sessionId: "newer", cwd: "/home/me/shop-api" });
+    reply(store, "e", { sessionId: "nested", cwd: "/w/shop-api/sub" });
+
+    const sessions = store.folderSessions("shop-api");
+    assert.deepEqual(
+      sessions.map((session) => session.id),
+      ["newer", "older"],
+      "same folder name in two places is one window; a subfolder is its own",
+    );
+    assert.equal(sessions[1]?.first_message, "Fix the login bug");
+    assert.equal(sessions[1]?.pending_notes, 1);
+    assert.equal(sessions[0]?.first_message, "");
+    assert.equal(sessions[0]?.pending_notes, 0);
+  });
 });
 
 describe("retention", () => {

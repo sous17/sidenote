@@ -1,9 +1,12 @@
-// The sidenote page: one Claude Code session's replies, with notes in the margin.
+// The sidenote page: a folder's Claude Code sessions in a list, the selected one's replies with
+// notes in the margin.
+import { folderFromPath, folderPath } from "../shared/folders.ts";
 import { Api, ApiError, obtainToken } from "./api.ts";
-import { byId, projectName } from "./dom.ts";
+import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
-import { Model } from "./model.ts";
+import { Model, sessionLabel } from "./model.ts";
+import { SessionPanel, rememberSession, rememberedSession } from "./panel.ts";
 import { PromptBox } from "./prompt.ts";
 import { installNoteStarters } from "./selection.ts";
 import { Sending } from "./sending.ts";
@@ -29,25 +32,33 @@ function showUnavailable(title: string, text: string): void {
   byId("empty-help").hidden = true;
 }
 
-/** Top left: the session's /rename name, or its folder; then folder and short id. */
-function renderSessionTitle(model: Model): void {
-  const { session } = model.snapshot;
-  const folder = session ? projectName(session.cwd) : "";
-  const shortId = model.sessionId.slice(0, 8);
-  const name = session?.name || folder || `Session ${shortId}`;
-  byId("session-title").hidden = false;
-  byId("session-name").textContent = name;
-  byId("session-detail").textContent = session?.name && folder ? `${folder} · ${shortId}` : shortId;
-  byId("session-title").title = `Session ${model.sessionId}${session?.cwd ? `\n${session.cwd}` : ""}`;
-  document.title = `${name} · sidenote`;
+/** Top left: the window's folder and the selected session. */
+function renderWindowTitle(model: Model, panel: SessionPanel): void {
+  const { session, folder, sessions } = model.snapshot;
+  byId("window-title").hidden = false;
+  byId("folder-name").textContent = folder;
+  byId("folder-name").title = session?.cwd ?? "";
+  const selected = sessions.find((row) => row.id === model.sessionId);
+  byId("session-name").textContent = selected ? sessionLabel(selected) : "";
+  panel.render(sessions, model.sessionId);
+  document.title = folder ? `${folder} · sidenote` : "sidenote";
+}
+
+/** Keeps the address on the folder, so it can be bookmarked. A session with no known folder keeps ?s=. */
+function syncAddress(model: Model): void {
+  const { folder } = model.snapshot;
+  const address = folder ? folderPath(folder) : `/?s=${encodeURIComponent(model.sessionId)}`;
+  if (`${location.pathname}${location.search}` !== address) history.replaceState(null, "", address + location.hash);
 }
 
 async function start(): Promise<void> {
-  const sessionId = new URLSearchParams(location.search).get("s");
-  if (!sessionId) {
+  // Links from the CLI name the session; a typed or bookmarked address names only the folder.
+  let folder = folderFromPath(location.pathname);
+  const sessionId = new URLSearchParams(location.search).get("s") ?? rememberedSession(folder) ?? "";
+  if (!folder && !sessionId) {
     showUnavailable(
       "Open this window from a Claude Code session",
-      "Each session has its own sidenote window. Run /sidenote:open in the session you want to see.",
+      "Each folder has its own sidenote window. Run /sidenote:open in a session to open its folder's window.",
     );
     return;
   }
@@ -67,10 +78,16 @@ async function start(): Promise<void> {
   const threadFromUrl = Number(/^#n(\d+)$/.exec(location.hash)?.[1]) || null;
 
   const refresh = async (): Promise<void> => {
+    const asked = model.sessionId;
     try {
-      const next = await api.state(model.snapshot.version, sessionId);
+      const next = await api.state(model.snapshot.version, asked, folder);
+      // Another tab was selected while this was on its way; its own refresh brings its state.
+      if (model.sessionId !== asked) return;
       if (next) {
         model.snapshot = next;
+        // The server picks the folder's latest session when the page names none, or one it forgot.
+        if (next.session) model.sessionId = next.session.id;
+        folder = next.folder || folder;
         render();
       }
       setConnection("live", "Live");
@@ -133,9 +150,40 @@ async function start(): Promise<void> {
     close: byId<HTMLButtonElement>("pane-close"),
   });
 
+  const panel = new SessionPanel({
+    panel: byId("session-panel"),
+    list: byId("session-list"),
+    toggle: byId<HTMLButtonElement>("panel-toggle"),
+    app: byId("app"),
+    onSelect: (selected) => {
+      // Don't throw away a half-written note or thread reply: each takes the focus instead.
+      if (selected === model.sessionId || !editor.release() || !thread.release()) return;
+      model.select(selected);
+      feed.reset();
+      panel.render(model.snapshot.sessions, selected);
+      void refresh();
+    },
+  });
+
   let rendered = false;
+  let shownSessionId = "";
   function render(): void {
-    renderSessionTitle(model);
+    if (!model.snapshot.session) {
+      if (folder) {
+        showUnavailable(
+          `Nothing from ${folder} yet`,
+          `This window shows the Claude Code sessions in a folder named ${folder}. Run /sidenote:open in one of them.`,
+        );
+      }
+    } else {
+      syncAddress(model);
+      if (model.sessionId !== shownSessionId) {
+        shownSessionId = model.sessionId;
+        rememberSession(folder, model.sessionId);
+        promptBox.load();
+      }
+    }
+    renderWindowTitle(model, panel);
     feed.render();
     sending.render();
     promptBox.render();

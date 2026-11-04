@@ -56,10 +56,6 @@ export function formatTime(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function projectName(cwd: string): string {
-  return cwd.split("/").filter(Boolean).pop() ?? "unknown";
-}
-
 export function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }

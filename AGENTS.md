@@ -52,10 +52,12 @@ Anyone who can call the API can put text in front of the user's agent, so:
 
 These were settled with the maintainer. Don't change them without asking.
 
-- **One window per agent session.** No all-sessions view or session picker: the top left shows
-  the session's name (`/rename`), or its folder.
+- **One window per folder, its sessions in a list on the left.** The window's address names the
+  folder (`/<folder>`, the last segment of the session's cwd), so it can be bookmarked. The list
+  names each session by `/rename`, else its first message. It docks only where the feed keeps
+  room for notes in the margin, and folds away while a thread is open. No view across folders.
 - **Notes sit in the margin beside the reply.** Clicking a note splits the screen into two halves,
-  the feed and that note's thread. Never three panes.
+  the feed and that note's thread. Never three panes: the session list folds away meanwhile.
 - **No duplicated text.** The agent answers each note under a `**↳ Re: note N**` marker; those
   sections live only in the note's thread. A reply that only answers notes shows as a one-line
   row in the feed.

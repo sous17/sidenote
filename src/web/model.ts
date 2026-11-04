@@ -1,16 +1,34 @@
 // The page's state: the latest snapshot from the server, the open thread, and questions about them.
-import type { Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "../shared/types.ts";
+import type { FolderSession, Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "../shared/types.ts";
 
 export type AnsweredNote = Note & { answered_by: number };
 
+const EMPTY_SNAPSHOT: StateSnapshot = {
+  version: -1,
+  session: null,
+  folder: "",
+  sessions: [],
+  responses: [],
+  comments: [],
+  messages: [],
+};
+
 export class Model {
-  readonly sessionId: string;
-  snapshot: StateSnapshot = { version: -1, session: null, responses: [], comments: [], messages: [] };
+  /** The selected session; "" until the server names the folder's latest. */
+  sessionId: string;
+  snapshot: StateSnapshot = EMPTY_SNAPSHOT;
   /** The root note whose thread is open in the pane, if any. */
   openThreadId: number | null = null;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
+  }
+
+  /** Switches to another of the folder's sessions; its state arrives with the next refresh. */
+  select(sessionId: string): void {
+    this.sessionId = sessionId;
+    this.snapshot = { ...EMPTY_SNAPSHOT, folder: this.snapshot.folder, sessions: this.snapshot.sessions };
+    this.openThreadId = null;
   }
 
   get notes(): readonly Note[] {
@@ -97,4 +115,9 @@ export function answeredNoteIds(model: Model, response: StoredResponse): Set<num
   const ids = new Set(Object.keys(response.note_answers).map(Number));
   for (const note of model.notes) if (note.answered_by === response.id) ids.add(note.id);
   return ids;
+}
+
+/** What a session is called: its /rename name, else its first message, else its short id. */
+export function sessionLabel(session: Pick<FolderSession, "id" | "name" | "first_message">): string {
+  return session.name || session.first_message || `Session ${session.id.slice(0, 8)}`;
 }

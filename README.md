@@ -31,9 +31,12 @@ note on its own, and each answer lands in that note's thread.
 - **Code changes as diffs.** When you ask Claude to see or change code, in a note or in the
   terminal, it explains each change and shows it as a diff, with the edited words highlighted.
   Answers that touch several files fold each file open from its header.
-- **One window per session.** Each Claude Code session gets its own window, titled with the
-  name you gave the session with `/rename` (or its project folder). Notes always go back to
-  the session they were written on.
+- **One window per folder, with its sessions in a list.** Each folder gets its own window, at an
+  address you can bookmark: `http://sidenote.localhost:<port>/<folder>`. The list on the left
+  holds every Claude Code session that ran in that folder, named with the name you gave it with
+  `/rename`, or its first message, with whether it is listening and how many notes are pending.
+  In a narrow window, or while a thread is open, the list folds away; the button left of the
+  folder name brings it back. Notes always go back to the session they were written on.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -66,8 +69,9 @@ Then restart Claude Code, or run `/reload-plugins`, and turn sidenote on:
 /sidenote:on
 ```
 
-Your browser opens this session's sidenote window. From now on, every reply Claude finishes
-shows up there. Other sessions get their own window, which opens with their first reply.
+Your browser opens the sidenote window of this session's folder. From now on, every reply Claude
+finishes shows up there. Other sessions in the same folder join its session list; a session in
+another folder opens that folder's window with its first reply.
 
 ### From a local copy
 
@@ -94,10 +98,10 @@ claude plugin install sidenote@sidenote
 
 | Command              | What it does                                                                     |
 | -------------------- | -------------------------------------------------------------------------------- |
-| `/sidenote:on`       | Turns sidenote on and opens this session's window                                |
+| `/sidenote:on`       | Turns sidenote on and opens its folder's window on this session                  |
 | `/sidenote:off`      | Turns it off for all sessions. Pending notes are kept for next time              |
-| `/sidenote:restart`  | Restarts the server and opens this session's window. Pending notes are kept      |
-| `/sidenote:open`     | Reopens this session's window, for example after closing the tab                 |
+| `/sidenote:restart`  | Restarts the server and opens the window on this session. Pending notes are kept |
+| `/sidenote:open`     | Reopens the window on this session, for example after closing it                 |
 | `/sidenote:status`   | Shows this session's window address, replies, pending notes, and Send now status |
 | `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too      |
 
@@ -128,8 +132,12 @@ session; once Claude replies, the button turns on. Saved notes still go with you
 `enabled: no`, run `/sidenote:on`. If the tab says "Stale tab" or "This link has expired",
 run `/sidenote:open`: links to a window work once, and a restart of sidenote retires old tabs.
 
-**The window shows the folder name, not the session name.** Name the session with `/rename`;
-the window picks up the new name with Claude's next reply.
+**The list shows a session's first message, not its name.** Name the session with `/rename`;
+the list picks up the new name with Claude's next reply.
+
+**Two folders share a window.** A window is named after the last part of the folder's path, so
+`~/work/shop` and `~/play/shop` share one. Hover over the folder name to see the selected
+session's full path.
 
 **Hooks can't find Node.** Hooks don't always get your shell's `PATH`, for example with nvm
 when Claude Code isn't started from a terminal. sidenote also looks in the usual Homebrew,

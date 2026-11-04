@@ -184,6 +184,41 @@ describe("round trip", () => {
   });
 });
 
+describe("folder windows", () => {
+  test("show the session asked for, else the folder's latest, with the folder's sessions", async () => {
+    // A minute older, so two replies in the same millisecond can't tie.
+    const aMinuteAgo = Date.now() / 1000 - 60;
+    await call("POST", "/api/responses", { session_id: "f1", cwd: "/a/shop", text: "One.", created_at: aMinuteAgo });
+    await call("POST", "/api/responses", { session_id: "f2", cwd: "/b/shop", text: "Two." });
+    await call("POST", "/api/responses", { session_id: "f3", cwd: "/a/other", text: "Three." });
+
+    const byFolder = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=&f=shop"));
+    assert.equal(byFolder.session?.id, "f2", "no session named: the folder's latest");
+    assert.equal(byFolder.folder, "shop");
+    assert.deepEqual(
+      byFolder.sessions.map((row) => [row.id, row.status]),
+      [
+        ["f2", "offline"],
+        ["f1", "offline"],
+      ],
+    );
+    assert.equal(byFolder.responses[0]?.text, "Two.");
+
+    const asked = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=f1&f=shop"));
+    assert.equal(asked.session?.id, "f1");
+    assert.equal(asked.responses[0]?.text, "One.");
+
+    const forgotten = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=gone&f=shop"));
+    assert.equal(forgotten.session?.id, "f2", "a session sidenote forgot falls back to the latest");
+
+    const oldLink = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=f3"));
+    assert.equal(oldLink.folder, "other", "a link without a folder learns it from the session");
+
+    const empty = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=&f=nothing-here"));
+    assert.deepEqual([empty.session, empty.folder, empty.sessions], [null, "nothing-here", []]);
+  });
+});
+
 describe("messages from the page", () => {
   test("reach a listening session's waiter, and show in the state from the moment they are sent", async () => {
     await call("POST", "/api/responses", { session_id: "p", cwd: "/w", text: "Done." });

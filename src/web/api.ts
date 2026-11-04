@@ -76,9 +76,11 @@ export class Api {
     this.#token = token;
   }
 
-  /** The session's state, or null when nothing changed since knownVersion. */
-  state(knownVersion: number, sessionId: string): Promise<StateSnapshot | null> {
-    return request("GET", `/api/state?v=${knownVersion}&s=${encodeURIComponent(sessionId)}`, this.#token);
+  /** The window's state, or null when nothing changed since knownVersion. */
+  state(knownVersion: number, sessionId: string, folder: string): Promise<StateSnapshot | null> {
+    const query = new URLSearchParams({ v: String(knownVersion), s: sessionId });
+    if (folder) query.set("f", folder);
+    return request("GET", `/api/state?${query}`, this.#token);
   }
 
   addNote(note: NewNoteRequest): Promise<Note | null> {

@@ -92,6 +92,16 @@ export class NoteEditor {
     form.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
+  /** Closes the editor unless a note is half-written in it, which gets the focus instead. */
+  release(): boolean {
+    if (this.#open?.textarea.value.trim()) {
+      this.#open.textarea.focus();
+      return false;
+    }
+    this.close();
+    return true;
+  }
+
   close(): void {
     if (!this.#open) return;
     const { form, card, untrack } = this.#open;
