@@ -60,8 +60,6 @@ export class Feed {
   readonly #messages = new Map<number, HTMLElement>();
   /** Three dots after the user's latest message, until Claude's reply arrives. */
   readonly #typing = createTypingIndicator();
-  /** Beside the dots: what Claude is doing, without the code it writes. */
-  readonly #activity = el("div", "typing-activity");
   #firstRender = true;
 
   constructor(options: {
@@ -80,7 +78,6 @@ export class Feed {
     this.#inner = options.inner;
     this.#emptyState = options.emptyState;
     this.#newReply = options.newReply;
-    this.#typing.append(this.#activity);
 
     new ResizeObserver(() => this.layout()).observe(this.#feed);
     this.#newReply.addEventListener("click", () => {
@@ -244,8 +241,7 @@ export class Feed {
   #syncTyping(): boolean {
     const wasHidden = this.#typing.hidden;
     this.#typing.hidden = !this.#model.awaitingReply();
-    this.#activity.textContent = this.#model.activity();
-    this.#activity.hidden = !this.#activity.textContent;
+    setTypingActivity(this.#typing, this.#model.activity());
     if (this.#inner.lastElementChild !== this.#typing) this.#inner.append(this.#typing);
     return wasHidden && !this.#typing.hidden;
   }
@@ -423,13 +419,19 @@ function createMessage(message: UserMessage): HTMLElement {
   return element;
 }
 
-function createTypingIndicator(): HTMLElement {
+/** Three dots, and beside them what Claude is doing, without the code it writes. */
+export function createTypingIndicator(): HTMLElement {
   const element = el("div", "typing");
-  element.hidden = true;
   element.setAttribute("role", "status");
   element.setAttribute("aria-label", "Claude is working");
-  element.append(el("span"), el("span"), el("span"));
+  element.append(el("span"), el("span"), el("span"), el("div", "typing-activity"));
   return element;
+}
+
+export function setTypingActivity(indicator: HTMLElement, activity: string): void {
+  const label = indicator.lastElementChild as HTMLElement;
+  label.textContent = activity;
+  label.hidden = !activity;
 }
 
 /** What the user typed for a turn sidenote ran itself, above its reply. */

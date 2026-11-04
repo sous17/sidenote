@@ -59,10 +59,16 @@ export class Model {
     return this.notes.filter((note) => note.delivered_at === null).length;
   }
 
-  /** Whether the user's latest message has no reply yet and Claude is on it, or about to be. */
+  /** Whether the user's latest message or a sent note has no reply yet and Claude is on it, or about to be. */
   awaitingReply(): boolean {
+    const { status } = this.sendStatus();
+    if (status === "offline") return false;
+    // Send now has no message: the turn it starts is only visible through its notes.
+    if (status === "busy" && this.notes.some((note) => note.delivered_at !== null && note.answered_by === null)) {
+      return true;
+    }
     const latest = this.messages.at(-1);
-    if (!latest || this.sendStatus().status === "offline") return false;
+    if (!latest) return false;
     if ((this.responses.at(-1)?.created_at ?? 0) > latest.created_at) return false;
     return this.sendStatus().status === "busy" || latest.delivered_at === null;
   }
