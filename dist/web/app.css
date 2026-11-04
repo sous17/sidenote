@@ -1245,6 +1245,9 @@ summary.diff-head:hover {
 }
 
 /* What the user sent Claude, from the terminal or the message box, between the replies. */
+.typing {
+  max-width: 100%;
+}
 .user-message {
   margin-bottom: 24px;
   padding: 8px 14px 10px;
@@ -1268,11 +1271,15 @@ summary.diff-head:hover {
   .user-message {
     margin-right: calc(var(--margin-gap) + var(--margin-width));
   }
+  .typing {
+    max-width: calc(100% - var(--margin-gap) - var(--margin-width));
+  }
 }
 
 /* Three dots at the end of the feed while Claude works on the user's latest message. */
 .typing {
   display: flex;
+  align-items: center;
   gap: 5px;
   width: fit-content;
   margin-bottom: 24px;
@@ -1283,6 +1290,7 @@ summary.diff-head:hover {
   box-shadow: var(--shadow);
 }
 .typing span {
+  flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1294,6 +1302,15 @@ summary.diff-head:hover {
 }
 .typing span:nth-child(3) {
   animation-delay: 0.3s;
+}
+.typing-activity {
+  min-width: 0;
+  margin-left: 7px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 @keyframes typing-bounce {
   0%,

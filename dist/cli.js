@@ -312,6 +312,10 @@ var init_model = __esm({
         if ((this.responses.at(-1)?.created_at ?? 0) > latest.created_at) return false;
         return this.sendStatus().status === "busy" || latest.delivered_at === null;
       }
+      /** What Claude is doing while the user waits for its reply, or "". */
+      activity() {
+        return this.awaitingReply() ? this.sendStatus().activity ?? "" : "";
+      }
       /** Unsent, but Send now was clicked: it goes as soon as the session can take it. */
       isQueued(note) {
         return note.delivered_at === null && this.sendStatus().send_requested;
@@ -4715,6 +4719,62 @@ ${formatNotesForClaude(notes)}`;
 [truncated: more comments are visible in the sidenote window]` : combined;
 }
 
+// src/shared/tools.ts
+var MAX_ACTIVITY_CHARS = 200;
+var ACTIVITY_VERBS = /* @__PURE__ */ new Map([
+  ["Read", "Reading"],
+  ["Edit", "Editing"],
+  ["MultiEdit", "Editing"],
+  ["NotebookEdit", "Editing"],
+  ["Write", "Writing"],
+  ["Bash", "Running"],
+  ["Grep", "Searching for"],
+  ["Glob", "Searching for"],
+  ["WebFetch", "Fetching"],
+  ["WebSearch", "Searching the web for"],
+  ["Task", "Delegating:"],
+  ["Agent", "Delegating:"]
+]);
+var str = (value) => typeof value === "string" ? value : "";
+function shortPath(path, cwd) {
+  if (cwd && path.startsWith(`${cwd}/`)) return path.slice(cwd.length + 1);
+  return path;
+}
+function toolSummary(tool, input, cwd) {
+  const path = str(input["file_path"]) || str(input["notebook_path"]);
+  if (path) return shortPath(path, cwd);
+  switch (tool) {
+    case "Bash":
+      return firstLine(str(input["command"]));
+    case "Glob":
+    case "Grep": {
+      const where = str(input["path"]);
+      return where ? `${str(input["pattern"])} in ${shortPath(where, cwd)}` : str(input["pattern"]);
+    }
+    case "WebFetch":
+      return str(input["url"]);
+    case "WebSearch":
+      return str(input["query"]);
+    case "Task":
+    case "Agent":
+      return str(input["description"]);
+    case "TodoWrite":
+      return "";
+  }
+  const first = Object.values(input).find((value) => typeof value === "string" && value.trim());
+  return firstLine(str(first));
+}
+function toolActivity(tool, input, cwd) {
+  if (tool === "TodoWrite") return "";
+  const verb = ACTIVITY_VERBS.get(tool);
+  const line = verb ? `${verb} ${toolSummary(tool, input, cwd)}`.trim() : `Using ${tool}`;
+  return line.slice(0, MAX_ACTIVITY_CHARS);
+}
+function firstLine(text) {
+  const lines = text.trim().split("\n");
+  return lines.length > 1 ? `${lines[0]} \u2026` : lines[0] ?? "";
+}
+
 // src/cli/transcript.ts
 import { existsSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
 import { join as join3 } from "node:path";
@@ -4840,6 +4900,15 @@ async function hookPrompt(input) {
   process.stdout.write(`${JSON.stringify(output)}
 `);
 }
+async function hookActivity(input) {
+  if (!input.session_id || !input.tool_name || input.agent_id) return;
+  const text = toolActivity(input.tool_name, input.tool_input ?? {}, input.cwd ?? "");
+  if (!text) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  const activity = { session_id: input.session_id, text };
+  await client.post("/api/activity", activity);
+}
 async function hookWait(input) {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
@@ -4889,6 +4958,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
+  sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
@@ -5015,6 +5085,7 @@ var commands = {
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
   "hook-prompt": () => runHook(hookPrompt),
+  "hook-activity": () => runHook(hookActivity),
   "hook-wait": () => runHook(hookWait)
 };
 async function runHook(handler) {

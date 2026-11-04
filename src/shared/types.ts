@@ -89,6 +89,8 @@ export interface SendStatus {
   send_requested: boolean;
   /** A message typed in the page that waits for Claude to finish its turn; absent when none does. */
   queued_prompt?: string;
+  /** What Claude is doing in this turn, such as "Editing src/app.ts"; absent when unknown. */
+  activity?: string;
 }
 
 /** The session a page shows, with its Send now status. */
@@ -157,6 +159,12 @@ export interface ConversationView {
   context: { used: number; limit: number } | null;
   /** Why the agent last stopped or failed, or "". */
   error: string;
+}
+
+/** A terminal session's tool call, reported by its PreToolUse hook. */
+export interface ActivityRequest {
+  session_id: string;
+  text: string;
 }
 
 export interface StartConversationRequest {

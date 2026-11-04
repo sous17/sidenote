@@ -60,6 +60,8 @@ export class Feed {
   readonly #messages = new Map<number, HTMLElement>();
   /** Three dots after the user's latest message, until Claude's reply arrives. */
   readonly #typing = createTypingIndicator();
+  /** Beside the dots: what Claude is doing, without the code it writes. */
+  readonly #activity = el("div", "typing-activity");
   #firstRender = true;
 
   constructor(options: {
@@ -78,6 +80,7 @@ export class Feed {
     this.#inner = options.inner;
     this.#emptyState = options.emptyState;
     this.#newReply = options.newReply;
+    this.#typing.append(this.#activity);
 
     new ResizeObserver(() => this.layout()).observe(this.#feed);
     this.#newReply.addEventListener("click", () => {
@@ -241,6 +244,8 @@ export class Feed {
   #syncTyping(): boolean {
     const wasHidden = this.#typing.hidden;
     this.#typing.hidden = !this.#model.awaitingReply();
+    this.#activity.textContent = this.#model.activity();
+    this.#activity.hidden = !this.#activity.textContent;
     if (this.#inner.lastElementChild !== this.#typing) this.#inner.append(this.#typing);
     return wasHidden && !this.#typing.hidden;
   }

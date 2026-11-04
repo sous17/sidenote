@@ -1,8 +1,10 @@
 // Parsers for request bodies. Each one turns untrusted JSON into a typed, bounded value, or
 // throws BadRequest. Handlers never touch raw input.
 import { isAbsolute } from "node:path";
+import { MAX_ACTIVITY_CHARS } from "../shared/tools.ts";
 import {
   SESSION_ID_PATTERN,
+  type ActivityRequest,
   type ClaimRequest,
   type ConversationMessageRequest,
   type PermissionAnswerRequest,
@@ -130,6 +132,14 @@ export function parseClaim(input: unknown): ClaimRequest {
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
   return prompt === undefined ? { session_id } : { session_id, prompt };
+}
+
+export function parseActivity(input: unknown): ActivityRequest {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    text: nonEmpty(string(body, "text", MAX_ACTIVITY_CHARS), "text"),
+  };
 }
 
 export function parseWaiter(input: unknown): WaiterRequest {

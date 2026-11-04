@@ -32,6 +32,7 @@ import { HostError, UnknownSession, type SessionHost } from "./host.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
+  parseActivity,
   parseClaim,
   parseConversationMessage,
   parseNewNote,
@@ -256,6 +257,16 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
         const result: ClaimResult = { comments: store.claimPending(session_id) };
         if (prompt !== undefined) result.prompt = prompt;
         return ok(result);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/activity",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, text } = parseActivity(body);
+        delivery.setActivity(session_id, text);
+        return ok({ ok: true });
       },
     },
     {

@@ -3,6 +3,23 @@
 
 const MAX_DETAIL_CHARS = 4000;
 const MAX_DETAIL_LINES = 40;
+/** The longest activity line; the page shows one row of it. */
+export const MAX_ACTIVITY_CHARS = 200;
+
+const ACTIVITY_VERBS: ReadonlyMap<string, string> = new Map([
+  ["Read", "Reading"],
+  ["Edit", "Editing"],
+  ["MultiEdit", "Editing"],
+  ["NotebookEdit", "Editing"],
+  ["Write", "Writing"],
+  ["Bash", "Running"],
+  ["Grep", "Searching for"],
+  ["Glob", "Searching for"],
+  ["WebFetch", "Fetching"],
+  ["WebSearch", "Searching the web for"],
+  ["Task", "Delegating:"],
+  ["Agent", "Delegating:"],
+]);
 
 type Input = Readonly<Record<string, unknown>>;
 
@@ -38,6 +55,17 @@ export function toolSummary(tool: string, input: Input, cwd: string): string {
   }
   const first = Object.values(input).find((value) => typeof value === "string" && value.trim());
   return firstLine(str(first));
+}
+
+/**
+ * "Editing src/app.ts": a tool call as a line of what Claude is doing, or "" if it isn't worth
+ * showing. Other tools show only their name, because their first argument could be anything.
+ */
+export function toolActivity(tool: string, input: Input, cwd: string): string {
+  if (tool === "TodoWrite") return "";
+  const verb = ACTIVITY_VERBS.get(tool);
+  const line = verb ? `${verb} ${toolSummary(tool, input, cwd)}`.trim() : `Using ${tool}`;
+  return line.slice(0, MAX_ACTIVITY_CHARS);
 }
 
 /** The call in full, for the user to read before allowing it. */

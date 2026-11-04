@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toolDetail, toolSummary } from "../src/shared/tools.ts";
+import { MAX_ACTIVITY_CHARS, toolActivity, toolDetail, toolSummary } from "../src/shared/tools.ts";
 
 test("tool rows name what the call works on, relative to the session's folder", () => {
   assert.equal(toolSummary("Edit", { file_path: "/w/shop/src/a.ts" }, "/w/shop"), "src/a.ts");
@@ -21,4 +21,14 @@ test("permission prompts show the call in full, clipped when long", () => {
   assert.equal(long.split("\n").length, 41);
   assert.ok(long.endsWith("\n…"));
   assert.equal(toolDetail("Other", { a: 1 }, "/w"), '{\n  "a": 1\n}');
+});
+
+test("an activity line says what a call works on, and never what it writes", () => {
+  const edit = { file_path: "/w/shop/src/a.ts", old_string: "secret old", new_string: "secret new" };
+  assert.equal(toolActivity("Edit", edit, "/w/shop"), "Editing src/a.ts");
+  assert.equal(toolActivity("Write", { file_path: "/w/a.ts", content: "code" }, "/w"), "Writing a.ts");
+  assert.equal(toolActivity("Bash", { command: "npm test\nnpm run lint" }, "/w"), "Running npm test …");
+  assert.equal(toolActivity("mcp__mail__send", { body: "private" }, "/w"), "Using mcp__mail__send");
+  assert.equal(toolActivity("TodoWrite", { todos: [] }, "/w"), "", "not a step worth showing");
+  assert.equal(toolActivity("Bash", { command: "x".repeat(500) }, "/w").length, MAX_ACTIVITY_CHARS);
 });

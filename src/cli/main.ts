@@ -1,4 +1,4 @@
-// sidenote CLI: the /sidenote:* commands and the three Claude Code hooks.
+// sidenote CLI: the /sidenote:* commands and the Claude Code hooks.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,7 @@ import { HEADLESS_ENV } from "../agent/claude.ts";
 import { paths } from "../node/paths.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
-import { hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import { hookActivity, hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -30,6 +30,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
+  sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
@@ -179,6 +180,7 @@ const commands: Record<string, () => Promise<void>> = {
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
   "hook-prompt": () => runHook(hookPrompt),
+  "hook-activity": () => runHook(hookActivity),
   "hook-wait": () => runHook(hookWait),
 };
 

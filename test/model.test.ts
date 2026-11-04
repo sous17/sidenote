@@ -32,3 +32,15 @@ test("the dots don't show when nothing is on its way", () => {
   );
   assert.equal(model("offline", 10, false, 5).awaitingReply(), false, "nothing can pick it up");
 });
+
+test("what Claude is doing shows only with the dots", () => {
+  const working = model("busy", 10, true, 5);
+  working.snapshot.session!.activity = "Editing a.ts";
+  assert.equal(working.activity(), "Editing a.ts");
+
+  const answered = model("busy", 10, true, 20);
+  answered.snapshot.session!.activity = "Editing a.ts";
+  assert.equal(answered.activity(), "", "the reply arrived");
+
+  assert.equal(model("busy", 10, true, 5).activity(), "", "no tool call yet");
+});
