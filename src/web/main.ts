@@ -1,7 +1,7 @@
 // The sidenote page: a folder's Claude Code sessions in a list, the selected one's replies with
 // notes in the margin.
 import { folderFromPath, folderPath } from "../shared/folders.ts";
-import { Api, ApiError, obtainToken } from "./api.ts";
+import { Api, ApiError, obtainToken, onTokenStored } from "./api.ts";
 import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
@@ -67,10 +67,11 @@ async function start(): Promise<void> {
   const token = await obtainToken().catch(() => null);
   if (!token) {
     showUnavailable(
-      "This link has expired",
-      "Links to a sidenote window work once. Run /sidenote:open in the session to open it again.",
+      "Not connected yet",
+      "Run /sidenote:open in a Claude Code session once. After that, sidenote addresses work in any tab of this browser.",
     );
     setConnection("error", "Run /sidenote:open");
+    onTokenStored(() => location.reload());
     return;
   }
 
@@ -94,6 +95,8 @@ async function start(): Promise<void> {
       }
       setConnection("live", "Live");
     } catch (error) {
+      // A restarted server has a new token; a window opened since then stored it for every tab.
+      if (error instanceof ApiError && error.status === 403 && api.adoptStoredToken()) return;
       if (error instanceof ApiError && error.status === 403) setConnection("error", "Stale tab: run /sidenote:open");
       else if (error instanceof ApiError) setConnection("error", `Server error ${error.status}`);
       else setConnection("error", "Disconnected: is sidenote on?");

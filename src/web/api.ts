@@ -38,9 +38,10 @@ async function request<T>(method: string, path: string, token: string | null, bo
 }
 
 /**
- * The API token for this tab. A newly opened window carries a single-use launch code in its URL
- * fragment; it is traded for the token once, the fragment is removed, and the token is kept in
- * sessionStorage, which belongs to this tab and this origin only. A reload finds it there.
+ * The API token. A newly opened window carries a single-use launch code in its URL fragment; it is
+ * traded for the token once, the fragment is removed, and the token is kept in localStorage, which
+ * belongs to this origin only. Every tab on a window's address finds it there, so the address can
+ * be typed or bookmarked, until the server restarts with a new token.
  */
 export async function obtainToken(): Promise<string | null> {
   const fragment = new URLSearchParams(location.hash.slice(1));
@@ -54,26 +55,46 @@ export async function obtainToken(): Promise<string | null> {
       return result.token;
     }
   }
+  return storedToken();
+}
+
+/** The token the last opened window stored for every tab, or null. */
+export function storedToken(): string | null {
   try {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    return localStorage.getItem(TOKEN_STORAGE_KEY);
   } catch {
     return null;
   }
 }
 
+/** Calls back when another tab stores a token, after /sidenote:open. */
+export function onTokenStored(callback: () => void): void {
+  window.addEventListener("storage", (event) => {
+    if (event.key === TOKEN_STORAGE_KEY && event.newValue) callback();
+  });
+}
+
 function writeToken(token: string): void {
   try {
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
   } catch {
     // Storage blocked: this page load still works, a reload will need /sidenote:open.
   }
 }
 
 export class Api {
-  readonly #token: string;
+  #token: string;
 
   constructor(token: string) {
     this.#token = token;
+  }
+
+  /** Switches to a newer stored token, once a restarted server has refused this one. */
+  adoptStoredToken(): boolean {
+    const stored = storedToken();
+    if (!stored || stored === this.#token) return false;
+    this.#token = stored;
+    return true;
   }
 
   /** The window's state, or null when nothing changed since knownVersion. */

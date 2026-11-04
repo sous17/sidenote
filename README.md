@@ -131,8 +131,9 @@ turned on, or the plugin installed, after that session's last reply. Send any pr
 session; once Claude replies, the button turns on. Saved notes still go with your next prompt.
 
 **Nothing appears in the window.** Run `/sidenote:status` in that session. If it says
-`enabled: no`, run `/sidenote:on`. If the tab says "Stale tab" or "This link has expired",
-run `/sidenote:open`: links to a window work once, and a restart of sidenote retires old tabs.
+`enabled: no`, run `/sidenote:on`. If the tab says "Stale tab" or "Not connected yet", run
+`/sidenote:open` once: a restart of sidenote retires the browser's token, and the window that
+opens hands it a new one, which every open sidenote tab picks up.
 
 **The list shows a session's first message, not its name.** Name the session with `/rename`;
 the list picks up the new name with Claude's next reply.
@@ -183,8 +184,10 @@ locked down:
   websites can't send to the server: the server never approves a cross-origin request.
 - **No token in URLs.** The CLI opens a window with a single-use launch code in the URL
   fragment, which browsers never send over the network. The page trades the code for the token
-  once and keeps it in the tab's session storage, so browser history, synced history and
-  `ps` only ever see a spent code that expires within two minutes anyway.
+  once, so browser history, synced history and `ps` only ever see a spent code that expires
+  within two minutes anyway. The page keeps the token in local storage, which only pages from
+  sidenote's own address can read, so a window's address works when typed or bookmarked. The
+  token stops working when the server restarts, since each start makes a new one.
 - **Validated input.** Every request body is parsed against a fixed shape, with size limits,
   before it reaches the store. Session ids must look like ids.
 - **Recorded folders only.** Open folder names a session, not a path: the server opens the
