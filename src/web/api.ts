@@ -8,6 +8,7 @@ import {
   type PromptResult,
   type RedeemResult,
   type SendResult,
+  type StartSessionResult,
   type StateSnapshot,
 } from "../shared/types.ts";
 
@@ -115,6 +116,11 @@ export class Api {
   /** Sends a message to the session's Claude, as if it were typed in the terminal. */
   prompt(sessionId: string, text: string): Promise<PromptResult | null> {
     return request("POST", "/api/prompt", this.#token, { session_id: sessionId, text });
+  }
+
+  /** Starts a new session in a terminal, in the folder of the session given. */
+  startSession(sessionId: string, prompt: string): Promise<StartSessionResult | null> {
+    return request("POST", "/api/sessions/start", this.#token, { session_id: sessionId, prompt });
   }
 
   /** Opens the session's folder on the desktop. */

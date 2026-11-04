@@ -8,6 +8,7 @@ const EMPTY_SNAPSHOT: StateSnapshot = {
   session: null,
   folder: "",
   sessions: [],
+  can_start_sessions: false,
   responses: [],
   comments: [],
   messages: [],
@@ -27,7 +28,8 @@ export class Model {
   /** Switches to another of the folder's sessions; its state arrives with the next refresh. */
   select(sessionId: string): void {
     this.sessionId = sessionId;
-    this.snapshot = { ...EMPTY_SNAPSHOT, folder: this.snapshot.folder, sessions: this.snapshot.sessions };
+    const { folder, sessions, can_start_sessions } = this.snapshot;
+    this.snapshot = { ...EMPTY_SNAPSHOT, folder, sessions, can_start_sessions };
     this.openThreadId = null;
   }
 

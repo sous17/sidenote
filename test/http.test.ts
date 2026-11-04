@@ -4,20 +4,24 @@ import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import type { NewSession } from "../src/node/terminal.ts";
 import { Delivery } from "../src/server/delivery.ts";
 import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
 import { Store } from "../src/server/store.ts";
-import type {
-  ClaimResult,
-  LaunchCodeResult,
-  NewResponseResult,
-  Note,
-  PromptResult,
-  RedeemResult,
-  SessionListResult,
-  StateSnapshot,
-  WaiterPollResult,
+import {
+  MAX_PROMPT_CHARS,
+  type ClaimResult,
+  type ErrorResult,
+  type LaunchCodeResult,
+  type NewResponseResult,
+  type Note,
+  type PromptResult,
+  type RedeemResult,
+  type SessionListResult,
+  type StartSessionResult,
+  type StateSnapshot,
+  type WaiterPollResult,
 } from "../src/shared/types.ts";
 
 const TOKEN = "test-token-0123456789";
@@ -26,6 +30,9 @@ let base = "";
 let port = 0;
 /** Folders the server asked the desktop to open. */
 const openedFolders: string[] = [];
+/** Sessions the server asked a terminal to start, and the error the next start fails with, if any. */
+const startedSessions: NewSession[] = [];
+let nextStartFails: string | null = null;
 
 before(async () => {
   const webDir = mkdtempSync(join(tmpdir(), "sidenote-web-"));
@@ -47,6 +54,10 @@ before(async () => {
       webDir,
       openFolder: (path) => {
         openedFolders.push(path);
+      },
+      startSession: async (session) => {
+        if (nextStartFails) throw new Error(nextStartFails);
+        startedSessions.push(session);
       },
     }),
   );
@@ -290,5 +301,80 @@ describe("open folder", () => {
     assert.equal((await open({ session_id: "../x" })).status, 400);
     assert.equal((await open({ session_id: "o1" }, { "X-Review-Token": "wrong" })).status, 403);
     assert.deepEqual(openedFolders, [folder, folder]);
+  });
+});
+
+describe("starting a session", () => {
+  test("opens a terminal in the folder sidenote recorded, and lists the new session right away", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-start-"));
+    await call("POST", "/api/sessions", { session_id: "st1", cwd: folder });
+    const start = (body: object) => call("POST", "/api/sessions/start", body);
+
+    const response = await start({ session_id: "st1", prompt: " --help me ", cwd: "/etc" });
+    assert.equal(response.status, 201);
+    const { session_id } = (await response.json()) as StartSessionResult;
+    assert.match(session_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(startedSessions.at(-1), { cwd: folder, sessionId: session_id, prompt: "--help me" });
+
+    const state = await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=${session_id}`));
+    assert.equal(state.session?.id, session_id, "selectable before Claude's first reply");
+    assert.equal(state.session?.cwd, folder);
+    assert.equal(state.can_start_sessions, true);
+
+    assert.equal((await start({ session_id: "st1" })).status, 201, "a prompt is optional");
+    assert.equal(startedSessions.at(-1)?.prompt, "");
+    assert.equal((await start({ session_id: "unknown" })).status, 404);
+    assert.equal((await start({ session_id: "st1", prompt: "x".repeat(MAX_PROMPT_CHARS + 1) })).status, 400);
+    assert.equal((await start({ session_id: "st1", prompt: 42 })).status, 400);
+  });
+
+  test("says why a terminal didn't open, and lists nothing then", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-start-"));
+    await call("POST", "/api/sessions", { session_id: "st2", cwd: folder });
+    const before = (await json<SessionListResult>(call("GET", "/api/sessions"))).sessions.length;
+    nextStartFails = "Not authorized to send Apple events to Terminal.";
+    try {
+      const response = await call("POST", "/api/sessions/start", { session_id: "st2" });
+      assert.equal(response.status, 502);
+      assert.match(((await response.json()) as ErrorResult).error, /Not authorized to send Apple events/);
+    } finally {
+      nextStartFails = null;
+    }
+    assert.equal((await json<SessionListResult>(call("GET", "/api/sessions"))).sessions.length, before);
+  });
+
+  test("is refused where there is no terminal to open", async () => {
+    const store = new Store();
+    store.touchSession("st3", "", mkdtempSync(join(tmpdir(), "sidenote-start-")));
+    const allowedHosts = new Set<string>();
+    const bare = createServer(
+      createApp({
+        store,
+        delivery: new Delivery(store),
+        launchCodes: new LaunchCodes(),
+        token: TOKEN,
+        allowedHosts,
+        webDir: tmpdir(),
+        openFolder: () => {},
+        startSession: null,
+      }),
+    );
+    await new Promise<void>((resolve) => bare.listen(0, "127.0.0.1", resolve));
+    const address = bare.address();
+    const bareBase = `127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    allowedHosts.add(bareBase);
+    try {
+      const headers = { "X-Review-Token": TOKEN, "Content-Type": "application/json" };
+      const state = await (await fetch(`http://${bareBase}/api/state?v=-1&s=st3`, { headers })).json();
+      assert.equal((state as StateSnapshot).can_start_sessions, false);
+      const response = await fetch(`http://${bareBase}/api/sessions/start`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ session_id: "st3" }),
+      });
+      assert.equal(response.status, 501);
+    } finally {
+      bare.close();
+    }
   });
 });

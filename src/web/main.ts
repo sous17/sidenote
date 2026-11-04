@@ -6,6 +6,7 @@ import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
 import { Model, sessionLabel } from "./model.ts";
+import { NewSessionForm } from "./newsession.ts";
 import { SessionPanel, rememberSession, rememberedSession } from "./panel.ts";
 import { PromptBox } from "./prompt.ts";
 import { installNoteStarters } from "./selection.ts";
@@ -33,8 +34,8 @@ function showUnavailable(title: string, text: string): void {
 }
 
 /** Top left: the window's folder, the selected session, and a button to open the folder. */
-function renderWindowTitle(model: Model, panel: SessionPanel): void {
-  const { session, folder, sessions } = model.snapshot;
+function renderWindowTitle(model: Model, panel: SessionPanel, newSession: NewSessionForm): void {
+  const { session, folder, sessions, can_start_sessions } = model.snapshot;
   byId("window-title").hidden = false;
   byId("folder-name").textContent = folder;
   byId("folder-name").title = session?.cwd ?? "";
@@ -43,6 +44,7 @@ function renderWindowTitle(model: Model, panel: SessionPanel): void {
   byId("open-folder").hidden = !session?.cwd;
   byId("open-folder").title = session?.cwd ? `Open ${session.cwd}` : "";
   panel.render(sessions, model.sessionId);
+  newSession.render(can_start_sessions, session?.cwd ?? "");
   document.title = folder ? `${folder} · sidenote` : "sidenote";
 }
 
@@ -155,18 +157,30 @@ async function start(): Promise<void> {
     close: byId<HTMLButtonElement>("pane-close"),
   });
 
-  const panel = new SessionPanel({
+  const selectSession = (selected: string): void => {
+    // Don't throw away a half-written note or thread reply: each takes the focus instead.
+    if (selected === model.sessionId || !editor.release() || !thread.release()) return;
+    model.select(selected);
+    feed.reset();
+    panel.render(model.snapshot.sessions, selected);
+    void refresh();
+  };
+  const panel: SessionPanel = new SessionPanel({
     panel: byId("session-panel"),
     list: byId("session-list"),
     toggle: byId<HTMLButtonElement>("panel-toggle"),
     app: byId("app"),
-    onSelect: (selected) => {
-      // Don't throw away a half-written note or thread reply: each takes the focus instead.
-      if (selected === model.sessionId || !editor.release() || !thread.release()) return;
-      model.select(selected);
-      feed.reset();
-      panel.render(model.snapshot.sessions, selected);
-      void refresh();
+    onSelect: selectSession,
+  });
+  const newSession = new NewSessionForm({
+    button: byId<HTMLButtonElement>("new-session"),
+    form: byId<HTMLFormElement>("new-session-form"),
+    prompt: byId<HTMLTextAreaElement>("new-session-prompt"),
+    cancel: byId<HTMLButtonElement>("new-session-cancel"),
+    hint: byId("new-session-hint"),
+    start: async (prompt) => {
+      const started = await api.startSession(model.sessionId, prompt);
+      if (started) selectSession(started.session_id);
     },
   });
 
@@ -188,7 +202,7 @@ async function start(): Promise<void> {
         promptBox.load();
       }
     }
-    renderWindowTitle(model, panel);
+    renderWindowTitle(model, panel, newSession);
     feed.render();
     sending.render();
     promptBox.render();

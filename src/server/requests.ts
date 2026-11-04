@@ -2,11 +2,13 @@
 // throws BadRequest. Handlers never touch raw input.
 import { MAX_ACTIVITY_CHARS, MAX_PROGRESS_DELTA_CHARS } from "../shared/tools.ts";
 import {
+  MAX_PROMPT_CHARS,
   SESSION_ID_PATTERN,
   type ActivityRequest,
   type ClaimRequest,
   type ProgressRequest,
   type PromptRequest,
+  type StartSessionRequest,
   type EpochSeconds,
   type NewResponseRequest,
   type OpenFolderRequest,
@@ -178,4 +180,12 @@ export function parsePrompt(input: unknown): PromptRequest {
 
 export function parseOpenFolder(input: unknown): OpenFolderRequest {
   return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+}
+
+export function parseStartSession(input: unknown): Required<StartSessionRequest> {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim(),
+  };
 }

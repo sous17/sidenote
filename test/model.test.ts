@@ -16,6 +16,7 @@ function model(status: SessionState, messageAt: number | null, delivered: boolea
     session,
     folder: "w",
     sessions: [],
+    can_start_sessions: false,
     responses,
     comments: [],
     messages,

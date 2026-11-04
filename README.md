@@ -39,6 +39,11 @@ note on its own, and each answer lands in that note's thread.
   folder name brings it back. Notes always go back to the session they were written on.
 - **Open folder.** The button beside the folder name opens the folder on your computer, with
   whatever app your system opens folders with.
+- **Start a session from the window.** The **+** above the session list opens a terminal in the
+  folder, running Claude with the first prompt you type there, and selects the new session. Claude
+  asks for permissions in that terminal; after its first reply you can carry on from the window.
+  This needs GNOME Terminal on Linux, or Terminal on macOS, where the first start asks you to let
+  the app sidenote runs under control Terminal.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -190,8 +195,13 @@ locked down:
   token stops working when the server restarts, since each start makes a new one.
 - **Validated input.** Every request body is parsed against a fixed shape, with size limits,
   before it reaches the store. Session ids must look like ids.
-- **Recorded folders only.** Open folder names a session, not a path: the server opens the
-  folder it recorded for that session, without a shell, and nothing else.
+- **Recorded folders only.** Open folder and the **+** name a session, not a path: the server
+  opens the folder it recorded for that session, or starts Claude there, and nothing else.
+- **No shell for your prompt.** A new session's first prompt reaches `claude` as one argument
+  after `--`, so it can't add options, and on Linux it never passes through a shell. On macOS,
+  Terminal runs the command through your shell, so AppleScript's `quoted form of` quotes the
+  folder and the prompt first. Starting a session is the one thing the token allows beyond talking
+  to sessions that already run, and the terminal it opens is always in front of you.
 - **Inert replies.** Raw HTML in a reply is shown as text. The rendered markdown is sanitized
   with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own
   controls. The page's content security policy allows no inline or remote scripts, and every

@@ -264,13 +264,63 @@ body[data-panel="docked"] .app {
   margin-left: var(--panel-width);
 }
 .session-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 6px 16px;
+}
+.session-panel-head h2 {
   margin: 0;
-  padding: 14px 16px 8px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+.new-session {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.new-session:hover,
+.new-session[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--sunken);
+}
+.new-session svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+.new-session-form {
+  display: grid;
+  gap: 8px;
+  margin: 0 8px 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.new-session-form[hidden] {
+  display: none;
+}
+.new-session-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.new-session-form.failed .new-session-hint {
+  color: var(--danger);
 }
 .session-list {
   display: grid;
@@ -847,7 +897,8 @@ li.block:hover:has(li.block:hover) {
   overflow: hidden;
 }
 .editor textarea,
-.composer textarea {
+.composer textarea,
+.new-session-form textarea {
   width: 100%;
   padding: 7px 9px;
   border: 1px solid var(--border);
@@ -859,7 +910,8 @@ li.block:hover:has(li.block:hover) {
   resize: vertical;
 }
 .editor textarea:focus,
-.composer textarea:focus {
+.composer textarea:focus,
+.new-session-form textarea:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
   outline-offset: 0;
 }

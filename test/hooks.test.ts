@@ -8,12 +8,20 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { PAGE_HOST, type Note, type RedeemResult, type ServerInfo, type StateSnapshot } from "../src/shared/types.ts";
+import {
+  PAGE_HOST,
+  type Note,
+  type RedeemResult,
+  type ServerInfo,
+  type StartSessionResult,
+  type StateSnapshot,
+} from "../src/shared/types.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const launcher = join(root, "bin", "sidenote");
 const home = mkdtempSync(join(tmpdir(), "sidenote-home-"));
 const opened = join(home, "opened.txt");
+const terminalArgs = join(home, "terminal-args");
 const SESSION = "e2e-session";
 
 interface Run {
@@ -96,6 +104,11 @@ before(() => {
   for (const opener of ["open", "xdg-open"]) {
     writeFileSync(join(home, "fakebin", opener), `#!/bin/sh\necho "$1" >> "${opened}"\n`);
     chmodSync(join(home, "fakebin", opener), 0o755);
+  }
+  // Stand-ins for the terminals: record the arguments instead of opening a window.
+  for (const terminal of ["gnome-terminal", "osascript"]) {
+    writeFileSync(join(home, "fakebin", terminal), `#!/bin/sh\nprintf '%s\\0' "$@" > "${terminalArgs}"\n`);
+    chmodSync(join(home, "fakebin", terminal), 0o755);
   }
 });
 
@@ -242,6 +255,33 @@ test("the server opens a session's folder with the system's opener", async () =>
   });
   assert.equal(response.status, 204);
   assert.equal(await nextOpened(), home);
+});
+
+test("starting a session opens a terminal running claude in the session's folder", async () => {
+  await api("POST", "/api/sessions", { session_id: "folder-session", cwd: home });
+  const { port, token } = server();
+  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/start`, {
+    method: "POST",
+    headers: { "X-Review-Token": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: "folder-session", prompt: "-v fix it" }),
+  });
+  assert.equal(response.status, 201);
+  const { session_id } = (await response.json()) as StartSessionResult;
+  const args = readFileSync(terminalArgs, "utf8").split("\0").slice(0, -1);
+  if (process.platform === "darwin") {
+    assert.equal(args[0], "-e");
+    assert.deepEqual(args.slice(-3), [home, session_id, "-v fix it"]);
+  } else {
+    assert.deepEqual(args, [
+      `--working-directory=${home}`,
+      "--",
+      "claude",
+      "--session-id",
+      session_id,
+      "--",
+      "-v fix it",
+    ]);
+  }
 });
 
 test("clients starting the server at the same moment all end up on one server", async () => {

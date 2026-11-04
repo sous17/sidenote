@@ -2,7 +2,7 @@
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { mkdirSync, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join as join2 } from "node:path";
+import { dirname, join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/node/open.ts
@@ -28,6 +28,70 @@ var paths = {
   enabledFlag: () => join(stateDir(), "enabled"),
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
+
+// src/node/terminal.ts
+import { spawn as spawn2 } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join as join2 } from "node:path";
+var STILL_STARTING_MS = 3e3;
+var MACOS_SCRIPT = [
+  "on run argv",
+  'set theCommand to "cd " & quoted form of item 1 of argv & " && claude --session-id " & quoted form of item 2 of argv',
+  'if (count of argv) > 2 then set theCommand to theCommand & " -- " & quoted form of item 3 of argv',
+  'tell application "Terminal"',
+  "activate",
+  "do script theCommand",
+  "end tell",
+  "end run"
+];
+function terminalCommand(platform, session) {
+  const prompt = session.prompt ? [session.prompt] : [];
+  if (platform === "darwin") {
+    return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), session.cwd, session.sessionId, ...prompt]];
+  }
+  if (platform === "linux") {
+    const claude = ["claude", "--session-id", session.sessionId, ...session.prompt ? ["--", session.prompt] : []];
+    return ["gnome-terminal", [`--working-directory=${session.cwd}`, "--", ...claude]];
+  }
+  return null;
+}
+function canStartSessions(platform = process.platform) {
+  if (platform === "darwin") return true;
+  return platform === "linux" && onPath("gnome-terminal");
+}
+function startInTerminal(command) {
+  return new Promise((resolve2, reject) => {
+    const child = spawn2(command[0], [...command[1]], { detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-500);
+    });
+    const stillStarting = setTimeout(() => {
+      child.stderr.destroy();
+      child.unref();
+      resolve2();
+    }, STILL_STARTING_MS);
+    child.on("error", (error) => {
+      clearTimeout(stillStarting);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(stillStarting);
+      if (code === 0) resolve2();
+      else reject(new Error(stderr.trim() || `${command[0]} exited with ${code}`));
+    });
+  });
+}
+function onPath(name) {
+  return (process.env["PATH"] ?? "").split(delimiter).filter(Boolean).some((dir) => {
+    try {
+      accessSync(join2(dir, name), constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
 
 // src/shared/types.ts
 var TOKEN_HEADER = "X-Review-Token";
@@ -199,7 +263,7 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
 };
 
 // src/server/http.ts
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
@@ -348,6 +412,13 @@ function parsePrompt(input) {
 function parseOpenFolder(input) {
   return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
 }
+function parseStartSession(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim()
+  };
+}
 
 // src/server/http.ts
 var MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -377,21 +448,39 @@ var HttpError = class extends Error {
 };
 var ok = (body, status = 200) => ({ status, body });
 var empty = (status) => ({ status });
-function routes({ store, delivery, launchCodes, token, openFolder }) {
+function routes({ store, delivery, launchCodes, token, openFolder, startSession }) {
   const snapshot = (sessionId2, folder) => {
     const latest = folder === null ? void 0 : store.folderSessions(folder)[0];
     const session = store.session(sessionId2 ?? "") ?? store.session(latest?.id ?? "");
     const version = store.revision.value;
-    if (!session)
-      return { version, session: null, folder: folder ?? "", sessions: [], responses: [], comments: [], messages: [] };
+    const can_start_sessions = startSession !== null;
+    if (!session) {
+      return {
+        version,
+        session: null,
+        folder: folder ?? "",
+        sessions: [],
+        can_start_sessions,
+        responses: [],
+        comments: [],
+        messages: []
+      };
+    }
     const windowFolder = folderName(session.cwd);
     return {
       version,
       session: { ...session, ...delivery.status(session.id) },
       folder: windowFolder,
       sessions: store.folderSessions(windowFolder).map((row) => ({ ...row, status: delivery.status(row.id).status })),
+      can_start_sessions,
       ...store.sessionContent(session.id)
     };
+  };
+  const recordedFolder = (sessionId2) => {
+    const cwd = store.session(sessionId2)?.cwd;
+    if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HttpError(404, `${cwd} no longer exists`);
+    return cwd;
   };
   return [
     {
@@ -536,13 +625,26 @@ function routes({ store, delivery, launchCodes, token, openFolder }) {
       path: "/api/open-folder",
       needsToken: true,
       handle: ({ body }) => {
-        const cwd = store.session(parseOpenFolder(body).session_id)?.cwd;
-        if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
-        if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
-          throw new HttpError(404, `${cwd} no longer exists`);
-        }
-        openFolder(cwd);
+        openFolder(recordedFolder(parseOpenFolder(body).session_id));
         return empty(204);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/start",
+      needsToken: true,
+      handle: async ({ body }) => {
+        const { session_id, prompt } = parseStartSession(body);
+        const cwd = recordedFolder(session_id);
+        if (!startSession) throw new HttpError(501, "starting sessions needs GNOME Terminal on Linux, or macOS");
+        const id = randomUUID();
+        try {
+          await startSession({ cwd, sessionId: id, prompt });
+        } catch (error) {
+          throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
+        }
+        store.touchSession(id, "", cwd);
+        return ok({ session_id: id }, 201);
       }
     },
     {
@@ -1044,7 +1146,7 @@ var Store = class {
 };
 
 // src/server/main.ts
-var WEB_DIR = join2(dirname(fileURLToPath(import.meta.url)), "web");
+var WEB_DIR = join3(dirname(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
   return new Promise((resolvePort, reject) => {
     server.once("error", reject);
@@ -1090,7 +1192,8 @@ async function main() {
       token,
       allowedHosts,
       webDir: WEB_DIR,
-      openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`))
+      openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
+      startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
     })
   );
   server.keepAliveTimeout = 2e3;

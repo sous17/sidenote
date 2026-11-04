@@ -68,7 +68,29 @@
     </header>
 
     <aside id="session-panel" class="session-panel" aria-label="Sessions in this folder">
-      <h2 class="session-panel-head">Sessions</h2>
+      <div class="session-panel-head">
+        <h2>Sessions</h2>
+        <button
+          id="new-session"
+          class="new-session"
+          type="button"
+          title="Start a new session in this folder"
+          aria-label="Start a new session in this folder"
+          aria-expanded="false"
+          aria-controls="new-session-form"
+          hidden
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
+        </button>
+      </div>
+      <form id="new-session-form" class="new-session-form" hidden>
+        <textarea id="new-session-prompt" rows="3" placeholder="What should Claude do? (optional)"></textarea>
+        <div class="editor-actions">
+          <button type="submit" class="send-button">Start</button>
+          <button id="new-session-cancel" type="button" class="link-button">Cancel</button>
+        </div>
+        <p id="new-session-hint" class="new-session-hint"></p>
+      </form>
       <nav id="session-list" class="session-list"></nav>
     </aside>
 

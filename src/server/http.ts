@@ -7,11 +7,12 @@
 // - Bodies are size-limited JSON objects, parsed by requests.ts before any handler runs.
 // - Every response carries nosniff, no-referrer and same-origin headers; the page also gets a
 //   content security policy that allows no inline or remote scripts.
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import type { NewSession } from "../node/terminal.ts";
 import { folderName } from "../shared/folders.ts";
 import {
   MAX_PROMPT_CHARS,
@@ -24,6 +25,7 @@ import {
   type RedeemResult,
   type SendResult,
   type SessionListResult,
+  type StartSessionResult,
   type StateSnapshot,
   type WaiterPollResult,
 } from "../shared/types.ts";
@@ -40,6 +42,7 @@ import {
   parsePrompt,
   parseRedeem,
   parseSend,
+  parseStartSession,
   parseTouchSession,
   parseWaiter,
 } from "./requests.ts";
@@ -80,6 +83,8 @@ export interface AppOptions {
   webDir: string;
   /** Opens a folder on the desktop, with whatever app the system opens folders with. */
   openFolder: (path: string) => void;
+  /** Opens a terminal running a new Claude session; null where this machine has no terminal for it. */
+  startSession: ((session: NewSession) => Promise<void>) | null;
 }
 
 class HttpError extends Error {
@@ -109,22 +114,42 @@ interface Route {
 const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
-function routes({ store, delivery, launchCodes, token, openFolder }: AppOptions): Route[] {
+function routes({ store, delivery, launchCodes, token, openFolder, startSession }: AppOptions): Route[] {
   /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
   const snapshot = (sessionId: string | null, folder: string | null): StateSnapshot => {
     const latest = folder === null ? undefined : store.folderSessions(folder)[0];
     const session = store.session(sessionId ?? "") ?? store.session(latest?.id ?? "");
     const version = store.revision.value;
-    if (!session)
-      return { version, session: null, folder: folder ?? "", sessions: [], responses: [], comments: [], messages: [] };
+    const can_start_sessions = startSession !== null;
+    if (!session) {
+      return {
+        version,
+        session: null,
+        folder: folder ?? "",
+        sessions: [],
+        can_start_sessions,
+        responses: [],
+        comments: [],
+        messages: [],
+      };
+    }
     const windowFolder = folderName(session.cwd);
     return {
       version,
       session: { ...session, ...delivery.status(session.id) },
       folder: windowFolder,
       sessions: store.folderSessions(windowFolder).map((row) => ({ ...row, status: delivery.status(row.id).status })),
+      can_start_sessions,
       ...store.sessionContent(session.id),
     };
+  };
+
+  /** The folder sidenote recorded for a session, if it still exists. Requests never name a path. */
+  const recordedFolder = (sessionId: string): string => {
+    const cwd = store.session(sessionId)?.cwd;
+    if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HttpError(404, `${cwd} no longer exists`);
+    return cwd;
   };
 
   return [
@@ -272,14 +297,27 @@ function routes({ store, delivery, launchCodes, token, openFolder }: AppOptions)
       path: "/api/open-folder",
       needsToken: true,
       handle: ({ body }) => {
-        // Only a folder sidenote recorded for a session, never a path from the request.
-        const cwd = store.session(parseOpenFolder(body).session_id)?.cwd;
-        if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
-        if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
-          throw new HttpError(404, `${cwd} no longer exists`);
-        }
-        openFolder(cwd);
+        openFolder(recordedFolder(parseOpenFolder(body).session_id));
         return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/start",
+      needsToken: true,
+      handle: async ({ body }) => {
+        const { session_id, prompt } = parseStartSession(body);
+        const cwd = recordedFolder(session_id);
+        if (!startSession) throw new HttpError(501, "starting sessions needs GNOME Terminal on Linux, or macOS");
+        const id = randomUUID();
+        try {
+          await startSession({ cwd, sessionId: id, prompt });
+        } catch (error) {
+          throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
+        }
+        // Listed right away, so the page can select it before Claude's first reply.
+        store.touchSession(id, "", cwd);
+        return ok({ session_id: id } satisfies StartSessionResult, 201);
       },
     },
     {

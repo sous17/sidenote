@@ -40,6 +40,10 @@ Anyone who can call the API can put text in front of the user's agent, so:
   never `innerHTML`.
 - Keep the content security policy free of inline and remote scripts, and keep the server bound
   to `127.0.0.1` with its `Host` check.
+- Anything that starts a process takes a session id and uses the folder recorded for it, never a
+  path from the request. A new session's prompt goes to `claude` as one argument after `--`;
+  never build a shell command from it, except on macOS, where AppleScript's `quoted form of`
+  quotes it (`src/node/terminal.ts`).
 
 ## Hooks
 

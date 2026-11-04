@@ -97,6 +97,8 @@ export interface StateSnapshot {
   folder: string;
   /** The folder's sessions, most recently active first. */
   sessions: FolderSession[];
+  /** Whether the page can start a new session in the folder: there is a terminal to open. */
+  can_start_sessions: boolean;
   responses: StoredResponse[];
   comments: Note[];
   /** What the user sent Claude in this session, oldest first. */
@@ -186,6 +188,21 @@ export interface WaiterRequest {
 
 /** Opens a session's folder on the desktop. The server knows the folder; the page only names the session. */
 export interface OpenFolderRequest {
+  session_id: string;
+}
+
+/**
+ * Starts a new session in a terminal, in the folder of the session named, which the server knows;
+ * the page never sends a path.
+ */
+export interface StartSessionRequest {
+  session_id: string;
+  /** The new session's first prompt; empty or absent starts Claude without one. */
+  prompt?: string;
+}
+
+export interface StartSessionResult {
+  /** The new session's id, which the server gave Claude, so the page can select it right away. */
   session_id: string;
 }
 
