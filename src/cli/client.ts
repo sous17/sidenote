@@ -4,6 +4,7 @@ import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
 import { folderName, folderPath } from "../shared/folders.ts";
 import {
@@ -132,16 +133,7 @@ async function startServer(): Promise<SidenoteClient> {
   throw new Error(`the sidenote server did not start; see ${paths.logFile()}`);
 }
 
-/** Opens a URL in the default browser without going through a shell. */
+/** Opens a URL in the default browser. */
 export function openBrowser(url: string): void {
-  // On Windows, `cmd /c start` would treat the URL's "&" as a command separator.
-  const [command, args]: [string, string[]] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
-        : ["xdg-open", [url]];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.on("error", () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
-  child.unref();
+  openWithSystem(url, () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
 }

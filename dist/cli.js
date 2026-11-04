@@ -26,11 +26,20 @@ function folderPath(folder) {
 }
 
 // src/cli/client.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join as join2 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+
+// src/node/open.ts
+import { spawn } from "node:child_process";
+function openWithSystem(target, onError) {
+  const [command2, args] = process.platform === "darwin" ? ["open", [target]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", target]] : ["xdg-open", [target]];
+  const child = spawn(command2, args, { detached: true, stdio: "ignore" });
+  child.on("error", onError);
+  child.unref();
+}
 
 // src/shared/types.ts
 var TOKEN_HEADER = "X-Review-Token";
@@ -127,7 +136,7 @@ function serverPid() {
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
   const log = openSync(paths.logFile(), "a", 384);
-  spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
+  spawn2(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const client = await SidenoteClient.connect();
@@ -137,10 +146,7 @@ async function startServer() {
   throw new Error(`the sidenote server did not start; see ${paths.logFile()}`);
 }
 function openBrowser(url) {
-  const [command2, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
-  const child = spawn(command2, args, { detached: true, stdio: "ignore" });
-  child.on("error", () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
-  child.unref();
+  openWithSystem(url, () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
 }
 
 // src/cli/hooks.ts

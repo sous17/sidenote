@@ -5,6 +5,15 @@ import { createServer } from "node:http";
 import { dirname, join as join2 } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// src/node/open.ts
+import { spawn } from "node:child_process";
+function openWithSystem(target, onError) {
+  const [command, args] = process.platform === "darwin" ? ["open", [target]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", target]] : ["xdg-open", [target]];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.on("error", onError);
+  child.unref();
+}
+
 // src/node/paths.ts
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -191,6 +200,7 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
 
 // src/server/http.ts
 import { timingSafeEqual } from "node:crypto";
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
@@ -335,6 +345,9 @@ function parsePrompt(input) {
     text: nonEmpty(string(body, "text", LIMITS.message), "text").trim()
   };
 }
+function parseOpenFolder(input) {
+  return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+}
 
 // src/server/http.ts
 var MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -364,7 +377,7 @@ var HttpError = class extends Error {
 };
 var ok = (body, status = 200) => ({ status, body });
 var empty = (status) => ({ status });
-function routes({ store, delivery, launchCodes, token }) {
+function routes({ store, delivery, launchCodes, token, openFolder }) {
   const snapshot = (sessionId2, folder) => {
     const latest = folder === null ? void 0 : store.folderSessions(folder)[0];
     const session = store.session(sessionId2 ?? "") ?? store.session(latest?.id ?? "");
@@ -520,6 +533,20 @@ function routes({ store, delivery, launchCodes, token }) {
     },
     {
       method: "POST",
+      path: "/api/open-folder",
+      needsToken: true,
+      handle: ({ body }) => {
+        const cwd = store.session(parseOpenFolder(body).session_id)?.cwd;
+        if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
+        if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+          throw new HttpError(404, `${cwd} no longer exists`);
+        }
+        openFolder(cwd);
+        return empty(204);
+      }
+    },
+    {
+      method: "POST",
       path: "/api/launch",
       needsToken: true,
       handle: () => ok({ code: launchCodes.issue() })
@@ -662,7 +689,7 @@ var LaunchCodes = class {
 };
 
 // src/server/lock.ts
-import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, openSync, readFileSync, rmSync, statSync as statSync2, writeSync } from "node:fs";
 var STARTUP_GRACE_MS = 3e4;
 function isRunning(pid) {
   try {
@@ -684,7 +711,7 @@ function isHeld(lockFile, serverFile) {
   let ageMs;
   try {
     pid = Number.parseInt(readFileSync(lockFile, "utf8"), 10);
-    ageMs = Date.now() - statSync(lockFile).mtimeMs;
+    ageMs = Date.now() - statSync2(lockFile).mtimeMs;
   } catch {
     return false;
   }
@@ -1062,7 +1089,8 @@ async function main() {
       launchCodes: new LaunchCodes(),
       token,
       allowedHosts,
-      webDir: WEB_DIR
+      webDir: WEB_DIR,
+      openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`))
     })
   );
   server.keepAliveTimeout = 2e3;

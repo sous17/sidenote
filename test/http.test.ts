@@ -24,6 +24,8 @@ const TOKEN = "test-token-0123456789";
 const server = createServer();
 let base = "";
 let port = 0;
+/** Folders the server asked the desktop to open. */
+const openedFolders: string[] = [];
 
 before(async () => {
   const webDir = mkdtempSync(join(tmpdir(), "sidenote-web-"));
@@ -43,6 +45,9 @@ before(async () => {
       token: TOKEN,
       allowedHosts: new Set([`127.0.0.1:${port}`]),
       webDir,
+      openFolder: (path) => {
+        openedFolders.push(path);
+      },
     }),
   );
 });
@@ -267,5 +272,23 @@ describe("messages from the page", () => {
       state.messages.map((m) => [m.text, m.source, m.delivered_at !== null]),
       [["Fix the bug", "terminal", true]],
     );
+  });
+});
+
+describe("open folder", () => {
+  test("opens only the folder sidenote recorded for the session, and only while it exists", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-folder-"));
+    await call("POST", "/api/sessions", { session_id: "o1", cwd: folder });
+    await call("POST", "/api/sessions", { session_id: "o2", cwd: join(folder, "gone") });
+    const open = (body: object, headers: Record<string, string> = {}) =>
+      call("POST", "/api/open-folder", body, headers);
+
+    assert.equal((await open({ session_id: "o1" })).status, 204);
+    assert.equal((await open({ session_id: "o1", cwd: "/etc" })).status, 204, "a path in the request is ignored");
+    assert.equal((await open({ session_id: "o2" })).status, 404, "the folder no longer exists");
+    assert.equal((await open({ session_id: "unknown" })).status, 404);
+    assert.equal((await open({ session_id: "../x" })).status, 400);
+    assert.equal((await open({ session_id: "o1" }, { "X-Review-Token": "wrong" })).status, 403);
+    assert.deepEqual(openedFolders, [folder, folder]);
   });
 });

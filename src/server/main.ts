@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
 import { PAGE_HOST, type ServerInfo } from "../shared/types.ts";
 import { Delivery } from "./delivery.ts";
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
       token,
       allowedHosts,
       webDir: WEB_DIR,
+      openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
     }),
   );
   // Long-lived keep-alive sockets would otherwise hold shutdown open.

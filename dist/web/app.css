@@ -134,7 +134,7 @@ button {
   color: var(--text);
 }
 
-/* The panel button, then the window's folder and selected session. */
+/* The panel button, the window's folder and selected session, and a button to open the folder. */
 .window-title {
   display: flex;
   align-items: center;
@@ -212,6 +212,34 @@ button {
 .session-name::before {
   content: "› ";
 }
+.open-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.open-folder:hover {
+  color: var(--text);
+  background: var(--sunken);
+}
+.open-folder svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
 /* The session list: docked beside the feed in a wide window, over it otherwise. panel.ts decides. */
 .session-panel {
   position: fixed;
@@ -1048,6 +1076,9 @@ li.block:hover:has(li.block:hover) {
     padding: 12px 16px 16px;
   }
   .pane-bar .meta .session-id {
+    display: none;
+  }
+  .open-folder span {
     display: none;
   }
 }

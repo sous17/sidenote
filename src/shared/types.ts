@@ -184,6 +184,11 @@ export interface WaiterRequest {
   waiter_id: string;
 }
 
+/** Opens a session's folder on the desktop. The server knows the folder; the page only names the session. */
+export interface OpenFolderRequest {
+  session_id: string;
+}
+
 export type WaiterAction = "exit" | "wait" | "send";
 
 export interface WaiterPollResult {

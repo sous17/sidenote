@@ -32,7 +32,7 @@ function showUnavailable(title: string, text: string): void {
   byId("empty-help").hidden = true;
 }
 
-/** Top left: the window's folder and the selected session. */
+/** Top left: the window's folder, the selected session, and a button to open the folder. */
 function renderWindowTitle(model: Model, panel: SessionPanel): void {
   const { session, folder, sessions } = model.snapshot;
   byId("window-title").hidden = false;
@@ -40,6 +40,8 @@ function renderWindowTitle(model: Model, panel: SessionPanel): void {
   byId("folder-name").title = session?.cwd ?? "";
   const selected = sessions.find((row) => row.id === model.sessionId);
   byId("session-name").textContent = selected ? sessionLabel(selected) : "";
+  byId("open-folder").hidden = !session?.cwd;
+  byId("open-folder").title = session?.cwd ? `Open ${session.cwd}` : "";
   panel.render(sessions, model.sessionId);
   document.title = folder ? `${folder} · sidenote` : "sidenote";
 }
@@ -201,6 +203,9 @@ async function start(): Promise<void> {
     },
   });
   byId("pending-summary").addEventListener("click", () => feed.showFirstPending());
+  byId("open-folder").addEventListener("click", () => {
+    api.openFolder(model.sessionId).catch(showError);
+  });
   document.addEventListener("keydown", (event) => {
     if ((event.target as Element | null)?.closest?.("textarea, input, select")) return;
     if (event.key === "Escape" && thread.isOpen) thread.close();

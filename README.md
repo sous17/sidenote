@@ -37,6 +37,8 @@ note on its own, and each answer lands in that note's thread.
   `/rename`, or its first message, with whether it is listening and how many notes are pending.
   In a narrow window, or while a thread is open, the list folds away; the button left of the
   folder name brings it back. Notes always go back to the session they were written on.
+- **Open folder.** The button beside the folder name opens the folder on your computer, with
+  whatever app your system opens folders with.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -185,6 +187,8 @@ locked down:
   `ps` only ever see a spent code that expires within two minutes anyway.
 - **Validated input.** Every request body is parsed against a fixed shape, with size limits,
   before it reaches the store. Session ids must look like ids.
+- **Recorded folders only.** Open folder names a session, not a path: the server opens the
+  folder it recorded for that session, without a shell, and nothing else.
 - **Inert replies.** Raw HTML in a reply is shown as text. The rendered markdown is sanitized
   with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own
   controls. The page's content security policy allows no inline or remote scripts, and every

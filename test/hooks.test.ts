@@ -70,18 +70,23 @@ function statusWithHost(host: string): Promise<number> {
 
 let openedCount = 0;
 
-/** The next URL the stand-in browser is asked to open. The opener runs detached, so wait for it. */
-async function lastOpened(): Promise<URL> {
+/** The next thing the stand-in opener is asked to open. The opener runs detached, so wait for it. */
+async function nextOpened(): Promise<string> {
   const deadline = Date.now() + 5000;
   for (;;) {
     const lines = existsSync(opened) ? readFileSync(opened, "utf8").trim().split("\n") : [];
     if (lines.length > openedCount) {
       openedCount = lines.length;
-      return new URL(lines.at(-1)!);
+      return lines.at(-1)!;
     }
-    if (Date.now() > deadline) throw new Error("the browser was not opened");
+    if (Date.now() > deadline) throw new Error("nothing was opened");
     await sleep(50);
   }
+}
+
+/** The next URL the stand-in browser is asked to open. */
+async function lastOpened(): Promise<URL> {
+  return new URL(await nextOpened());
 }
 
 before(() => {
@@ -225,6 +230,18 @@ test("status and open act on the session", async () => {
 
   await run(["open"]);
   assert.equal((await lastOpened()).searchParams.get("s"), SESSION, "open without a session picks the latest");
+});
+
+test("the server opens a session's folder with the system's opener", async () => {
+  await api("POST", "/api/sessions", { session_id: "folder-session", cwd: home });
+  const { port, token } = server();
+  const response = await fetch(`http://127.0.0.1:${port}/api/open-folder`, {
+    method: "POST",
+    headers: { "X-Review-Token": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: "folder-session" }),
+  });
+  assert.equal(response.status, 204);
+  assert.equal(await nextOpened(), home);
 });
 
 test("clients starting the server at the same moment all end up on one server", async () => {

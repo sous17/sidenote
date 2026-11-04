@@ -96,6 +96,11 @@ export class Api {
     return request("POST", "/api/prompt", this.#token, { session_id: sessionId, text });
   }
 
+  /** Opens the session's folder on the desktop. */
+  openFolder(sessionId: string): Promise<null> {
+    return request("POST", "/api/open-folder", this.#token, { session_id: sessionId });
+  }
+
   send(sessionId: string): Promise<SendResult | null> {
     return request("POST", "/api/send", this.#token, { session_ids: [sessionId] });
   }

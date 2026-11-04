@@ -9,6 +9,7 @@ import {
   type PromptRequest,
   type EpochSeconds,
   type NewResponseRequest,
+  type OpenFolderRequest,
   type RedeemRequest,
   type SendRequest,
   type TouchSessionRequest,
@@ -173,4 +174,8 @@ export function parsePrompt(input: unknown): PromptRequest {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     text: nonEmpty(string(body, "text", LIMITS.message), "text").trim(),
   };
+}
+
+export function parseOpenFolder(input: unknown): OpenFolderRequest {
+  return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
 }

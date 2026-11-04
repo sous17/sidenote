@@ -8,6 +8,7 @@
 // - Every response carries nosniff, no-referrer and same-origin headers; the page also gets a
 //   content security policy that allows no inline or remote scripts.
 import { timingSafeEqual } from "node:crypto";
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
@@ -35,6 +36,7 @@ import {
   parseClaim,
   parseNewNote,
   parseNewResponse,
+  parseOpenFolder,
   parsePrompt,
   parseRedeem,
   parseSend,
@@ -76,6 +78,8 @@ export interface AppOptions {
   allowedHosts: ReadonlySet<string>;
   /** Directory holding index.html and the page's other files. */
   webDir: string;
+  /** Opens a folder on the desktop, with whatever app the system opens folders with. */
+  openFolder: (path: string) => void;
 }
 
 class HttpError extends Error {
@@ -105,7 +109,7 @@ interface Route {
 const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
-function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
+function routes({ store, delivery, launchCodes, token, openFolder }: AppOptions): Route[] {
   /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
   const snapshot = (sessionId: string | null, folder: string | null): StateSnapshot => {
     const latest = folder === null ? undefined : store.folderSessions(folder)[0];
@@ -261,6 +265,21 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
           throw new HttpError(413, `messages to a terminal session are limited to ${MAX_PROMPT_CHARS} characters`);
         }
         return ok({ delivery: outcome } satisfies PromptResult, 202);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/open-folder",
+      needsToken: true,
+      handle: ({ body }) => {
+        // Only a folder sidenote recorded for a session, never a path from the request.
+        const cwd = store.session(parseOpenFolder(body).session_id)?.cwd;
+        if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
+        if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+          throw new HttpError(404, `${cwd} no longer exists`);
+        }
+        openFolder(cwd);
+        return empty(204);
       },
     },
     {
