@@ -9,9 +9,10 @@ right away or with your next prompt.
 
 ## Terminal app (work in progress)
 
-sidenote in a terminal, with notes beside their lines. This is a design mock, not a finished app.
+sidenote in a terminal, with a note's thread open beside the conversation. This is a design mock,
+not a finished app.
 
-![Design mock of the terminal app: a conversation with Claude in the middle, and notes in the right margin beside the lines they are about](docs/tui-mock.png)
+![Design mock of the terminal app: the conversation with Claude on the left, and a note's thread taking the right half of the screen](docs/tui-mock.png)
 
 ## License
 
