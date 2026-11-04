@@ -3,6 +3,7 @@
 import {
   SESSION_ID_PATTERN,
   type ClaimRequest,
+  type PromptRequest,
   type EpochSeconds,
   type NewResponseRequest,
   type RedeemRequest,
@@ -21,6 +22,7 @@ export const LIMITS = {
   sessionName: 200,
   cwd: 4_096,
   sessionIds: 100,
+  message: 100_000,
 } as const;
 
 const WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
@@ -117,7 +119,10 @@ export function parseTouchSession(input: unknown): Required<TouchSessionRequest>
 }
 
 export function parseClaim(input: unknown): ClaimRequest {
-  return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+  const body = asObject(input);
+  const prompt = optionalString(body, "prompt", LIMITS.message);
+  const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
+  return prompt === undefined ? { session_id } : { session_id, prompt };
 }
 
 export function parseWaiter(input: unknown): WaiterRequest {
@@ -138,4 +143,12 @@ export function parseSend(input: unknown): SendRequest {
 
 export function parseRedeem(input: unknown): RedeemRequest {
   return { code: matching(asObject(input), "code", LAUNCH_CODE_PATTERN) };
+}
+
+export function parsePrompt(input: unknown): PromptRequest {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    text: nonEmpty(string(body, "text", LIMITS.message), "text").trim(),
+  };
 }

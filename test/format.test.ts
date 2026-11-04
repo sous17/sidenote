@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_CONTEXT_CHARS, formatNotesForClaude } from "../src/cli/format.ts";
+import { MAX_CONTEXT_CHARS, formatNotesForClaude, formatPromptForClaude, isWakeText } from "../src/cli/format.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
 function claimed(overrides: Partial<ClaimedNote> = {}): ClaimedNote {
@@ -46,4 +46,28 @@ test("notes on the whole reply say so, and long context is truncated", () => {
 
 test("nothing to say about no notes", () => {
   assert.equal(formatNotesForClaude([]), "");
+});
+
+test("a message from the page reads as the user's own, with notes asked to be answered alongside", () => {
+  const alone = formatPromptForClaude("  Now add tests\n", []);
+  assert.match(alone, /sent you this message from the sidenote browser window/);
+  assert.match(alone, /\n\nNow add tests$/);
+  assert.doesNotMatch(alone, /Re: note/);
+
+  const withNotes = formatPromptForClaude("Now add tests", [claimed()]);
+  assert.match(withNotes, /Now add tests\n\nThe user reviewed your earlier responses/);
+  assert.match(withNotes, /\*\*↳ Re: note 41\*\*/);
+
+  const riding = formatPromptForClaude("Also this", [], { withTerminalPrompt: true });
+  assert.match(riding, /While you were working, the user also sent you this message/);
+
+  const long = formatPromptForClaude("p".repeat(8000), [claimed({ body: "n".repeat(5000) })]);
+  assert.ok(long.length <= MAX_CONTEXT_CHARS + 100);
+  assert.ok(long.includes("p".repeat(8000)), "the message comes first, so truncation only cuts notes");
+});
+
+test("sidenote's own wake-up texts are told apart from what the user typed", () => {
+  assert.equal(isWakeText(formatNotesForClaude([claimed()], { fromBrowser: true })), true);
+  assert.equal(isWakeText(formatPromptForClaude("hello", [])), true);
+  assert.equal(isWakeText("Why does the import skip empty rows?"), false);
 });

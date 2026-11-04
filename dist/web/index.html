@@ -63,11 +63,22 @@
             </p>
             <p id="empty-help">
               Click <b>Send now</b> to have Claude answer right away, or <b>Save</b> to keep a note
-              <span class="tag pending">pending</span> until your next prompt in the terminal. Click a note to open its
-              thread.
+              <span class="tag pending">pending</span> until your next prompt. Click a note to open its thread. To ask
+              Claude something new, type in the box at the bottom instead of the terminal.
             </p>
           </section>
         </div>
+        <form id="prompt-form" class="prompt-bar" aria-label="Message Claude">
+          <div class="prompt-box">
+            <textarea id="prompt-text" rows="1" placeholder="Message Claude…" aria-describedby="prompt-hint"></textarea>
+            <button id="prompt-send" type="submit" class="prompt-send" title="Send (Enter)" aria-label="Send">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                <path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" />
+              </svg>
+            </button>
+          </div>
+          <div id="prompt-hint" class="prompt-hint" aria-live="polite"></div>
+        </form>
       </main>
 
       <aside id="thread-pane" class="thread-pane" aria-label="Thread">

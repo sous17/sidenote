@@ -13,9 +13,11 @@ import type {
   LaunchCodeResult,
   NewResponseResult,
   Note,
+  PromptResult,
   RedeemResult,
   SessionListResult,
   StateSnapshot,
+  WaiterPollResult,
 } from "../src/shared/types.ts";
 
 const TOKEN = "test-token-0123456789";
@@ -169,6 +171,57 @@ describe("round trip", () => {
     assert.deepEqual(
       list.sessions.map((s) => s.id),
       ["fresh", "s"],
+    );
+  });
+});
+
+describe("messages from the page", () => {
+  test("reach a listening session's waiter, and show in the state from the moment they are sent", async () => {
+    await call("POST", "/api/responses", { session_id: "p", cwd: "/w", text: "Done." });
+    const send = (text: unknown, session_id = "p") => call("POST", "/api/prompt", { session_id, text });
+
+    assert.equal((await send("hi", "unknown")).status, 404);
+    assert.equal((await send("   ")).status, 400);
+    assert.equal((await send("hi")).status, 409, "no waiter, so nothing would wake Claude");
+
+    const waiter = { session_id: "p", waiter_id: "ab".repeat(8) };
+    await call("POST", "/api/waiters", waiter);
+    assert.deepEqual(await json<PromptResult>(send(" Add tests ")), { delivery: "sent" });
+    let state = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=p"));
+    assert.equal(state.session?.queued_prompt, "Add tests");
+    assert.equal(state.messages[0]?.text, "Add tests");
+    assert.equal(state.messages[0]?.delivered_at, null);
+
+    const poll = await json<WaiterPollResult>(call("POST", "/api/waiters/poll", waiter));
+    assert.equal(poll.action, "send");
+    assert.equal(poll.prompt, "Add tests");
+
+    await call("POST", "/api/responses", { session_id: "p", cwd: "/w", text: "Added." });
+    state = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=p"));
+    assert.equal(state.session?.queued_prompt, undefined);
+    assert.equal(state.messages.length, 1);
+    assert.notEqual(state.messages[0]?.delivered_at, null);
+  });
+
+  test("a message queued while Claude works rides along with a terminal prompt", async () => {
+    await call("POST", "/api/responses", { session_id: "q", cwd: "/w", text: "Done." });
+    await call("POST", "/api/claim", { session_id: "q" }); // the user typed in the terminal: busy
+    assert.deepEqual(await json<PromptResult>(call("POST", "/api/prompt", { session_id: "q", text: "And docs" })), {
+      delivery: "queued",
+    });
+    const claimed = await json<ClaimResult>(call("POST", "/api/claim", { session_id: "q" }));
+    assert.equal(claimed.prompt, "And docs");
+    assert.equal((await json<ClaimResult>(call("POST", "/api/claim", { session_id: "q" }))).prompt, undefined);
+  });
+
+  test("prompts typed in the terminal show too, in the order they were sent", async () => {
+    await call("POST", "/api/responses", { session_id: "t", cwd: "/w", text: "Done." });
+    await call("POST", "/api/claim", { session_id: "t", prompt: " Fix the bug \n" });
+    await call("POST", "/api/claim", { session_id: "t", prompt: "   " });
+    const state = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=t"));
+    assert.deepEqual(
+      state.messages.map((m) => [m.text, m.source, m.delivered_at !== null]),
+      [["Fix the bug", "terminal", true]],
     );
   });
 });

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { migrate } from "../src/server/persistence.ts";
 import { Store } from "../src/server/store.ts";
-import { DAY, SESSION } from "./helpers.ts";
+import { DAY, FakeClock, SESSION } from "./helpers.ts";
 
 test("reads stores from older versions, prunes them, and saves them privately", () => {
   const file = join(mkdtempSync(join(tmpdir(), "sidenote-store-")), "store.json");
@@ -69,4 +69,34 @@ test("drops malformed session ids and repairs next_id", () => {
     [9],
   );
   assert.equal(data.nextId, 10, "never reuses an id already on disk");
+});
+
+test("messages load from disk, stores without any get none, and ids never collide with them", () => {
+  assert.deepEqual(migrate({ responses: [] }).messages, [], "stores from before the message box");
+  const data = migrate({
+    messages: [
+      { id: 12, session_id: "ok", text: "hi", source: "page", created_at: 1, delivered_at: null },
+      { id: 13, session_id: "../evil", text: "x", source: "page", created_at: 1, delivered_at: null },
+    ],
+    next_id: 3,
+  });
+  assert.deepEqual(
+    data.messages.map((m) => m.id),
+    [12],
+  );
+  assert.equal(data.nextId, 13);
+});
+
+test("a session's messages are forgotten with it", () => {
+  const clock = new FakeClock();
+  const store = new Store({ clock });
+  store.addResponse({ sessionId: SESSION, cwd: "/w", text: "hi", sessionName: "", createdAt: undefined });
+  store.addMessage(SESSION, "hello", "terminal");
+  store.addMessage("not-seen-yet", "first prompt", "terminal");
+  store.addResponse({ sessionId: "other", cwd: "/w", text: "x", sessionName: "", createdAt: undefined });
+  assert.equal(store.sessionContent("not-seen-yet").messages.length, 1, "kept until its first reply arrives");
+  clock.advanceDays(8);
+  store.addResponse({ sessionId: "other", cwd: "/w", text: "y", sessionName: "", createdAt: undefined });
+  assert.equal(store.sessionContent(SESSION).messages.length, 0);
+  assert.equal(store.sessionContent("not-seen-yet").messages.length, 0);
 });

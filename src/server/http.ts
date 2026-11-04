@@ -12,11 +12,13 @@ import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import {
+  MAX_PROMPT_CHARS,
   TOKEN_HEADER,
   type ClaimResult,
   type ErrorResult,
   type LaunchCodeResult,
   type NewResponseResult,
+  type PromptResult,
   type RedeemResult,
   type SendResult,
   type SessionListResult,
@@ -30,6 +32,7 @@ import {
   parseClaim,
   parseNewNote,
   parseNewResponse,
+  parsePrompt,
   parseRedeem,
   parseSend,
   parseTouchSession,
@@ -101,7 +104,7 @@ const empty = (status: number): Reply => ({ status });
 function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
   const snapshot = (sessionId: string | null): StateSnapshot => {
     const session = sessionId ? store.session(sessionId) : undefined;
-    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [] };
+    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [], messages: [] };
     return {
       version: store.revision.value,
       session: { ...session, ...delivery.status(session.id) },
@@ -175,9 +178,14 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id } = parseClaim(body);
+        const { session_id, prompt: typed } = parseClaim(body);
         delivery.markBusy(session_id);
-        return ok({ comments: store.claimPending(session_id) } satisfies ClaimResult);
+        // A message still waiting from the page rides along with this terminal prompt.
+        const prompt = store.claimMessages(session_id);
+        if (typed?.trim()) store.addMessage(session_id, typed.trim(), "terminal");
+        const result: ClaimResult = { comments: store.claimPending(session_id) };
+        if (prompt !== undefined) result.prompt = prompt;
+        return ok(result);
       },
     },
     {
@@ -204,6 +212,26 @@ function routes({ store, delivery, launchCodes, token }: AppOptions): Route[] {
       path: "/api/send",
       needsToken: true,
       handle: ({ body }) => ok({ sessions: delivery.requestSend(parseSend(body).session_ids) } satisfies SendResult),
+    },
+    {
+      method: "POST",
+      path: "/api/prompt",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, text } = parsePrompt(body);
+        if (!store.session(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
+        const outcome = delivery.requestPrompt(session_id, text);
+        if (outcome === "offline") {
+          throw new HttpError(
+            409,
+            "this session isn't listening: it may be closed, or hasn't finished a reply since sidenote started",
+          );
+        }
+        if (outcome === "too-long") {
+          throw new HttpError(413, `messages to a terminal session are limited to ${MAX_PROMPT_CHARS} characters`);
+        }
+        return ok({ delivery: outcome } satisfies PromptResult, 202);
+      },
     },
     {
       method: "POST",

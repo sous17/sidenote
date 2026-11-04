@@ -16,6 +16,17 @@ export interface StoredResponse {
   note_answers: Record<string, string>;
 }
 
+/** A message the user sent Claude: typed in the terminal, or in the page's message box. */
+export interface UserMessage {
+  id: number;
+  session_id: string;
+  text: string;
+  source: "terminal" | "page";
+  created_at: EpochSeconds;
+  /** When it reached Claude; null while a message from the page waits for Claude's turn to end. */
+  delivered_at: EpochSeconds | null;
+}
+
 /** A note the user wrote in the browser. Follow-ups in a thread point at the thread's root note. */
 export interface Note {
   id: number;
@@ -55,6 +66,8 @@ export interface SessionSummary extends SessionMeta {
 export interface SendStatus {
   status: SessionState;
   send_requested: boolean;
+  /** A message typed in the page that waits for Claude to finish its turn; absent when none does. */
+  queued_prompt?: string;
 }
 
 /** The session a page shows, with its Send now status. */
@@ -67,6 +80,8 @@ export interface StateSnapshot {
   session: SessionView | null;
   responses: StoredResponse[];
   comments: Note[];
+  /** What the user sent Claude in this session, oldest first. */
+  messages: UserMessage[];
 }
 
 /** A note handed to Claude, with the context needed to describe it. */
@@ -108,10 +123,25 @@ export interface SessionListResult {
 
 export interface ClaimRequest {
   session_id: string;
+  /** What the user typed in the terminal, so the page can show it. */
+  prompt?: string;
 }
 
 export interface ClaimResult {
   comments: ClaimedNote[];
+  /** A message sent from the page that hadn't reached Claude yet; it rides along with this prompt. */
+  prompt?: string;
+}
+
+/** A message for Claude, typed in the page instead of the terminal. */
+export interface PromptRequest {
+  session_id: string;
+  text: string;
+}
+
+export interface PromptResult {
+  /** sent: Claude is starting on it; queued: it goes as soon as Claude finishes its turn. */
+  delivery: "sent" | "queued";
 }
 
 export interface WaiterRequest {
@@ -124,6 +154,8 @@ export type WaiterAction = "exit" | "wait" | "send";
 export interface WaiterPollResult {
   action: WaiterAction;
   comments: ClaimedNote[];
+  /** A message typed in the page, when the user sent one rather than only notes. */
+  prompt?: string;
 }
 
 export interface SendRequest {
@@ -161,6 +193,12 @@ export interface ServerInfo {
 // ---- Protocol constants --------------------------------------------------------------------
 
 export const TOKEN_HEADER = "X-Review-Token";
+
+/**
+ * The longest message the page can send. It reaches Claude through the same capped hook output as
+ * notes, so it leaves room for the framing and some notes.
+ */
+export const MAX_PROMPT_CHARS = 8000;
 
 /** URL fragment key that carries a launch code to a newly opened page. */
 export const LAUNCH_FRAGMENT_KEY = "launch";

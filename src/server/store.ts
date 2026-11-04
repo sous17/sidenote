@@ -1,6 +1,14 @@
 // Sessions, replies and notes, with retention limits. Send now coordination lives in delivery.ts.
 import { systemClock, type Clock } from "../node/clock.ts";
-import type { ClaimedNote, EpochSeconds, Note, SessionMeta, SessionSummary, StoredResponse } from "../shared/types.ts";
+import type {
+  ClaimedNote,
+  EpochSeconds,
+  Note,
+  SessionMeta,
+  SessionSummary,
+  StoredResponse,
+  UserMessage,
+} from "../shared/types.ts";
 import { emptyStore, loadStore, saveStore, type StoreData } from "./persistence.ts";
 import type { ParsedNote } from "./requests.ts";
 import { splitNoteAnswers } from "./split.ts";
@@ -58,11 +66,22 @@ export class Store {
       .sort((a, b) => b.last_active - a.last_active);
   }
 
-  /** One session's replies, oldest first, and the notes on them. */
-  sessionContent(sessionId: string): { responses: StoredResponse[]; comments: Note[] } {
+  /** One session's replies and messages, oldest first, and the notes on the replies. */
+  sessionContent(sessionId: string): { responses: StoredResponse[]; comments: Note[]; messages: UserMessage[] } {
     const responses = this.#data.responses.filter((r) => r.session_id === sessionId);
     const ids = new Set(responses.map((r) => r.id));
-    return { responses, comments: this.#data.comments.filter((c) => ids.has(c.response_id)) };
+    return {
+      responses,
+      comments: this.#data.comments.filter((c) => ids.has(c.response_id)),
+      messages: this.#data.messages.filter((m) => m.session_id === sessionId),
+    };
+  }
+
+  /** Messages from the page that haven't reached Claude yet, joined as Claude will get them, or "". */
+  waitingMessageText(sessionId: string): string {
+    return this.#waitingMessages(sessionId)
+      .map((m) => m.text)
+      .join("\n\n");
   }
 
   /** Sessions with notes that haven't been sent to Claude yet. */
@@ -131,6 +150,35 @@ export class Store {
     return true;
   }
 
+  /**
+   * Records a message the user sent. A message from the page waits until claimMessages hands it
+   * to Claude; one typed in the terminal has already reached Claude.
+   */
+  addMessage(sessionId: string, text: string, source: UserMessage["source"]): UserMessage {
+    const now = this.#clock.now();
+    const message: UserMessage = {
+      id: this.#newId(),
+      session_id: sessionId,
+      text,
+      source,
+      created_at: now,
+      delivered_at: source === "terminal" ? now : null,
+    };
+    this.#data.messages.push(message);
+    this.#changed();
+    return message;
+  }
+
+  /** Marks this session's waiting page messages delivered and returns their text joined, or undefined. */
+  claimMessages(sessionId: string): string | undefined {
+    const waiting = this.#waitingMessages(sessionId);
+    if (!waiting.length) return undefined;
+    const now = this.#clock.now();
+    for (const message of waiting) message.delivered_at = now;
+    this.#changed();
+    return waiting.map((m) => m.text).join("\n\n");
+  }
+
   /** Marks this session's unsent notes delivered and returns them, described for Claude. */
   claimPending(sessionId: string): ClaimedNote[] {
     const responses = new Map(
@@ -152,6 +200,10 @@ export class Store {
   }
 
   // ---- Internals -------------------------------------------------------------------------
+
+  #waitingMessages(sessionId: string): UserMessage[] {
+    return this.#data.messages.filter((m) => m.session_id === sessionId && m.delivered_at === null);
+  }
 
   #anchorFor(note: ParsedNote): Pick<Note, "response_id" | "block_index" | "quote" | "parent_id"> | null {
     if (note.kind === "follow-up") {
@@ -198,7 +250,7 @@ export class Store {
   /** Applies the retention limits. Returns whether anything was dropped. */
   #prune(): boolean {
     const data = this.#data;
-    const before = data.responses.length + data.sessions.size;
+    const before = data.responses.length + data.sessions.size + data.messages.length;
     const cutoff = this.#clock.now() - SESSION_RETENTION_SECONDS;
     for (const [sessionId, meta] of data.sessions) {
       if (meta.last_active < cutoff) data.sessions.delete(sessionId);
@@ -215,7 +267,18 @@ export class Store {
     data.responses = kept.reverse();
     const keptIds = new Set(data.responses.map((r) => r.id));
     data.comments = data.comments.filter((c) => keptIds.has(c.response_id));
-    return data.responses.length + data.sessions.size !== before;
+    // Messages follow the same limits. A session's first prompt comes before the first reply that
+    // makes the session known, so an unknown session's message is only dropped once it is old.
+    const keptMessages: UserMessage[] = [];
+    const messagesPerSession = new Map<string, number>();
+    for (const message of [...data.messages].reverse()) {
+      if (!data.sessions.has(message.session_id) && message.created_at < cutoff) continue;
+      const count = (messagesPerSession.get(message.session_id) ?? 0) + 1;
+      messagesPerSession.set(message.session_id, count);
+      if (count <= MAX_RESPONSES_PER_SESSION) keptMessages.push(message);
+    }
+    data.messages = keptMessages.reverse();
+    return data.responses.length + data.sessions.size + data.messages.length !== before;
   }
 
   #sessionOfResponse(): Map<number, string> {

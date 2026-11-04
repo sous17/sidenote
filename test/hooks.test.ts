@@ -154,6 +154,32 @@ test("Stop, Send now waking Claude with exit code 2, and a terminal prompt inste
   assert.equal((await nextWaiter).code, 0);
 });
 
+test("a message typed in the page wakes Claude through the waiter, like Send now", async () => {
+  const waiter = run(["hook-wait"], hookInput({}));
+  await sleep(1500);
+  await api("POST", "/api/prompt", { session_id: SESSION, text: "Now write the README" });
+  const woke = await waiter;
+  assert.equal(woke.code, 2);
+  assert.match(woke.stderr, /sent you this message from the sidenote browser window/);
+  assert.match(woke.stderr, /Now write the README/);
+
+  await run(["hook-stop"], hookInput({ last_assistant_message: "Wrote it." }));
+  let state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
+  assert.equal(state.messages.at(-1)?.text, "Now write the README");
+
+  // Prompts typed in the terminal show too, but sidenote's own wake-up text never does.
+  await run(["hook-prompt"], hookInput({ prompt: "And a changelog" }));
+  await run(["hook-prompt"], hookInput({ prompt: woke.stderr }));
+  state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
+  assert.deepEqual(
+    state.messages.map((m) => [m.text, m.source]),
+    [
+      ["Now write the README", "page"],
+      ["And a changelog", "terminal"],
+    ],
+  );
+});
+
 test("while on, each session start asks Claude for code changes as diffs", async () => {
   const result = await run(["hook-session"], hookInput({ source: "startup" }));
   const output = JSON.parse(result.stdout) as {
@@ -166,7 +192,7 @@ test("while on, each session start asks Claude for code changes as diffs", async
 test("status and open act on the session", async () => {
   const status = await run(["status", SESSION]);
   assert.match(status.stdout, /enabled: yes/);
-  assert.match(status.stdout, /replies: 2/);
+  assert.match(status.stdout, /replies: 3/);
   assert.match(status.stdout, /pending notes: 0/);
   assert.doesNotMatch(status.stdout, new RegExp(server().token), "status never prints the token");
 

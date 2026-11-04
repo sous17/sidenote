@@ -86,3 +86,33 @@ export function clockTime(epochSeconds: EpochSeconds): string {
   const date = new Date(epochSeconds * 1000);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+
+/** Opens what the waiter prints to wake Claude. It isn't something the user typed. */
+const WAKE_MARKERS = ["The user clicked Send now in the sidenote browser window", "from the sidenote browser window"];
+
+/** Whether a prompt is sidenote's own wake-up text rather than the user's words. */
+export function isWakeText(prompt: string): boolean {
+  return WAKE_MARKERS.some((marker) => prompt.includes(marker));
+}
+
+/**
+ * A message the user typed in sidenote instead of the terminal, with any notes that ride along.
+ * withTerminalPrompt: it waited out Claude's turn and now rides along with a prompt typed in the terminal.
+ */
+export function formatPromptForClaude(
+  prompt: string,
+  notes: readonly ClaimedNote[],
+  options: { withTerminalPrompt?: boolean } = {},
+): string {
+  const intro = options.withTerminalPrompt
+    ? "While you were working, the user also sent you this message from the sidenote browser " +
+      "window. Treat it as part of their message:"
+    : "The user sent you this message from the sidenote browser window instead of the terminal. " +
+      "Treat it exactly as if they had typed it to you:";
+  const text = `${intro}\n\n${prompt.trim()}`;
+  if (!notes.length) return text;
+  const combined = `${text}\n\n${formatNotesForClaude(notes)}`;
+  return combined.length > MAX_CONTEXT_CHARS
+    ? `${combined.slice(0, MAX_CONTEXT_CHARS)}\n[truncated: more comments are visible in the sidenote window]`
+    : combined;
+}

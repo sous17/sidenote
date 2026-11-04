@@ -25,6 +25,11 @@ var systemClock = {
   monotonicMs: () => performance.now()
 };
 
+// src/shared/types.ts
+var TOKEN_HEADER = "X-Review-Token";
+var MAX_PROMPT_CHARS = 8e3;
+var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
 // src/server/delivery.ts
 var LISTENER_STALE_MS = 5e3;
 var Delivery = class {
@@ -41,7 +46,10 @@ var Delivery = class {
     this.#clock = clock;
   }
   status(sessionId2) {
-    return { status: this.#state(sessionId2), send_requested: this.#requested.has(sessionId2) };
+    const status = { status: this.#state(sessionId2), send_requested: this.#requested.has(sessionId2) };
+    const waiting = this.#store.waitingMessageText(sessionId2);
+    if (waiting) status.queued_prompt = waiting;
+    return status;
   }
   /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
   refresh() {
@@ -64,7 +72,24 @@ var Delivery = class {
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
     const comments = this.#store.claimPending(sessionId2);
-    return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
+    const prompt = this.#store.claimMessages(sessionId2);
+    if (prompt === void 0) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
+    return { action: "send", comments, prompt };
+  }
+  /**
+   * Queues a message typed in the page: it wakes a listening session at the waiter's next poll, or
+   * goes as soon as a busy session's turn ends. Messages sent while one waits join it.
+   */
+  requestPrompt(sessionId2, text) {
+    const state = this.#state(sessionId2);
+    if (state === "offline") return "offline";
+    const waiting = this.#store.waitingMessageText(sessionId2);
+    if ((waiting ? `${waiting}
+
+${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
+    this.#store.addMessage(sessionId2, text, "page");
+    this.#requested.add(sessionId2);
+    return state === "listening" ? "sent" : "queued";
   }
   /** The user sent a prompt in the terminal: the waiter stands down and the prompt carries the notes. */
   markBusy(sessionId2) {
@@ -92,10 +117,6 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
-// src/shared/types.ts
-var TOKEN_HEADER = "X-Review-Token";
-var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-
 // src/server/requests.ts
 var BadRequest = class extends Error {
 };
@@ -105,7 +126,8 @@ var LIMITS = {
   quote: 2e3,
   sessionName: 200,
   cwd: 4096,
-  sessionIds: 100
+  sessionIds: 100,
+  message: 1e5
 };
 var WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 var LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -181,7 +203,10 @@ function parseTouchSession(input) {
   };
 }
 function parseClaim(input) {
-  return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+  const body = asObject(input);
+  const prompt = optionalString(body, "prompt", LIMITS.message);
+  const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
+  return prompt === void 0 ? { session_id } : { session_id, prompt };
 }
 function parseWaiter(input) {
   const body = asObject(input);
@@ -199,6 +224,13 @@ function parseSend(input) {
 }
 function parseRedeem(input) {
   return { code: matching(asObject(input), "code", LAUNCH_CODE_PATTERN) };
+}
+function parsePrompt(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    text: nonEmpty(string(body, "text", LIMITS.message), "text").trim()
+  };
 }
 
 // src/server/http.ts
@@ -231,7 +263,7 @@ var empty = (status) => ({ status });
 function routes({ store, delivery, launchCodes, token }) {
   const snapshot = (sessionId2) => {
     const session = sessionId2 ? store.session(sessionId2) : void 0;
-    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [] };
+    if (!session) return { version: store.revision.value, session: null, responses: [], comments: [], messages: [] };
     return {
       version: store.revision.value,
       session: { ...session, ...delivery.status(session.id) },
@@ -303,9 +335,13 @@ function routes({ store, delivery, launchCodes, token }) {
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id } = parseClaim(body);
+        const { session_id, prompt: typed } = parseClaim(body);
         delivery.markBusy(session_id);
-        return ok({ comments: store.claimPending(session_id) });
+        const prompt = store.claimMessages(session_id);
+        if (typed?.trim()) store.addMessage(session_id, typed.trim(), "terminal");
+        const result = { comments: store.claimPending(session_id) };
+        if (prompt !== void 0) result.prompt = prompt;
+        return ok(result);
       }
     },
     {
@@ -332,6 +368,26 @@ function routes({ store, delivery, launchCodes, token }) {
       path: "/api/send",
       needsToken: true,
       handle: ({ body }) => ok({ sessions: delivery.requestSend(parseSend(body).session_ids) })
+    },
+    {
+      method: "POST",
+      path: "/api/prompt",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, text } = parsePrompt(body);
+        if (!store.session(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
+        const outcome = delivery.requestPrompt(session_id, text);
+        if (outcome === "offline") {
+          throw new HttpError(
+            409,
+            "this session isn't listening: it may be closed, or hasn't finished a reply since sidenote started"
+          );
+        }
+        if (outcome === "too-long") {
+          throw new HttpError(413, `messages to a terminal session are limited to ${MAX_PROMPT_CHARS} characters`);
+        }
+        return ok({ delivery: outcome }, 202);
+      }
     },
     {
       method: "POST",
@@ -477,7 +533,7 @@ var LaunchCodes = class {
 // src/server/persistence.ts
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 function emptyStore() {
-  return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], nextId: 1 };
+  return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
 function loadStore(file) {
   if (!existsSync(file)) return emptyStore();
@@ -488,6 +544,7 @@ function saveStore(file, data) {
     sessions: Object.fromEntries(data.sessions),
     responses: data.responses,
     comments: data.comments,
+    messages: data.messages,
     next_id: data.nextId
   };
   const temp = `${file}.tmp`;
@@ -513,8 +570,14 @@ function migrate(file) {
     meta.last_active = Math.max(meta.last_active, response.created_at);
     sessions.set(response.session_id, meta);
   }
-  const highestId = Math.max(0, ...responses.map((r) => r.id), ...comments.map((c) => c.id));
-  return { sessions, responses, comments, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
+  const messages = (file.messages ?? []).filter((m) => SESSION_ID_PATTERN.test(m.session_id));
+  const highestId = Math.max(
+    0,
+    ...responses.map((r) => r.id),
+    ...comments.map((c) => c.id),
+    ...messages.map((m) => m.id)
+  );
+  return { sessions, responses, comments, messages, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
 }
 
 // src/server/split.ts
@@ -583,11 +646,19 @@ var Store = class {
   listSessions() {
     return [...this.#data.sessions].map(([id, meta]) => ({ id, ...meta })).sort((a, b) => b.last_active - a.last_active);
   }
-  /** One session's replies, oldest first, and the notes on them. */
+  /** One session's replies and messages, oldest first, and the notes on the replies. */
   sessionContent(sessionId2) {
     const responses = this.#data.responses.filter((r) => r.session_id === sessionId2);
     const ids = new Set(responses.map((r) => r.id));
-    return { responses, comments: this.#data.comments.filter((c) => ids.has(c.response_id)) };
+    return {
+      responses,
+      comments: this.#data.comments.filter((c) => ids.has(c.response_id)),
+      messages: this.#data.messages.filter((m) => m.session_id === sessionId2)
+    };
+  }
+  /** Messages from the page that haven't reached Claude yet, joined as Claude will get them, or "". */
+  waitingMessageText(sessionId2) {
+    return this.#waitingMessages(sessionId2).map((m) => m.text).join("\n\n");
   }
   /** Sessions with notes that haven't been sent to Claude yet. */
   sessionsWithPendingNotes() {
@@ -648,6 +719,33 @@ var Store = class {
     this.#changed();
     return true;
   }
+  /**
+   * Records a message the user sent. A message from the page waits until claimMessages hands it
+   * to Claude; one typed in the terminal has already reached Claude.
+   */
+  addMessage(sessionId2, text, source) {
+    const now = this.#clock.now();
+    const message = {
+      id: this.#newId(),
+      session_id: sessionId2,
+      text,
+      source,
+      created_at: now,
+      delivered_at: source === "terminal" ? now : null
+    };
+    this.#data.messages.push(message);
+    this.#changed();
+    return message;
+  }
+  /** Marks this session's waiting page messages delivered and returns their text joined, or undefined. */
+  claimMessages(sessionId2) {
+    const waiting = this.#waitingMessages(sessionId2);
+    if (!waiting.length) return void 0;
+    const now = this.#clock.now();
+    for (const message of waiting) message.delivered_at = now;
+    this.#changed();
+    return waiting.map((m) => m.text).join("\n\n");
+  }
   /** Marks this session's unsent notes delivered and returns them, described for Claude. */
   claimPending(sessionId2) {
     const responses = new Map(
@@ -668,6 +766,9 @@ var Store = class {
     return claimed;
   }
   // ---- Internals -------------------------------------------------------------------------
+  #waitingMessages(sessionId2) {
+    return this.#data.messages.filter((m) => m.session_id === sessionId2 && m.delivered_at === null);
+  }
   #anchorFor(note) {
     if (note.kind === "follow-up") {
       const parent = this.#data.comments.find((c) => c.id === note.parentId);
@@ -709,7 +810,7 @@ var Store = class {
   /** Applies the retention limits. Returns whether anything was dropped. */
   #prune() {
     const data = this.#data;
-    const before = data.responses.length + data.sessions.size;
+    const before = data.responses.length + data.sessions.size + data.messages.length;
     const cutoff = this.#clock.now() - SESSION_RETENTION_SECONDS;
     for (const [sessionId2, meta] of data.sessions) {
       if (meta.last_active < cutoff) data.sessions.delete(sessionId2);
@@ -725,7 +826,16 @@ var Store = class {
     data.responses = kept.reverse();
     const keptIds = new Set(data.responses.map((r) => r.id));
     data.comments = data.comments.filter((c) => keptIds.has(c.response_id));
-    return data.responses.length + data.sessions.size !== before;
+    const keptMessages = [];
+    const messagesPerSession = /* @__PURE__ */ new Map();
+    for (const message of [...data.messages].reverse()) {
+      if (!data.sessions.has(message.session_id) && message.created_at < cutoff) continue;
+      const count = (messagesPerSession.get(message.session_id) ?? 0) + 1;
+      messagesPerSession.set(message.session_id, count);
+      if (count <= MAX_RESPONSES_PER_SESSION) keptMessages.push(message);
+    }
+    data.messages = keptMessages.reverse();
+    return data.responses.length + data.sessions.size + data.messages.length !== before;
   }
   #sessionOfResponse() {
     return new Map(this.#data.responses.map((r) => [r.id, r.session_id]));

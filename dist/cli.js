@@ -185,6 +185,22 @@ function clockTime(epochSeconds) {
   const date = new Date(epochSeconds * 1e3);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+var WAKE_MARKERS = ["The user clicked Send now in the sidenote browser window", "from the sidenote browser window"];
+function isWakeText(prompt) {
+  return WAKE_MARKERS.some((marker) => prompt.includes(marker));
+}
+function formatPromptForClaude(prompt, notes, options = {}) {
+  const intro = options.withTerminalPrompt ? "While you were working, the user also sent you this message from the sidenote browser window. Treat it as part of their message:" : "The user sent you this message from the sidenote browser window instead of the terminal. Treat it exactly as if they had typed it to you:";
+  const text = `${intro}
+
+${prompt.trim()}`;
+  if (!notes.length) return text;
+  const combined = `${text}
+
+${formatNotesForClaude(notes)}`;
+  return combined.length > MAX_CONTEXT_CHARS ? `${combined.slice(0, MAX_CONTEXT_CHARS)}
+[truncated: more comments are visible in the sidenote window]` : combined;
+}
 
 // src/cli/transcript.ts
 import { existsSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
@@ -270,6 +286,7 @@ function isUserPrompt(entry) {
 
 // src/cli/hooks.ts
 var WAITER_POLL_MS = 1e3;
+var MAX_SHOWN_PROMPT_CHARS = 1e5;
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
@@ -300,11 +317,12 @@ async function hookSession() {
 async function hookPrompt(input) {
   const client = await SidenoteClient.connect();
   if (!client || !input.session_id) return;
-  const { comments } = await client.post("/api/claim", { session_id: input.session_id });
-  if (!comments.length) return;
-  const output = {
-    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatNotesForClaude(comments) }
-  };
+  const claim = { session_id: input.session_id };
+  if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
+  const { comments, prompt } = await client.post("/api/claim", claim);
+  if (!comments.length && prompt === void 0) return;
+  const additionalContext = prompt === void 0 ? formatNotesForClaude(comments) : formatPromptForClaude(prompt, comments, { withTerminalPrompt: true });
+  const output = { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
   process.stdout.write(`${JSON.stringify(output)}
 `);
 }
@@ -324,7 +342,9 @@ async function hookWait(input) {
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
-      process.stderr.write(formatNotesForClaude(result.comments, { fromBrowser: true }));
+      process.stderr.write(
+        result.prompt === void 0 ? formatNotesForClaude(result.comments, { fromBrowser: true }) : formatPromptForClaude(result.prompt, result.comments)
+      );
       process.exitCode = 2;
       return;
     }

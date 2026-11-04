@@ -1,11 +1,11 @@
 // The page's state: the latest snapshot from the server, the open thread, and questions about them.
-import type { Note, SendStatus, StateSnapshot, StoredResponse } from "../shared/types.ts";
+import type { Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "../shared/types.ts";
 
 export type AnsweredNote = Note & { answered_by: number };
 
 export class Model {
   readonly sessionId: string;
-  snapshot: StateSnapshot = { version: -1, session: null, responses: [], comments: [] };
+  snapshot: StateSnapshot = { version: -1, session: null, responses: [], comments: [], messages: [] };
   /** The root note whose thread is open in the pane, if any. */
   openThreadId: number | null = null;
 
@@ -19,6 +19,10 @@ export class Model {
 
   get responses(): readonly StoredResponse[] {
     return this.snapshot.responses;
+  }
+
+  get messages(): readonly UserMessage[] {
+    return this.snapshot.messages;
   }
 
   note(id: number | null | undefined): Note | undefined {
@@ -52,6 +56,14 @@ export class Model {
 
   pendingCount(): number {
     return this.notes.filter((note) => note.delivered_at === null).length;
+  }
+
+  /** Whether the user's latest message has no reply yet and Claude is on it, or about to be. */
+  awaitingReply(): boolean {
+    const latest = this.messages.at(-1);
+    if (!latest || this.sendStatus().status === "offline") return false;
+    if ((this.responses.at(-1)?.created_at ?? 0) > latest.created_at) return false;
+    return this.sendStatus().status === "busy" || latest.delivered_at === null;
   }
 
   /** Unsent, but Send now was clicked: it goes as soon as the session can take it. */

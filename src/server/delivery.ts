@@ -1,11 +1,12 @@
 // Send now: lets the page wake a session's Claude through that session's background waiter.
 //
 // After each turn, Claude Code starts `sidenote hook-wait` in the background (asyncRewake). It
-// registers as the session's waiter and polls. Send now marks the session; the waiter's next poll
-// claims the notes, prints them and exits 2, which wakes Claude. Everything here is in memory:
-// a restarted server simply has no waiters until each session's next turn ends.
+// registers as the session's waiter and polls. Send now, or a message typed in the page, marks the
+// session; the waiter's next poll claims the notes and message, prints them and exits 2, which
+// wakes Claude. Everything here is in memory: a restarted server simply has no waiters until each
+// session's next turn ends. Notes and messages themselves live in the store, so they survive.
 import { systemClock, type Clock } from "../node/clock.ts";
-import type { SendStatus, SessionState, WaiterPollResult } from "../shared/types.ts";
+import { MAX_PROMPT_CHARS, type SendStatus, type SessionState, type WaiterPollResult } from "../shared/types.ts";
 import type { Store } from "./store.ts";
 
 /** A session counts as listening while its waiter polls at least this often. */
@@ -32,7 +33,10 @@ export class Delivery {
   }
 
   status(sessionId: string): SendStatus {
-    return { status: this.#state(sessionId), send_requested: this.#requested.has(sessionId) };
+    const status: SendStatus = { status: this.#state(sessionId), send_requested: this.#requested.has(sessionId) };
+    const waiting = this.#store.waitingMessageText(sessionId);
+    if (waiting) status.queued_prompt = waiting;
+    return status;
   }
 
   /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
@@ -59,7 +63,23 @@ export class Delivery {
     this.#waiters.delete(sessionId);
     this.#busy.add(sessionId);
     const comments = this.#store.claimPending(sessionId);
-    return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
+    const prompt = this.#store.claimMessages(sessionId);
+    if (prompt === undefined) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
+    return { action: "send", comments, prompt };
+  }
+
+  /**
+   * Queues a message typed in the page: it wakes a listening session at the waiter's next poll, or
+   * goes as soon as a busy session's turn ends. Messages sent while one waits join it.
+   */
+  requestPrompt(sessionId: string, text: string): "sent" | "queued" | "offline" | "too-long" {
+    const state = this.#state(sessionId);
+    if (state === "offline") return "offline";
+    const waiting = this.#store.waitingMessageText(sessionId);
+    if ((waiting ? `${waiting}\n\n${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
+    this.#store.addMessage(sessionId, text, "page");
+    this.#requested.add(sessionId);
+    return state === "listening" ? "sent" : "queued";
   }
 
   /** The user sent a prompt in the terminal: the waiter stands down and the prompt carries the notes. */
