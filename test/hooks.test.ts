@@ -379,6 +379,24 @@ test("restart replaces the server, keeps the replies and opens the window", asyn
   assert.ok(state.responses.length > 0);
 });
 
+test("/clear forgets the session it ended, and other ways of ending keep it", async () => {
+  const clearInput = (session_id: string, reason: string): string => hookInput({ session_id, reason });
+  const known = async (id: string): Promise<boolean> =>
+    (await api<StateSnapshot>("GET", `/api/state?v=-1&s=${id}`)).session !== null;
+
+  for (const id of ["to-clear", "to-exit"]) {
+    await run(["hook-stop"], hookInput({ session_id: id, last_assistant_message: "Hi." }));
+    await nextOpened();
+  }
+  assert.ok(existsSync(join(home, ".sidenote", "sessions", "to-clear.json")));
+
+  assert.equal((await run(["hook-clear"], clearInput("to-exit", "prompt_input_exit"))).code, 0);
+  assert.equal(await known("to-exit"), true);
+  assert.equal((await run(["hook-clear"], clearInput("to-clear", "clear"))).code, 0);
+  assert.equal(await known("to-clear"), false);
+  assert.equal(existsSync(join(home, ".sidenote", "sessions", "to-clear.json")), false);
+});
+
 test("off stops the server and hooks go quiet", async () => {
   assert.match((await run(["off"])).stdout, /sidenote is off/);
   await sleep(300);

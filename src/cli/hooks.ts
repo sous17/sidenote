@@ -31,6 +31,8 @@ export interface HookInput {
   last_assistant_message?: string;
   /** UserPromptSubmit: what the user typed. */
   prompt?: string;
+  /** SessionEnd: why the session ended. */
+  reason?: string;
   /** PreToolUse: the call Claude is about to make. */
   tool_name?: string;
   tool_input?: Record<string, unknown>;
@@ -73,6 +75,18 @@ export async function hookStop(input: HookInput): Promise<void> {
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
   if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
+}
+
+/**
+ * SessionEnd, only for /clear: the session is over, so its window lets go of it. Claude Code gives
+ * these hooks 1.5 seconds and a plugin can't raise that, so a stopped server is left alone: retention
+ * forgets the session later.
+ */
+export async function hookClear(input: HookInput): Promise<void> {
+  if (input.reason !== "clear" || !input.session_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  await client.post("/api/sessions/cleared", { session_id: input.session_id });
 }
 
 /** SessionStart: tells Claude how to show code changes so the window can draw them as diffs. */

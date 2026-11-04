@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   // Whoever started this one finds the running server through server.json.
   if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
-  const store = new Store({ file: paths.storeFile() });
+  const store = new Store({ dir: paths.stateDir() });
   const token = randomBytes(32).toString("base64url");
   const allowedHosts = new Set<string>();
   const server = createServer(

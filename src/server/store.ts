@@ -11,7 +11,7 @@ import type {
   StoredResponse,
   UserMessage,
 } from "../shared/types.ts";
-import { emptyStore, loadStore, saveStore, type StoreData } from "./persistence.ts";
+import { StoreFiles, emptyStore, type StoreData } from "./persistence.ts";
 import type { ParsedNote } from "./requests.ts";
 import { splitNoteAnswers } from "./split.ts";
 
@@ -45,14 +45,14 @@ export interface NewReply {
 export class Store {
   readonly revision = new Revision();
   readonly #data: StoreData;
-  readonly #file: string | undefined;
+  readonly #files: StoreFiles | undefined;
   readonly #clock: Clock;
 
-  /** Without a file, the store lives in memory only (tests). */
-  constructor(options: { file?: string; clock?: Clock } = {}) {
-    this.#file = options.file;
+  /** Without a directory, the store lives in memory only (tests). */
+  constructor(options: { dir?: string; clock?: Clock } = {}) {
+    this.#files = options.dir === undefined ? undefined : new StoreFiles(options.dir);
     this.#clock = options.clock ?? systemClock;
-    this.#data = this.#file ? loadStore(this.#file) : emptyStore();
+    this.#data = this.#files?.load() ?? emptyStore();
     if (this.#prune()) this.#persist();
   }
 
@@ -103,6 +103,11 @@ export class Store {
       .join("\n\n");
   }
 
+  /** Whether the session holds notes or messages that never reached Claude. */
+  hasUnsent(sessionId: string): boolean {
+    return this.#pendingNotesPerSession().has(sessionId) || this.#waitingMessages(sessionId).length > 0;
+  }
+
   /** Sessions with notes that haven't been sent to Claude yet. */
   sessionsWithPendingNotes(): Set<string> {
     return new Set(this.#pendingNotesPerSession().keys());
@@ -127,8 +132,10 @@ export class Store {
 
   /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
   forgetSession(sessionId: string): boolean {
-    if (!this.#data.sessions.delete(sessionId)) return false;
     const data = this.#data;
+    // A session's first prompt comes before the first reply that makes the session known.
+    const known = data.sessions.delete(sessionId) || data.messages.some((m) => m.session_id === sessionId);
+    if (!known) return false;
     const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId).map((r) => r.id));
     data.responses = data.responses.filter((r) => !dropped.has(r.id));
     data.comments = data.comments.filter((c) => !dropped.has(c.response_id));
@@ -345,6 +352,6 @@ export class Store {
   }
 
   #persist(): void {
-    if (this.#file) saveStore(this.#file, this.#data);
+    this.#files?.save(this.#data);
   }
 }

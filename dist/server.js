@@ -1,8 +1,8 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join as join3 } from "node:path";
+import { dirname, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/node/open.ts
@@ -20,7 +20,6 @@ import { join } from "node:path";
 var stateDir = () => join(homedir(), ".sidenote");
 var paths = {
   stateDir,
-  storeFile: () => join(stateDir(), "store.json"),
   serverFile: () => join(stateDir(), "server.json"),
   lockFile: () => join(stateDir(), "server.lock"),
   portFile: () => join(stateDir(), "port"),
@@ -297,6 +296,13 @@ ${text}` : text).length > MAX_PROMPT_CHARS) return "too-long";
     for (const id of targets) this.#requested.add(id);
     if (targets.length) this.#store.revision.bump();
     return targets;
+  }
+  /** The session's Claude is gone, so nothing may wake it: its waiter exits at its next poll. */
+  forgetSession(sessionId2) {
+    this.#waiters.delete(sessionId2);
+    this.#busy.delete(sessionId2);
+    this.#requested.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
   }
   #forgetTurn(sessionId2) {
     this.#activity.delete(sessionId2);
@@ -745,6 +751,18 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
     },
     {
       method: "POST",
+      path: "/api/sessions/cleared",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        delivery.forgetSession(session_id);
+        processes.forget(session_id);
+        const forgotten = !store.hasUnsent(session_id) && store.forgetSession(session_id);
+        return ok({ forgotten });
+      }
+    },
+    {
+      method: "POST",
       path: "/api/sessions/start",
       needsToken: true,
       handle: async ({ body }) => {
@@ -993,26 +1011,121 @@ function releaseServerLock(lockFile) {
 }
 
 // src/server/persistence.ts
-import { existsSync, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync as rmSync2, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
 function emptyStore() {
   return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
-function loadStore(file) {
-  if (!existsSync(file)) return emptyStore();
-  return migrate(JSON.parse(readFileSync3(file, "utf8")));
-}
-function saveStore(file, data) {
-  const contents = {
-    sessions: Object.fromEntries(data.sessions),
-    responses: data.responses,
-    comments: data.comments,
-    messages: data.messages,
-    next_id: data.nextId
-  };
+function writeAtomically(file, contents) {
   const temp = `${file}.tmp`;
-  writeFileSync(temp, JSON.stringify(contents), { mode: 384 });
+  writeFileSync(temp, contents, { mode: 384 });
   renameSync(temp, file);
 }
+function parseSessionFile(contents) {
+  try {
+    const file = JSON.parse(contents);
+    const complete = [file?.responses, file?.comments, file?.messages].every(Array.isArray);
+    return complete ? file : null;
+  } catch {
+    return null;
+  }
+}
+function sessionFiles(data) {
+  const files = /* @__PURE__ */ new Map();
+  const fileOf = (sessionId2) => {
+    const existing = files.get(sessionId2);
+    if (existing) return existing;
+    const created = { session: null, responses: [], comments: [], messages: [] };
+    files.set(sessionId2, created);
+    return created;
+  };
+  for (const [id, meta] of data.sessions) fileOf(id).session = meta;
+  const sessionOf = /* @__PURE__ */ new Map();
+  for (const response of data.responses) {
+    sessionOf.set(response.id, response.session_id);
+    fileOf(response.session_id).responses.push(response);
+  }
+  for (const note of data.comments) {
+    const sessionId2 = sessionOf.get(note.response_id);
+    if (sessionId2 !== void 0) fileOf(sessionId2).comments.push(note);
+  }
+  for (const message of data.messages) fileOf(message.session_id).messages.push(message);
+  return new Map([...files].map(([id, file]) => [id, JSON.stringify(file)]));
+}
+var StoreFiles = class {
+  #sessionsDir;
+  #idsFile;
+  #legacyFile;
+  /** What each session's file holds now, so saving writes only the ones that changed. */
+  #written = /* @__PURE__ */ new Map();
+  #writtenNextId = 0;
+  constructor(dir) {
+    this.#sessionsDir = join3(dir, "sessions");
+    this.#idsFile = join3(dir, "ids.json");
+    this.#legacyFile = join3(dir, "store.json");
+  }
+  load() {
+    mkdirSync(this.#sessionsDir, { recursive: true, mode: 448 });
+    if (existsSync(this.#legacyFile)) {
+      const data = migrate(JSON.parse(readFileSync3(this.#legacyFile, "utf8")));
+      this.save(data);
+      renameSync(this.#legacyFile, `${this.#legacyFile}.migrated`);
+      return data;
+    }
+    const combined = {
+      sessions: {},
+      responses: [],
+      comments: [],
+      messages: [],
+      next_id: this.#readNextId()
+    };
+    for (const entry of readdirSync(this.#sessionsDir)) {
+      const id = entry.endsWith(".json") ? entry.slice(0, -".json".length) : "";
+      if (!SESSION_ID_PATTERN.test(id)) continue;
+      const contents = readFileSync3(join3(this.#sessionsDir, entry), "utf8");
+      const file = parseSessionFile(contents);
+      if (!file) {
+        console.error(`skipping ${entry}: it isn't a session file`);
+        continue;
+      }
+      this.#written.set(id, contents);
+      if (file.session) combined.sessions[id] = file.session;
+      combined.responses.push(...file.responses);
+      combined.comments.push(...file.comments);
+      combined.messages.push(...file.messages);
+    }
+    combined.responses.sort((a, b) => a.created_at - b.created_at);
+    combined.comments.sort((a, b) => a.id - b.id);
+    combined.messages.sort((a, b) => a.id - b.id);
+    this.#writtenNextId = combined.next_id;
+    return migrate(combined);
+  }
+  save(data) {
+    if (data.nextId !== this.#writtenNextId) {
+      writeAtomically(this.#idsFile, JSON.stringify({ next_id: data.nextId }));
+      this.#writtenNextId = data.nextId;
+    }
+    const files = sessionFiles(data);
+    for (const [id, contents] of files) {
+      if (this.#written.get(id) === contents) continue;
+      writeAtomically(join3(this.#sessionsDir, `${id}.json`), contents);
+      this.#written.set(id, contents);
+    }
+    for (const id of this.#written.keys()) {
+      if (files.has(id)) continue;
+      rmSync2(join3(this.#sessionsDir, `${id}.json`), { force: true });
+      this.#written.delete(id);
+    }
+  }
+  /** 1 when the file is missing or damaged: migrate then starts past the highest id it finds. */
+  #readNextId() {
+    try {
+      return JSON.parse(readFileSync3(this.#idsFile, "utf8")).next_id ?? 1;
+    } catch {
+      return 1;
+    }
+  }
+};
 function migrate(file) {
   const responses = (file.responses ?? []).filter((r) => SESSION_ID_PATTERN.test(r.session_id));
   for (const response of responses) response.note_answers ??= {};
@@ -1063,13 +1176,13 @@ var Revision = class {
 var Store = class {
   revision = new Revision();
   #data;
-  #file;
+  #files;
   #clock;
-  /** Without a file, the store lives in memory only (tests). */
+  /** Without a directory, the store lives in memory only (tests). */
   constructor(options = {}) {
-    this.#file = options.file;
+    this.#files = options.dir === void 0 ? void 0 : new StoreFiles(options.dir);
     this.#clock = options.clock ?? systemClock;
-    this.#data = this.#file ? loadStore(this.#file) : emptyStore();
+    this.#data = this.#files?.load() ?? emptyStore();
     if (this.#prune()) this.#persist();
   }
   // ---- Reading ---------------------------------------------------------------------------
@@ -1104,6 +1217,10 @@ var Store = class {
   waitingMessageText(sessionId2) {
     return this.#waitingMessages(sessionId2).map((m) => m.text).join("\n\n");
   }
+  /** Whether the session holds notes or messages that never reached Claude. */
+  hasUnsent(sessionId2) {
+    return this.#pendingNotesPerSession().has(sessionId2) || this.#waitingMessages(sessionId2).length > 0;
+  }
   /** Sessions with notes that haven't been sent to Claude yet. */
   sessionsWithPendingNotes() {
     return new Set(this.#pendingNotesPerSession().keys());
@@ -1124,8 +1241,9 @@ var Store = class {
   }
   /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
   forgetSession(sessionId2) {
-    if (!this.#data.sessions.delete(sessionId2)) return false;
     const data = this.#data;
+    const known = data.sessions.delete(sessionId2) || data.messages.some((m) => m.session_id === sessionId2);
+    if (!known) return false;
     const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId2).map((r) => r.id));
     data.responses = data.responses.filter((r) => !dropped.has(r.id));
     data.comments = data.comments.filter((c) => !dropped.has(c.response_id));
@@ -1320,12 +1438,12 @@ var Store = class {
     this.#persist();
   }
   #persist() {
-    if (this.#file) saveStore(this.#file, this.#data);
+    this.#files?.save(this.#data);
   }
 };
 
 // src/server/main.ts
-var WEB_DIR = join3(dirname(fileURLToPath(import.meta.url)), "web");
+var WEB_DIR = join4(dirname(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
   return new Promise((resolvePort, reject) => {
     server.once("error", reject);
@@ -1352,15 +1470,15 @@ async function listen(server) {
 function removeServerFile() {
   try {
     const current = JSON.parse(readFileSync4(paths.serverFile(), "utf8"));
-    if (current.pid === process.pid) rmSync2(paths.serverFile());
+    if (current.pid === process.pid) rmSync3(paths.serverFile());
   } catch {
   }
 }
 async function main() {
-  mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
+  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
   if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
-  const store = new Store({ file: paths.storeFile() });
+  const store = new Store({ dir: paths.stateDir() });
   const token = randomBytes2(32).toString("base64url");
   const allowedHosts = /* @__PURE__ */ new Set();
   const server = createServer(

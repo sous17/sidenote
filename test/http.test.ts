@@ -401,6 +401,27 @@ describe("renaming, ending and removing sessions", () => {
     assert.equal((await call("POST", "/api/sessions/rename", { session_id: "nope", label: "x" })).status, 404);
   });
 
+  test("/clear forgets a session unless Claude never got something the user wrote", async () => {
+    const cleared = (session_id: string): Promise<{ forgotten: boolean }> =>
+      json(call("POST", "/api/sessions/cleared", { session_id }));
+    await call("POST", "/api/responses", { session_id: "cl-done", cwd: "/x/clear", text: "Hi." });
+    const { response } = await json<NewResponseResult>(
+      call("POST", "/api/responses", { session_id: "cl-note", cwd: "/x/clear", text: "Hi." }),
+    );
+    await call("POST", "/api/comments", { response_id: response.id, block_index: 0, quote: "", body: "unsent" });
+
+    assert.deepEqual(await cleared("cl-done"), { forgotten: true });
+    assert.deepEqual(await cleared("cl-note"), { forgotten: false });
+    assert.deepEqual(
+      (await sessions("clear")).map((row) => row.id),
+      ["cl-note"],
+    );
+    assert.deepEqual(await cleared("cl-unknown"), { forgotten: false }, "nothing to forget is fine");
+    const anonymous = await fetch(`${base}/api/sessions/cleared`, { method: "POST", body: "{}" });
+    assert.equal(anonymous.status, 403);
+    assert.equal((await call("POST", "/api/sessions/cleared", { session_id: "../evil" })).status, 400);
+  });
+
   test("ending a session stops the Claude process its hooks reported, and takes it off the list", async () => {
     const claude = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
     const exited = once(claude, "exit");

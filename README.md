@@ -131,8 +131,13 @@ claude plugin uninstall sidenote@sidenote
 Your notes are kept in `~/.sidenote/` outside the plugin, so they survive updates and
 reinstalls. Delete that folder to remove them.
 
-sidenote keeps up to 100 replies per session, and forgets a session, with its replies and
-notes, after 7 days without a new reply.
+Each session has its own file in `~/.sidenote/sessions/`. sidenote keeps up to 100 replies per
+session, and forgets a session, with its replies and notes, after 7 days without a new reply.
+
+`/clear` forgets the session it ends right away, so its window moves on to the folder's next
+session. A session with notes or messages that never reached Claude is kept, and goes after the
+usual 7 days. If you resume a cleared session later, its window starts empty; Claude's own
+transcript isn't touched.
 
 ## Troubleshooting
 
@@ -162,7 +167,7 @@ the full path of your `node` binary. Problems are logged to `~/.sidenote/server.
 
 ## How it works
 
-Six hooks connect Claude Code to a small local server:
+Seven hooks connect Claude Code to a small local server:
 
 - **Stop** (`hook-stop`) posts each finished reply to the server, starting it if needed, and
   opens the session's window the first time that session replies.
@@ -175,6 +180,7 @@ Six hooks connect Claude Code to a small local server:
   between tool calls, for the live card. The server keeps it in memory until the turn ends.
 - **UserPromptSubmit** (`hook-prompt`) shows the prompt you type in the window and attaches
   pending notes to it, along with any message from the window that was still waiting.
+- **SessionEnd** (`hook-clear`, for `/clear` only) tells the server to forget the session.
 - **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
   draw them, and to ask questions in its reply rather than with the `AskUserQuestion` tool, so
   they reach the window and can be answered from it. It applies to sessions started, resumed or
@@ -238,7 +244,7 @@ npm run format     # apply Prettier
 | -------------------------------------- | ------------------------------------------------------------------------ |
 | `src/shared/types.ts`                  | The API contract, used by the server, the hooks and the page             |
 | `src/server/`                          | Request parsing, the store, Send now, launch codes, and the HTTP routes  |
-| `src/cli/`                             | The `/sidenote:*` commands and the three hooks                           |
+| `src/cli/`                             | The `/sidenote:*` commands and the hooks                                 |
 | `src/node/`                            | Paths and clock, shared by the server and the CLI                        |
 | `src/web/`                             | The page: feed, thread pane, note editor, and Send now controls          |
 | `test/`                                | Unit tests, HTTP security tests, and an end-to-end run of the real hooks |

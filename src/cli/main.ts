@@ -5,7 +5,16 @@ import { paths } from "../node/paths.ts";
 import { folderName } from "../shared/folders.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
-import { hookActivity, hookProgress, hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import {
+  hookActivity,
+  hookClear,
+  hookProgress,
+  hookPrompt,
+  hookSession,
+  hookStop,
+  hookWait,
+  type HookInput,
+} from "./hooks.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -25,6 +34,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote backfill [session]  import the session's earlier replies
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
+  sidenote hook-clear          SessionEnd hook: forget the session on /clear
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
@@ -194,6 +204,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
+  "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
   "hook-progress": () => runHook(hookProgress),

@@ -1,5 +1,5 @@
 // One server per machine. Two servers would each hold their own copy of the store and overwrite
-// each other's store.json, so a server that finds another one running exits before loading it.
+// each other's files, so a server that finds another one running exits before loading it.
 import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import type { ServerInfo } from "../shared/types.ts";
 

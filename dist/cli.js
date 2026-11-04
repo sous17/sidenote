@@ -8,7 +8,6 @@ import { join } from "node:path";
 var stateDir = () => join(homedir(), ".sidenote");
 var paths = {
   stateDir,
-  storeFile: () => join(stateDir(), "store.json"),
   serverFile: () => join(stateDir(), "server.json"),
   lockFile: () => join(stateDir(), "server.lock"),
   portFile: () => join(stateDir(), "port"),
@@ -444,6 +443,12 @@ async function hookStop(input) {
   const result = await client.post("/api/responses", reply);
   if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
 }
+async function hookClear(input) {
+  if (input.reason !== "clear" || !input.session_id) return;
+  const client = await SidenoteClient.connect();
+  if (!client) return;
+  await client.post("/api/sessions/cleared", { session_id: input.session_id });
+}
 async function hookSession() {
   const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
   process.stdout.write(`${JSON.stringify(output)}
@@ -532,6 +537,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote backfill [session]  import the session's earlier replies
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
+  sidenote hook-clear          SessionEnd hook: forget the session on /clear
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
   sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
@@ -678,6 +684,7 @@ var commands = {
   },
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
+  "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
   "hook-progress": () => runHook(hookProgress),

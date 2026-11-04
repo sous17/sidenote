@@ -196,3 +196,14 @@ test("note markers stay out of the live messages, and old messages drop off", ()
   assert.equal(progress.length, 20);
   assert.equal(progress.at(-1), "Step 49");
 });
+
+test("a forgotten session's waiter exits, so a send can't wake the Claude that moved on", () => {
+  const { store, delivery } = fixture();
+  noteOn(store, reply(store, "Para one.").id);
+  delivery.registerWaiter(SESSION, "w1");
+  delivery.requestSend([SESSION]);
+  delivery.forgetSession(SESSION);
+  assert.deepEqual(delivery.status(SESSION), { status: "offline", send_requested: false });
+  assert.equal(delivery.pollWaiter(SESSION, "w1").action, "exit");
+  assert.equal(store.sessionsWithPendingNotes().has(SESSION), true, "the note itself stays unsent");
+});

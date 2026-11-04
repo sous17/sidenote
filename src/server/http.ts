@@ -18,6 +18,7 @@ import {
   MAX_PROMPT_CHARS,
   TOKEN_HEADER,
   type ClaimResult,
+  type ClearedSessionResult,
   type ErrorResult,
   type LaunchCodeResult,
   type NewResponseResult,
@@ -350,6 +351,20 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
         processes.forget(session_id);
         if (!store.forgetSession(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
         return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/cleared",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        // Claude moved on to a new session either way, so a kept session must not wake it.
+        delivery.forgetSession(session_id);
+        processes.forget(session_id);
+        // Words the user wrote and Claude never saw aren't cleared away unasked.
+        const forgotten = !store.hasUnsent(session_id) && store.forgetSession(session_id);
+        return ok({ forgotten } satisfies ClearedSessionResult);
       },
     },
     {
