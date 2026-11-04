@@ -160,6 +160,11 @@ since sidenote started. Send a prompt in that session, or wait for its next repl
 `~/work/shop` and `~/play/shop` share one. Hover over the folder name to see the selected
 session's full path.
 
+**The server isn't running.** That's normal after a while: it stops by itself 30 minutes after
+the last Claude session or open window was using it, so nothing stays behind. Your next prompt
+starts it again, and so does `/sidenote:open`. A window left open from before needs
+`/sidenote:open` too, because each start makes a new token.
+
 **Hooks can't find Node.** Hooks don't always get your shell's `PATH`, for example with nvm
 when Claude Code isn't started from a terminal. sidenote also looks in the usual Homebrew,
 Volta, mise, asdf, nvm and fnm locations. If it still can't find Node, set `SIDENOTE_NODE` to

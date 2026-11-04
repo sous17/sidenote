@@ -817,6 +817,7 @@ function createApp(options) {
     });
     if (!route) throw new HttpError(404);
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    if (route.needsToken) options.onActivity?.();
     const body = request.method === "POST" ? await readJson(request) : void 0;
     return route.handle({ body, query: url.searchParams, param });
   };
@@ -961,53 +962,62 @@ var LaunchCodes = class {
 // src/server/lock.ts
 import { closeSync, openSync, readFileSync as readFileSync2, rmSync, statSync as statSync2, writeSync } from "node:fs";
 var STARTUP_GRACE_MS = 3e4;
-function isRunning(pid) {
+function readLock(lockFile) {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function registeredPid(serverFile) {
-  try {
-    return JSON.parse(readFileSync2(serverFile, "utf8")).pid;
+    const [pid = "", started = ""] = readFileSync2(lockFile, "utf8").split("\n");
+    return { pid: Number.parseInt(pid, 10), started };
   } catch {
     return null;
   }
 }
-function isHeld(lockFile, serverFile) {
-  let pid;
-  let ageMs;
+function isOwner(pid, started) {
+  const info = processInfo(pid);
+  if (!info) return false;
+  return started ? info.started === started : info.args.includes("server.js");
+}
+function serverLockOwner(lockFile) {
+  const lock = readLock(lockFile);
+  return lock && !Number.isNaN(lock.pid) && isOwner(lock.pid, lock.started) ? lock.pid : null;
+}
+function isHeld(lockFile) {
+  const lock = readLock(lockFile);
+  if (!lock) return false;
+  if (!Number.isNaN(lock.pid)) return serverLockOwner(lockFile) !== null;
   try {
-    pid = Number.parseInt(readFileSync2(lockFile, "utf8"), 10);
-    ageMs = Date.now() - statSync2(lockFile).mtimeMs;
+    return Date.now() - statSync2(lockFile).mtimeMs < STARTUP_GRACE_MS;
   } catch {
     return false;
   }
-  if (ageMs < STARTUP_GRACE_MS) return Number.isNaN(pid) || isRunning(pid);
-  return !Number.isNaN(pid) && isRunning(pid) && registeredPid(serverFile) === pid;
 }
-function acquireServerLock(lockFile, serverFile) {
+function createLock(lockFile, contents) {
+  try {
+    const descriptor = openSync(lockFile, "wx", 384);
+    writeSync(descriptor, contents);
+    closeSync(descriptor);
+    return true;
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    return false;
+  }
+}
+var ownLock = () => `${process.pid}
+${processInfo(process.pid)?.started ?? ""}`;
+function acquireServerLock(lockFile) {
+  const contents = ownLock();
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const descriptor = openSync(lockFile, "wx", 384);
-      writeSync(descriptor, String(process.pid));
-      closeSync(descriptor);
-      return true;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-    }
-    if (isHeld(lockFile, serverFile)) return false;
+    if (createLock(lockFile, contents)) return true;
+    if (isHeld(lockFile)) return false;
     rmSync(lockFile, { force: true });
   }
   return false;
 }
+function holdServerLock(lockFile) {
+  const lock = readLock(lockFile);
+  if (lock) return lock.pid === process.pid;
+  return createLock(lockFile, ownLock());
+}
 function releaseServerLock(lockFile) {
-  try {
-    if (Number.parseInt(readFileSync2(lockFile, "utf8"), 10) === process.pid) rmSync(lockFile);
-  } catch {
-  }
+  if (readLock(lockFile)?.pid === process.pid) rmSync(lockFile, { force: true });
 }
 
 // src/server/persistence.ts
@@ -1442,6 +1452,29 @@ var Store = class {
   }
 };
 
+// src/server/watch.ts
+var WATCH_INTERVAL_MS = 5e3;
+var IDLE_MINUTES = 30;
+var IDLE_TICKS = IDLE_MINUTES * 6e4 / WATCH_INTERVAL_MS;
+var ServerWatch = class {
+  #checks;
+  #idleTicks = 0;
+  constructor(checks) {
+    this.#checks = checks;
+  }
+  /** A client used the API: a session's waiter, a hook or an open window. */
+  active() {
+    this.#idleTicks = 0;
+  }
+  /** Why the server should stop now, or null to keep running. */
+  tick() {
+    if (!this.#checks.holdsLock()) return "another server holds the lock";
+    if (!this.#checks.isRegistered()) this.#checks.register();
+    this.#idleTicks += 1;
+    return this.#idleTicks >= IDLE_TICKS ? `nothing used it for ${IDLE_MINUTES} minutes` : null;
+  }
+};
+
 // src/server/main.ts
 var WEB_DIR = join4(dirname(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
@@ -1467,20 +1500,30 @@ async function listen(server) {
     throw error;
   }
 }
-function removeServerFile() {
+function registeredPid() {
   try {
-    const current = JSON.parse(readFileSync4(paths.serverFile(), "utf8"));
-    if (current.pid === process.pid) rmSync3(paths.serverFile());
+    return JSON.parse(readFileSync4(paths.serverFile(), "utf8")).pid;
   } catch {
+    return null;
   }
+}
+function removeServerFile() {
+  if (registeredPid() === process.pid) rmSync3(paths.serverFile(), { force: true });
 }
 async function main() {
   mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
-  if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
+  if (!acquireServerLock(paths.lockFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
   const store = new Store({ dir: paths.stateDir() });
   const token = randomBytes2(32).toString("base64url");
   const allowedHosts = /* @__PURE__ */ new Set();
+  let serverInfo = "";
+  const register = () => writeFileSync2(paths.serverFile(), serverInfo, { mode: 384 });
+  const watch = new ServerWatch({
+    holdsLock: () => holdServerLock(paths.lockFile()),
+    isRegistered: () => registeredPid() === process.pid,
+    register
+  });
   const server = createServer(
     createApp({
       store,
@@ -1489,6 +1532,7 @@ async function main() {
       token,
       allowedHosts,
       webDir: WEB_DIR,
+      onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
       processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
       startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
@@ -1500,9 +1544,8 @@ async function main() {
   allowedHosts.add(`localhost:${port}`);
   allowedHosts.add(`${PAGE_HOST}:${port}`);
   writeFileSync2(paths.portFile(), String(port), { mode: 384 });
-  writeFileSync2(paths.serverFile(), JSON.stringify({ port, token, pid: process.pid }), {
-    mode: 384
-  });
+  serverInfo = JSON.stringify({ port, token, pid: process.pid });
+  register();
   console.error(`sidenote listening on http://127.0.0.1:${port}`);
   const shutDown = () => {
     removeServerFile();
@@ -1512,6 +1555,18 @@ async function main() {
   };
   process.on("SIGTERM", shutDown);
   process.on("SIGINT", shutDown);
+  const interval = Number(process.env["SIDENOTE_WATCH_INTERVAL_MS"]) || WATCH_INTERVAL_MS;
+  setInterval(() => {
+    let reason;
+    try {
+      reason = watch.tick();
+    } catch (error) {
+      reason = `its files can't be reached: ${String(error)}`;
+    }
+    if (!reason) return;
+    console.error(`sidenote stopping: ${reason}`);
+    shutDown();
+  }, interval);
 }
 main().catch((error) => {
   console.error(error);

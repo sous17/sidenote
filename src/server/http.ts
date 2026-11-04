@@ -80,6 +80,8 @@ export interface AppOptions {
   delivery: Delivery;
   launchCodes: LaunchCodes;
   token: string;
+  /** Called for each API request that passed the token check. */
+  onActivity?: () => void;
   /** Host header values to accept. Filled in by main.ts once the port is known. */
   allowedHosts: ReadonlySet<string>;
   /** Directory holding index.html and the page's other files. */
@@ -427,6 +429,8 @@ export function createApp(options: AppOptions): RequestListener {
     });
     if (!route) throw new HttpError(404);
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
+    // Only a real client counts: a stale tab, refused above, mustn't keep the server running.
+    if (route.needsToken) options.onActivity?.();
     const body = request.method === "POST" ? await readJson(request) : undefined;
     return route.handle({ body, query: url.searchParams, param });
   };

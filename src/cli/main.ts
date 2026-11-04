@@ -43,7 +43,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
 
-const NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+const NOT_RUNNING = "sidenote is off; use /sidenote:on first.";
 const SERVER_STOP_TIMEOUT_MS = 5000;
 
 const isEnabled = (): boolean => existsSync(paths.enabledFlag());
@@ -83,6 +83,11 @@ async function openWindow(client: SidenoteClient, requested: string | undefined)
   openBrowser(await client.windowUrl(sessionId, cwd));
   const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
   return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
+}
+
+/** The server, started if sidenote is on: it stops by itself when idle. Null when sidenote is off. */
+async function enabledClient(): Promise<SidenoteClient | null> {
+  return isEnabled() ? (await SidenoteClient.ensure()).client : null;
 }
 
 /** Asks the server to stop, and returns its pid if there was one to ask. */
@@ -141,7 +146,7 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async open() {
-    const client = await SidenoteClient.connect();
+    const client = await enabledClient();
     console.log(client ? await openWindow(client, sessionArgument()) : NOT_RUNNING);
   },
 
@@ -170,7 +175,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {
-    const client = await SidenoteClient.connect();
+    const client = await enabledClient();
     if (!client) {
       console.log(NOT_RUNNING);
       return;

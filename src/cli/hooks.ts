@@ -13,7 +13,7 @@ import type {
   WaiterPollResult,
   WaiterRequest,
 } from "../shared/types.ts";
-import { claudeProcess } from "../node/process.ts";
+import { claudeProcess, pidInUse } from "../node/process.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "./format.ts";
 import { MAX_PROGRESS_DELTA_CHARS, toolActivity } from "../shared/tools.ts";
@@ -97,8 +97,9 @@ export async function hookSession(): Promise<void> {
 
 /** UserPromptSubmit: shows the prompt in the window, and attaches pending notes to it as context. */
 export async function hookPrompt(input: HookInput): Promise<void> {
-  const client = await SidenoteClient.connect();
-  if (!client || !input.session_id) return;
+  if (!input.session_id) return;
+  // The server stops when idle, and saved notes must still go with this prompt.
+  const { client } = await SidenoteClient.ensure();
   const claim: ClaimRequest = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post<ClaimResult>("/api/claim", claim);
@@ -157,8 +158,11 @@ export async function hookWait(input: HookInput): Promise<void> {
     ...reportedProcess(),
   };
   await client.post("/api/waiters", waiter);
+  // A waiter left behind by a Claude that died would keep the server, and "listening", alive.
+  const owner = claudeProcess();
   for (;;) {
     await sleep(WAITER_POLL_MS);
+    if (owner && !pidInUse(owner.pid)) return;
     let result: WaiterPollResult;
     try {
       result = await client.post<WaiterPollResult>("/api/waiters/poll", waiter);
