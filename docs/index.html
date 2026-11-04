@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>sidenote documentation</title>
+    <meta
+      name="description"
+      content="How to install and use sidenote: inline notes on Claude Code's replies, in a browser window."
+    />
+    <style>
+      /* Layout: the app's own shape. Contents on the left, the text in the middle, notes in the margin.
+   Colors are the tokens from src/web/app.css, so the docs and the product look like one thing. */
+      :root {
+        --bg: #f4f4f6;
+        --surface: #ffffff;
+        --sunken: #ececf1;
+        --text: #1b1c2a;
+        --muted: #676a7e;
+        --border: #e1e1e9;
+        --ink: #2b2d6e;
+        --accent: #4447c4;
+        --note: #fff4d6;
+        --note-border: #efc25e;
+        --note-strong: #f5b83d;
+        --code-bg: #f1f1f5;
+        --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --topbar: 52px;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #13141a;
+          --surface: #1c1d26;
+          --sunken: #17181f;
+          --text: #e8e8ef;
+          --muted: #9a9cb0;
+          --border: #2e3040;
+          --ink: #c3c4ff;
+          --accent: #8f91ff;
+          --note: #3a3120;
+          --note-border: #8a6d2a;
+          --note-strong: #f5b83d;
+          --code-bg: #262834;
+          color-scheme: dark;
+        }
+      }
+      :root[data-theme="dark"] {
+        --bg: #13141a;
+        --surface: #1c1d26;
+        --sunken: #17181f;
+        --text: #e8e8ef;
+        --muted: #9a9cb0;
+        --border: #2e3040;
+        --ink: #c3c4ff;
+        --accent: #8f91ff;
+        --note: #3a3120;
+        --note-border: #8a6d2a;
+        --note-strong: #f5b83d;
+        --code-bg: #262834;
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: calc(var(--topbar) + 20px);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.65 var(--sans);
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0 0 auto;
+        z-index: 10;
+        height: env(safe-area-inset-top, 0px);
+        background: var(--surface);
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 2px;
+      }
+      a:focus-visible,
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+      }
+
+      .topbar {
+        position: sticky;
+        top: env(safe-area-inset-top, 0px);
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: var(--topbar);
+        padding-block: 8px;
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text);
+        font-size: 17px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .brand svg {
+        width: 24px;
+        height: 24px;
+      }
+      .logo-text {
+        stroke: var(--ink);
+      }
+      .logo-mark {
+        stroke: var(--note-strong);
+      }
+      .topbar-label {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .topbar-end {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-left: auto;
+        font-size: 14px;
+      }
+      .theme {
+        display: flex;
+        padding: 2px;
+        border-radius: 8px;
+        background: var(--sunken);
+      }
+      .theme button {
+        padding: 2px 9px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--muted);
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .theme button[aria-pressed="true"] {
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      .page {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 24px;
+        max-width: 1320px;
+        margin: 0 auto;
+        padding-block: 24px 64px;
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
+      }
+      .toc ul {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 14px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 14px;
+      }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      .toc a:hover,
+      .toc a[aria-current="true"] {
+        color: var(--accent);
+      }
+      .toc-title {
+        margin: 0 0 6px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      main {
+        min-width: 0;
+      }
+      h1,
+      h2,
+      h3 {
+        color: var(--text);
+        line-height: 1.25;
+        text-wrap: balance;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(28px, 4.5vw, 38px);
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+      h2 {
+        margin: 56px 0 12px;
+        padding-top: 24px;
+        border-top: 1px solid var(--border);
+        font-size: 25px;
+        font-weight: 650;
+      }
+      h3 {
+        margin: 28px 0 6px;
+        font-size: 17px;
+        font-weight: 650;
+      }
+      p,
+      ul,
+      ol {
+        margin: 0 0 14px;
+      }
+      ul,
+      ol {
+        padding-left: 22px;
+      }
+      li {
+        margin-bottom: 5px;
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 19px;
+        line-height: 1.5;
+      }
+
+      /* A row keeps a passage and its note side by side. Narrow windows put the note under it. */
+      .row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0 28px;
+      }
+      .row > * {
+        min-width: 0;
+        max-width: 68ch;
+      }
+      .text {
+        max-width: 68ch;
+      }
+      .note {
+        margin: 0 0 16px;
+        padding: 10px 12px;
+        background: var(--note);
+        border: 1px solid var(--note-border);
+        border-radius: 8px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .note strong {
+        display: block;
+        margin-bottom: 2px;
+      }
+
+      code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: var(--code-bg);
+        font: 0.875em var(--mono);
+        overflow-wrap: anywhere;
+      }
+      pre {
+        margin: 0 0 16px;
+        padding: 12px 14px;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--code-bg);
+        font: 14px/1.5 var(--mono);
+      }
+      pre code {
+        padding: 0;
+        background: none;
+        font: inherit;
+        overflow-wrap: normal;
+      }
+      kbd {
+        padding: 1px 6px;
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 5px;
+        background: var(--surface);
+        font: 0.85em var(--sans);
+        white-space: nowrap;
+      }
+
+      figure {
+        margin: 20px 0 24px;
+      }
+      figure img {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      figcaption {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .table {
+        max-width: 100%;
+        margin: 0 0 18px;
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 15px;
+      }
+      th {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+        text-align: left;
+      }
+      th,
+      td {
+        padding: 8px 14px 8px 0;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      td:first-child {
+        white-space: nowrap;
+      }
+      td.wrap {
+        white-space: normal;
+      }
+      .num {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .problem {
+        margin-bottom: 18px;
+      }
+      .problem h3 {
+        margin-top: 0;
+      }
+
+      footer {
+        margin-top: 56px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (min-width: 900px) {
+        .page {
+          grid-template-columns: 190px minmax(0, 1fr);
+          gap: 40px;
+        }
+        .toc {
+          position: sticky;
+          top: calc(var(--topbar) + 24px);
+          align-self: start;
+          max-height: calc(100vh - var(--topbar) - 48px);
+          overflow-y: auto;
+        }
+        .toc ul {
+          display: block;
+        }
+        .toc li {
+          margin: 0;
+        }
+        .toc a {
+          display: block;
+          padding: 3px 0;
+        }
+      }
+      @media (min-width: 1200px) {
+        .row {
+          grid-template-columns: minmax(0, 68ch) 250px;
+          align-items: start;
+        }
+        .row > .note {
+          margin-top: 4px;
+        }
+        .row > :not(.note) {
+          grid-column: 1;
+        }
+        .row > .note {
+          grid-column: 2;
+        }
+      }
+      @media (max-width: 560px) {
+        .topbar-label {
+          display: none;
+        }
+        td:first-child {
+          white-space: normal;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="sidenote, back to the top">
+        <svg
+          viewBox="0 0 32 32"
+          aria-hidden="true"
+          fill="none"
+          stroke-width="2.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path class="logo-text" d="M4 9h13M4 16h13M4 23h9" />
+          <path class="logo-mark" d="M21.5 8h3v16h-3M24.5 16h3.5" />
+        </svg>
+        sidenote
+      </a>
+      <span class="topbar-label">Documentation</span>
+      <div class="topbar-end">
+        <a href="https://github.com/sous17/sidenote">GitHub</a>
+        <div class="theme" role="group" aria-label="Theme">
+          <button type="button" id="theme-light" data-choice="light">Light</button>
+          <button type="button" id="theme-dark" data-choice="dark">Dark</button>
+          <button type="button" id="theme-system" data-choice="system">Auto</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="page" id="top">
+      <nav class="toc" aria-label="On this page">
+        <p class="toc-title">On this page</p>
+        <ul>
+          <li><a href="#install">Install</a></li>
+          <li><a href="#notes">Leave a note</a></li>
+          <li><a href="#sending">Send notes to Claude</a></li>
+          <li><a href="#threads">Threads</a></li>
+          <li><a href="#messages">Message Claude</a></li>
+          <li><a href="#watching">Watch Claude work</a></li>
+          <li><a href="#diffs">Code changes</a></li>
+          <li><a href="#sessions">Windows and sessions</a></li>
+          <li><a href="#commands">Commands</a></li>
+          <li><a href="#shortcuts">Keyboard shortcuts</a></li>
+          <li><a href="#data">Your data and limits</a></li>
+          <li><a href="#update">Update and uninstall</a></li>
+          <li><a href="#troubleshooting">Troubleshooting</a></li>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#security">Security</a></li>
+          <li><a href="#contributing">Contributing</a></li>
+        </ul>
+      </nav>
+
+      <main>
+        <h1>Talk back to Claude Code, right where it said the thing</h1>
+        <p class="lede text">
+          Every reply Claude finishes appears in a browser window. Select the text you have a question about, write a
+          note beside it, and click <strong>Send now</strong>. Claude answers each note on its own, and each answer
+          lands in that note's thread.
+        </p>
+        <figure>
+          <img
+            src="feed.png"
+            width="1495"
+            height="802"
+            alt="The sidenote window: Claude's replies in a feed, with notes in the margin beside the text they are about."
+          />
+        </figure>
+
+        <h2 id="install">Install</h2>
+        <p class="text">
+          You need Claude Code with plugin support and <code>asyncRewake</code> hooks (any recent version), Node.js 20
+          or newer, and macOS or Linux.
+        </p>
+        <div class="row">
+          <div>
+            <p>The repository is its own plugin marketplace:</p>
+            <pre><code>claude plugin marketplace add sous17/sidenote
+claude plugin install sidenote@sidenote</code></pre>
+            <p>
+              Or inside Claude Code: <code>/plugin marketplace add sous17/sidenote</code>, then
+              <code>/plugin install sidenote@sidenote</code>.
+            </p>
+            <p>Restart Claude Code, or run <code>/reload-plugins</code>, and turn sidenote on:</p>
+            <pre><code>/sidenote:on</code></pre>
+          </div>
+          <aside class="note">
+            <strong>Private repository</strong>While the repository is private, the machine needs GitHub access first.
+            The simplest way is <code>gh auth login</code>, then <code>gh auth setup-git</code>.
+          </aside>
+        </div>
+        <p class="text">
+          Your browser opens the window for this session's folder, and from now on every reply Claude finishes shows up
+          there. Other sessions in the same folder join its session list. A session in another folder opens that
+          folder's window with its first reply.
+        </p>
+        <h3>From a local copy</h3>
+        <pre class="text"><code>git clone https://github.com/sous17/sidenote.git
+claude plugin marketplace add ./sidenote
+claude plugin install sidenote@sidenote</code></pre>
+
+        <h2 id="notes">Leave a note</h2>
+        <div class="row">
+          <div>
+            <p>There are three ways to start one:</p>
+            <ul>
+              <li>Select text in a reply and click <strong>Add sidenote</strong>.</li>
+              <li>Hover a paragraph and click <strong>+</strong>.</li>
+              <li>Click <strong>Note on whole reply</strong> next to a reply's time, to comment on all of it.</li>
+            </ul>
+            <p>Notes sit in the margin next to the text they are about.</p>
+          </div>
+          <aside class="note">
+            <strong>Narrow window?</strong>Notes move inline, under the text they belong to. This page does the same.
+          </aside>
+        </div>
+
+        <h2 id="sending">Send notes to Claude</h2>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>What happens</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Send now</strong></td>
+                <td>
+                  Wakes Claude to answer right away, with nothing typed in the terminal. If Claude is busy, the note
+                  goes as soon as it finishes.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Save</strong></td>
+                <td>Keeps the note pending. It goes to Claude with the next prompt you type in that session.</td>
+              </tr>
+              <tr>
+                <td><strong>Send now</strong> in the top bar</td>
+                <td>Sends every pending note at once.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text">
+          The reply shows in the feed as a short "↳ Claude answered 1 note" row. The full answer is in the note's
+          thread, and the note in the margin shows a preview of it.
+        </p>
+
+        <h2 id="threads">Threads</h2>
+        <div class="row">
+          <div>
+            <p>
+              Click a note to open its thread beside the feed: your note, Claude's answer, and your follow-ups. Reply
+              there to keep going. Follow-ups are sent with the earlier notes, so Claude has the context.
+            </p>
+          </div>
+          <aside class="note">
+            <strong>No duplicates</strong>Claude's answer appears only in the thread, never again in the feed.
+          </aside>
+        </div>
+        <figure>
+          <img
+            src="thread.png"
+            width="1495"
+            height="802"
+            alt="A thread open beside the feed: a note, Claude's answer, a follow-up, and the next answer."
+            loading="lazy"
+          />
+        </figure>
+
+        <h2 id="messages">Message Claude from the browser</h2>
+        <div class="row">
+          <div>
+            <p>
+              Type in the box at the bottom of the window and press <kbd>Enter</kbd>. Claude gets it as if you had typed
+              it in the terminal, with your pending notes alongside. While Claude is working, the message waits and goes
+              as soon as it finishes.
+            </p>
+            <p>Your messages show in the feed between Claude's replies, including prompts typed in the terminal.</p>
+          </div>
+          <aside class="note">
+            <strong>Still in the terminal</strong>Permission prompts and plan approval wait in the terminal. Questions
+            Claude asks in its reply can be answered from the window.
+          </aside>
+        </div>
+
+        <h2 id="watching">Watch Claude work</h2>
+        <p class="text">
+          While you wait for a reply, a live card shows what Claude last wrote, with the current step beside the typing
+          dots, like <code>Editing src/app.ts</code> or <code>Running npm test</code>. It never shows the code itself.
+          Earlier messages from the turn fold open from the card, and it all goes when the reply lands.
+        </p>
+
+        <h2 id="diffs">Code changes as diffs</h2>
+        <p class="text">
+          When you ask Claude to see or change code, in a note or in the terminal, it explains each change and shows it
+          as a diff, with the edited words highlighted. Answers that touch several files fold each file open from its
+          header.
+        </p>
+        <figure>
+          <img
+            src="diffs.png"
+            width="1495"
+            height="802"
+            alt="A thread answer that walks through a code change: an explanation, then a diff with the edited words highlighted, and a second file folded under its header."
+            loading="lazy"
+          />
+        </figure>
+
+        <h2 id="sessions">Windows and sessions</h2>
+        <div class="row">
+          <div>
+            <p>Each folder gets one window, at an address you can bookmark:</p>
+            <pre><code>http://sidenote.localhost:&lt;port&gt;/&lt;folder&gt;</code></pre>
+            <p>
+              The list on the left holds every Claude Code session that ran in that folder, with whether it is listening
+              and how many notes are pending. A session is named by the name you gave it in the window, then its
+              <code>/rename</code> name, then its first message. Notes always go back to the session they were written
+              on.
+            </p>
+            <p>
+              In a narrow window, or while a thread is open, the list folds away. The button left of the folder name
+              brings it back.
+            </p>
+          </div>
+          <aside class="note">
+            <strong>Same folder name?</strong>A window is named after the last part of the path, so
+            <code>~/work/shop</code> and <code>~/play/shop</code> share one. Hover the folder name to see the selected
+            session's full path.
+          </aside>
+        </div>
+        <h3>Open the folder</h3>
+        <p class="text">
+          Click the folder name to open the folder on your computer, with whatever app your system opens folders with.
+        </p>
+        <h3>Theme</h3>
+        <p class="text">Light, dark or system, from the switch in the top right.</p>
+        <div class="row">
+          <div>
+            <h3>Start a session from the window</h3>
+            <p>
+              The <strong>+</strong> above the session list opens a terminal in the folder, running Claude with the
+              first prompt you type there, and selects the new session. Claude asks for permissions in that terminal.
+              After its first reply you can carry on from the window. A name you give it there also titles the terminal.
+            </p>
+          </div>
+          <aside class="note">
+            <strong>Terminal support</strong>This needs GNOME Terminal on Linux, or Terminal on macOS. On macOS the
+            first start asks you to let the app sidenote runs under control Terminal.
+          </aside>
+        </div>
+        <h3>Name, end and remove sessions</h3>
+        <p class="text">The <strong>⋯</strong> on a session's row has three actions:</p>
+        <ul class="text">
+          <li><strong>Rename</strong> gives it a name only sidenote shows, for example a ticket number.</li>
+          <li>
+            <strong>End</strong> stops a running session's Claude process, even mid-turn, and takes it off the list.
+          </li>
+          <li><strong>Remove</strong> deletes a session that has ended.</li>
+        </ul>
+        <p class="text">
+          A session shows as ended once sidenote knows its process, which it learns from the session's next prompt or
+          reply.
+        </p>
+
+        <h2 id="commands">Commands</h2>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>/sidenote:on</code></td>
+                <td>Turns sidenote on and opens its folder's window on this session.</td>
+              </tr>
+              <tr>
+                <td><code>/sidenote:off</code></td>
+                <td>Turns it off for all sessions. Pending notes are kept for next time.</td>
+              </tr>
+              <tr>
+                <td><code>/sidenote:restart</code></td>
+                <td>Restarts the server and opens the window on this session. Pending notes are kept.</td>
+              </tr>
+              <tr>
+                <td><code>/sidenote:open</code></td>
+                <td>Reopens the window on this session, for example after closing it.</td>
+              </tr>
+              <tr>
+                <td><code>/sidenote:status</code></td>
+                <td>Shows this session's window address, replies, pending notes, and Send now status.</td>
+              </tr>
+              <tr>
+                <td><code>/sidenote:backfill</code></td>
+                <td>Imports this session's earlier replies, so you can leave notes on those too.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="shortcuts">Keyboard shortcuts</h2>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>Keys</th>
+                <th>Where</th>
+                <th>What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><kbd>⌘</kbd> <kbd>↵</kbd> or <kbd>Ctrl</kbd> <kbd>↵</kbd></td>
+                <td>Note or thread reply</td>
+                <td>Send now</td>
+              </tr>
+              <tr>
+                <td><kbd>⌘</kbd> <kbd>↵</kbd> or <kbd>Ctrl</kbd> <kbd>↵</kbd></td>
+                <td>New session form</td>
+                <td>Start the session</td>
+              </tr>
+              <tr>
+                <td><kbd>Enter</kbd></td>
+                <td>Message box</td>
+                <td>Send the message</td>
+              </tr>
+              <tr>
+                <td><kbd>Shift</kbd> <kbd>Enter</kbd></td>
+                <td>Message box</td>
+                <td>New line</td>
+              </tr>
+              <tr>
+                <td><kbd>Esc</kbd></td>
+                <td>Note editor</td>
+                <td>Close the editor</td>
+              </tr>
+              <tr>
+                <td><kbd>Esc</kbd></td>
+                <td>Message box or thread reply</td>
+                <td>Leave the field</td>
+              </tr>
+              <tr>
+                <td><kbd>Esc</kbd></td>
+                <td>Anywhere else</td>
+                <td>Close the open thread</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="data">Your data and limits</h2>
+        <p class="text">
+          Everything stays on your machine, in <code>~/.sidenote/</code>, outside the plugin. Your notes survive updates
+          and reinstalls.
+        </p>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>Path in <code>~/.sidenote/</code></th>
+                <th>What it holds</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>sessions/</code></td>
+                <td>One file per session: its replies, notes and messages.</td>
+              </tr>
+              <tr>
+                <td><code>server.json</code></td>
+                <td>The running server's address and API token, readable only by you.</td>
+              </tr>
+              <tr>
+                <td><code>server.log</code></td>
+                <td>Problems from the hooks and the server. Look here first.</td>
+              </tr>
+              <tr>
+                <td><code>enabled</code></td>
+                <td>Present while sidenote is on.</td>
+              </tr>
+              <tr>
+                <td><code>port</code></td>
+                <td>The last port, reused when free so bookmarks keep working.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="row">
+          <div>
+            <h3>How long things are kept</h3>
+            <ul>
+              <li>Up to 100 replies per session.</li>
+              <li>A session is forgotten, with its replies and notes, after 7 days without a new reply.</li>
+              <li>
+                <code>/clear</code> forgets the session it ends right away, so its window moves on to the folder's next
+                session.
+              </li>
+            </ul>
+          </div>
+          <aside class="note">
+            <strong>Unsent work is safe from /clear</strong>A session with notes or messages that never reached Claude
+            is kept, and goes after the usual 7 days. If you resume a cleared session later, its window starts empty.
+            Claude's own transcript isn't touched.
+          </aside>
+        </div>
+        <h3>Size limits</h3>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>What</th>
+                <th>Limit</th>
+              </tr>
+            </thead>
+            <tbody class="num">
+              <tr>
+                <td class="wrap">One note</td>
+                <td>20,000 characters</td>
+              </tr>
+              <tr>
+                <td class="wrap">Text quoted from a reply into a note</td>
+                <td>600 characters</td>
+              </tr>
+              <tr>
+                <td class="wrap">A message from the window, with any message still waiting</td>
+                <td>8,000 characters</td>
+              </tr>
+              <tr>
+                <td class="wrap">First prompt of a session started from the window</td>
+                <td>8,000 characters</td>
+              </tr>
+              <tr>
+                <td class="wrap">Notes delivered to Claude at once</td>
+                <td>9,500 characters</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text">
+          Claude Code caps what a hook can hand to Claude, so a larger batch of notes is cut off at 9,500 characters,
+          and Claude is told the rest are in the window.
+        </p>
+
+        <h2 id="update">Update and uninstall</h2>
+        <pre class="text"><code>claude plugin marketplace update sidenote
+claude plugin update sidenote@sidenote</code></pre>
+        <pre class="text"><code>claude plugin uninstall sidenote@sidenote</code></pre>
+        <p class="text">Uninstalling keeps your notes. Delete <code>~/.sidenote/</code> to remove them.</p>
+
+        <h2 id="troubleshooting">Troubleshooting</h2>
+        <div class="text">
+          <div class="problem">
+            <h3>Send now is greyed out</h3>
+            <p>
+              The session isn't listening yet. That happens when sidenote was turned on, or the plugin installed, after
+              that session's last reply. Send any prompt in that session. Once Claude replies, the button turns on.
+              Saved notes still go with your next prompt.
+            </p>
+          </div>
+          <div class="problem">
+            <h3>Nothing appears in the window</h3>
+            <p>
+              Run <code>/sidenote:status</code> in that session. If it says <code>enabled: no</code>, run
+              <code>/sidenote:on</code>. If the tab says "Stale tab" or "Not connected yet", run
+              <code>/sidenote:open</code> once. A restart of sidenote retires the browser's token, and the window that
+              opens hands it a new one, which every open sidenote tab picks up.
+            </p>
+          </div>
+          <div class="problem">
+            <h3>The list shows a session's first message, not its name</h3>
+            <p>
+              Rename it from its <strong>⋯</strong>, or name it with <code>/rename</code> in Claude, which the list
+              picks up with Claude's next reply.
+            </p>
+          </div>
+          <div class="problem">
+            <h3>End session is greyed out</h3>
+            <p>
+              sidenote knows a session's process only once one of its hooks ran since sidenote started. Send a prompt in
+              that session, or wait for its next reply.
+            </p>
+          </div>
+          <div class="problem">
+            <h3>The server isn't running</h3>
+            <p>
+              That's normal after a while. It stops by itself 30 minutes after the last Claude session or open window
+              was using it. Your next prompt starts it again, and so does <code>/sidenote:open</code>. A window left
+              open from before needs <code>/sidenote:open</code> too, because each start makes a new token.
+            </p>
+          </div>
+          <div class="problem">
+            <h3>Hooks can't find Node</h3>
+            <p>
+              Hooks don't always get your shell's <code>PATH</code>, for example with nvm when Claude Code isn't started
+              from a terminal. sidenote also looks in the usual Homebrew, Volta, mise, asdf, nvm and fnm locations. If
+              it still can't find Node, set <code>SIDENOTE_NODE</code> to the full path of your
+              <code>node</code> binary. Problems are logged to <code>~/.sidenote/server.log</code>.
+            </p>
+          </div>
+        </div>
+
+        <h2 id="how">How it works</h2>
+        <p class="text">
+          Seven hooks connect Claude Code to a small local server. This is what happens when you click
+          <strong>Send now</strong>:
+        </p>
+        <ol class="text">
+          <li>A background hook has been waiting since Claude's last reply. It gets your notes from the server.</li>
+          <li>It prints them and exits with code 2, which wakes Claude.</li>
+          <li>Claude answers each note under a line like <code>**↳ Re: note 12**</code>.</li>
+          <li>The Stop hook posts the finished reply to the server.</li>
+          <li>The server moves each marked section into that note's thread.</li>
+        </ol>
+        <p class="text">
+          If Claude leaves the markers out, the reply stays whole in the feed and the thread links to it.
+        </p>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>Command</th>
+                <th>What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Stop</td>
+                <td><code>hook-stop</code></td>
+                <td>
+                  Posts each finished reply, starting the server if needed, and opens the window the first time a
+                  session replies.
+                </td>
+              </tr>
+              <tr>
+                <td>Stop, background</td>
+                <td><code>hook-wait</code></td>
+                <td>
+                  Waits for Send now or a message from the window, then wakes Claude. Uses <code>asyncRewake</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>PreToolUse, background</td>
+                <td><code>hook-activity</code></td>
+                <td>
+                  Reports each tool call in one line. The server keeps only the latest, in memory, until the turn ends.
+                </td>
+              </tr>
+              <tr>
+                <td>MessageDisplay, background</td>
+                <td><code>hook-progress</code></td>
+                <td>
+                  Reports what Claude writes between tool calls, for the live card. Held in memory until the turn ends.
+                </td>
+              </tr>
+              <tr>
+                <td>UserPromptSubmit</td>
+                <td><code>hook-prompt</code></td>
+                <td>Shows the prompt you typed in the window and attaches pending notes, with any waiting message.</td>
+              </tr>
+              <tr>
+                <td>SessionEnd</td>
+                <td><code>hook-clear</code></td>
+                <td>Tells the server to forget the session. Runs for <code>/clear</code> only.</td>
+              </tr>
+              <tr>
+                <td>SessionStart</td>
+                <td><code>hook-session</code></td>
+                <td>
+                  Asks Claude to show code changes as diffs and to ask questions in its reply rather than with the
+                  <code>AskUserQuestion</code> tool, so both reach the window. Applies to sessions started, resumed or
+                  cleared while sidenote is on.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="security">Security</h2>
+        <p class="text">
+          Anyone who can call sidenote's API can put words in front of your Claude session, so the API is locked down.
+        </p>
+        <ul class="text">
+          <li>
+            <strong>Local only.</strong> The server listens on <code>127.0.0.1</code>, and refuses requests whose
+            <code>Host</code> header isn't one of its own addresses (<code>127.0.0.1</code>, <code>localhost</code> or
+            <code>sidenote.localhost</code>, each with its port), which blocks DNS-rebinding attacks.
+          </li>
+          <li>
+            <strong>A token for every call.</strong> A random 256-bit token, created on each start, is stored in
+            <code>~/.sidenote/server.json</code>, readable only by you. It travels in a custom header, which other
+            websites can't send to the server: the server never approves a cross-origin request.
+          </li>
+          <li>
+            <strong>No token in URLs.</strong> The CLI opens a window with a single-use launch code in the URL fragment,
+            which browsers never send over the network. The page trades the code for the token once, so browser history,
+            synced history and <code>ps</code> only ever see a spent code that expires within two minutes anyway. The
+            page keeps the token in local storage, which only pages from sidenote's own address can read, so a window's
+            address works when typed or bookmarked. The token stops working when the server restarts, since each start
+            makes a new one.
+          </li>
+          <li>
+            <strong>Validated input.</strong> Every request body is parsed against a fixed shape, with size limits,
+            before it reaches the store. Session ids must look like ids.
+          </li>
+          <li>
+            <strong>Recorded folders only.</strong> Open folder and the <strong>+</strong> name a session, not a path:
+            the server opens the folder it recorded for that session, or starts Claude there, and nothing else.
+          </li>
+          <li>
+            <strong>No shell for your prompt.</strong> A new session's first prompt reaches <code>claude</code> as one
+            argument after <code>--</code>, so it can't add options, and on Linux it never passes through a shell. On
+            macOS, Terminal runs the command through your shell, so AppleScript's <code>quoted form of</code> quotes the
+            folder and the prompt first.
+          </li>
+          <li>
+            <strong>Only Claude's own processes.</strong> Ending a session stops the process the session's own hooks
+            reported as its Claude, and only while that pid still belongs to the process that started at the reported
+            time. A request never names a pid. Beyond talking to running sessions, the token can open the folders
+            sidenote knows, start sessions in them, and end the sessions it knows.
+          </li>
+          <li>
+            <strong>Inert replies.</strong> Raw HTML in a reply is shown as text. The rendered markdown is sanitized
+            with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own controls. The
+            page's content security policy allows no inline or remote scripts, and every response carries
+            <code>nosniff</code>, <code>no-referrer</code> and anti-framing headers.
+          </li>
+          <li>
+            <strong>Private files.</strong> <code>~/.sidenote</code> and everything in it are readable only by you.
+          </li>
+        </ul>
+        <p class="text">
+          Found a security problem? Please report it privately through
+          <a href="https://github.com/sous17/sidenote/security/advisories/new">GitHub's security advisories</a> rather
+          than in a public issue.
+        </p>
+
+        <h2 id="contributing">Contributing</h2>
+        <p class="text">
+          Development needs Node 22.18 or newer: tests run the TypeScript directly with Node's type stripping, with no
+          compile step. The plugin itself runs on Node 20 or newer.
+        </p>
+        <pre class="text"><code>npm install
+npm run check      # formatting, types, build dist/, then the tests
+npm run format     # apply Prettier</code></pre>
+        <div class="table text">
+          <table>
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>What's there</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>src/shared/types.ts</code></td>
+                <td>The API contract, used by the server, the hooks and the page</td>
+              </tr>
+              <tr>
+                <td><code>src/server/</code></td>
+                <td>Request parsing, the store, Send now, launch codes, and the HTTP routes</td>
+              </tr>
+              <tr>
+                <td><code>src/cli/</code></td>
+                <td>The <code>/sidenote:*</code> commands and the hooks</td>
+              </tr>
+              <tr>
+                <td><code>src/node/</code></td>
+                <td>Paths and clock, shared by the server and the CLI</td>
+              </tr>
+              <tr>
+                <td><code>src/web/</code></td>
+                <td>The page: feed, thread pane, note editor, and Send now controls</td>
+              </tr>
+              <tr>
+                <td><code>test/</code></td>
+                <td>Unit tests, HTTP security tests, and an end-to-end run of the real hooks</td>
+              </tr>
+              <tr>
+                <td><code>bin/sidenote</code></td>
+                <td>Finds Node and runs <code>dist/cli.js</code></td>
+              </tr>
+              <tr>
+                <td><code>hooks/</code>, <code>skills/</code>, <code>.claude-plugin/</code></td>
+                <td>The plugin wiring</td>
+              </tr>
+              <tr>
+                <td><code>dist/</code></td>
+                <td>Built output, committed so installing needs no build step</td>
+              </tr>
+              <tr>
+                <td><code>docs/</code></td>
+                <td>This page, and the images in it and the README</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text">
+          Run <code>npm run build</code> after changing anything in <code>src/</code>, and commit
+          <code>dist/</code> with it. CI runs <code>npm run check</code> on Linux and macOS and fails if
+          <code>dist/</code> doesn't match the source.
+        </p>
+        <p class="text">
+          To try a change without reinstalling, start Claude Code with <code>claude --plugin-dir .</code> from the
+          repository folder. <a href="https://github.com/sous17/sidenote/blob/main/AGENTS.md">AGENTS.md</a> has the
+          project's rules.
+        </p>
+
+        <footer>sidenote is MIT licensed.</footer>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        var KEY = "sidenote-docs-theme";
+        var root = document.documentElement;
+        var buttons = document.querySelectorAll(".theme button");
+        function apply(choice) {
+          if (choice === "light" || choice === "dark") root.setAttribute("data-theme", choice);
+          else root.removeAttribute("data-theme");
+          buttons.forEach(function (b) {
+            b.setAttribute("aria-pressed", String(b.dataset.choice === choice));
+          });
+        }
+        var saved = null;
+        try {
+          saved = localStorage.getItem(KEY);
+        } catch (e) {
+          /* blocked storage: follow the system */
+        }
+        // With no saved choice, leave any theme the host already set on the page alone.
+        if (saved) apply(saved);
+        else
+          buttons.forEach(function (b) {
+            b.setAttribute("aria-pressed", String(b.dataset.choice === "system"));
+          });
+        buttons.forEach(function (b) {
+          b.addEventListener("click", function () {
+            apply(b.dataset.choice);
+            try {
+              localStorage.setItem(KEY, b.dataset.choice);
+            } catch (e) {
+              /* the choice lasts this visit */
+            }
+          });
+        });
+
+        // Mark the section being read in the contents.
+        var links = {};
+        document.querySelectorAll(".toc a").forEach(function (a) {
+          links[a.getAttribute("href").slice(1)] = a;
+        });
+        var current = null;
+        var seen = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (!entry.isIntersecting) return;
+              if (current) current.removeAttribute("aria-current");
+              current = links[entry.target.id];
+              if (current) current.setAttribute("aria-current", "true");
+            });
+          },
+          { rootMargin: "-10% 0px -80% 0px" },
+        );
+        document.querySelectorAll("h2[id]").forEach(function (h) {
+          seen.observe(h);
+        });
+      })();
+    </script>
+  </body>
+</html>

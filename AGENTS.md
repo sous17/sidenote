@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents working on sidenote. The [README](README.md) explains what sidenote
+Guidance for coding agents working on sidenote. The [documentation](docs/index.html) explains what sidenote
 does and how it is built; this file covers the rules and decisions to keep.
 
 ## Before you commit

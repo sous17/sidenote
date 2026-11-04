@@ -1,7 +1,7 @@
 # Security
 
 sidenote runs a local server that can put text in front of your Claude Code session, so its
-security matters. The README's [Security](README.md#security) section describes how the API is
+security matters. The documentation's [Security](docs/index.html#security) section describes how the API is
 protected.
 
 ## Reporting a vulnerability
