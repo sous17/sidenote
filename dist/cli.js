@@ -134,8 +134,9 @@ import { setTimeout as sleep2 } from "node:timers/promises";
 // src/cli/format.ts
 var MAX_CONTEXT_CHARS = 9500;
 var CODE_CHANGE_RULE = "When you show a code change, or the user asks to see code or a diff, show it as changes to the current code, not as whole files: for each change, a sentence or two on what it does and why, then a ```diff block in unified diff format. Start each block with `--- a/<path>` and `+++ b/<path>` lines and use @@ hunks with about three lines of context. Use one block per file or per step. Put the diff in your reply itself, not only in command output such as `git diff`, because the sidenote window shows only your replies.";
+var QUESTION_RULE = "When you need the user to answer a question or choose between options, don't use the AskUserQuestion tool: it waits in the terminal, where the sidenote window can't show it. Write the question in your reply instead, with any options as a numbered list and your recommendation if you have one, then end your turn. The user answers in their next message.";
 function sessionContext() {
-  return "The user follows this session in the sidenote browser window, which shows your replies and draws ```diff blocks as diffs. " + CODE_CHANGE_RULE;
+  return `The user follows this session in the sidenote browser window, which shows your replies and draws \`\`\`diff blocks as diffs. ${CODE_CHANGE_RULE} ${QUESTION_RULE}`;
 }
 function formatNotesForClaude(notes, options = {}) {
   const first = notes[0];

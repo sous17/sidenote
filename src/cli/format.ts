@@ -15,11 +15,22 @@ export const CODE_CHANGE_RULE =
   "file or per step. Put the diff in your reply itself, not only in command output such as " +
   "`git diff`, because the sidenote window shows only your replies.";
 
+/**
+ * Questions should come as replies. The AskUserQuestion tool pauses mid-turn, so no hook fires and
+ * the window shows nothing, while a question in a reply ends the turn and can be answered from
+ * the message box.
+ */
+export const QUESTION_RULE =
+  "When you need the user to answer a question or choose between options, don't use the " +
+  "AskUserQuestion tool: it waits in the terminal, where the sidenote window can't show it. " +
+  "Write the question in your reply instead, with any options as a numbered list and your " +
+  "recommendation if you have one, then end your turn. The user answers in their next message.";
+
 /** Added to every session while sidenote is on, so requests typed in the terminal follow it too. */
 export function sessionContext(): string {
   return (
     "The user follows this session in the sidenote browser window, which shows your replies and draws ```diff blocks as diffs. " +
-    CODE_CHANGE_RULE
+    `${CODE_CHANGE_RULE} ${QUESTION_RULE}`
   );
 }
 

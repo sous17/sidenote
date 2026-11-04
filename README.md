@@ -143,7 +143,9 @@ Four hooks connect Claude Code to a small local server:
 - **UserPromptSubmit** (`hook-prompt`) shows the prompt you type in the window and attaches
   pending notes to it, along with any message from the window that was still waiting.
 - **SessionStart** (`hook-session`) asks Claude to show code changes as diffs, so the window can
-  draw them. It applies to sessions started, resumed or cleared while sidenote is on.
+  draw them, and to ask questions in its reply rather than with the `AskUserQuestion` tool, so
+  they reach the window and can be answered from it. It applies to sessions started, resumed or
+  cleared while sidenote is on. Permission prompts and plan approval still wait in the terminal.
 
 When notes reach Claude, it is asked to answer each one under a line like `**↳ Re: note 12**`.
 The server moves those sections out of the reply and into the notes' threads. If Claude leaves
