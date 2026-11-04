@@ -3492,7 +3492,7 @@ function errorText(error) {
   const text = error instanceof Error ? error.message : String(error);
   return `Couldn't do that: ${text.replace(/\s+/g, " ")}`;
 }
-var MAX_QUOTE_CHARS, GUTTER2, EDITOR_MAX_ROWS, PROMPT_LABEL, REPLY_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED6, ACCENT3, App;
+var MAX_QUOTE_CHARS, GUTTER2, WHEEL_ROWS, EDITOR_MAX_ROWS, PROMPT_LABEL, REPLY_LABEL, MIN_COLUMNS, MIN_ROWS, MUTED6, ACCENT3, App;
 var init_app = __esm({
   "src/tui/app.ts"() {
     "use strict";
@@ -3509,6 +3509,7 @@ var init_app = __esm({
     init_wrap();
     MAX_QUOTE_CHARS = 600;
     GUTTER2 = 2;
+    WHEEL_ROWS = 3;
     EDITOR_MAX_ROWS = 6;
     PROMPT_LABEL = "you \u203A ";
     REPLY_LABEL = "reply \u203A ";
@@ -3633,6 +3634,11 @@ var init_app = __esm({
       }
       // ---- Keys -----------------------------------------------------------------------------
       async handleKey(key2) {
+        if (key2.name === "mouse") return;
+        if (key2.name === "wheelup" || key2.name === "wheeldown") {
+          this.#wheel(key2.name === "wheelup" ? -WHEEL_ROWS : WHEEL_ROWS, key2.column ?? 0);
+          return;
+        }
         const confirming = this.#confirmDelete;
         this.#confirmDelete = null;
         this.#message = null;
@@ -3828,6 +3834,10 @@ var init_app = __esm({
           return;
         }
         if (key2.name === "tab") return this.#focusFeed();
+        if (key2.name === "pageup" || key2.name === "pagedown") {
+          const page = Math.max(1, this.#bodyHeight() - 2);
+          return this.#scrollFeed(key2.name === "pageup" ? -page : page);
+        }
         if (key2.name === "enter" && !(key2.alt || key2.shift)) return this.#sendMessage();
         const edited = await this.#editText(this.#prompt, key2, this.#promptWidth());
         if (edited) this.#prompt = edited;
@@ -3931,6 +3941,27 @@ var init_app = __esm({
         this.#scroll += Math.trunc(pages * Math.max(1, height - 2)) || (pages > 0 ? 1 : -1);
         this.#scroll = this.#clampScroll(this.#scroll);
         const first = this.#feed?.targets.find((target) => target.end > this.#scroll);
+        if (first) this.#selected = first.key;
+      }
+      /** The wheel scrolls the pane under the pointer, wherever the keys are going. */
+      #wheel(rows, column) {
+        if (this.#editor || this.#lines) return;
+        const inThread = this.#view === "thread" && (!this.#split() || column > this.#halves().left);
+        if (inThread) this.#threadScroll += rows;
+        else this.#scrollFeed(rows);
+        this.render();
+      }
+      /**
+       * Scrolls without taking the keys from the prompt line. Following stops away from the bottom and
+       * starts again there, since G can't be typed from the prompt line. The cursor stays in view.
+       */
+      #scrollFeed(rows) {
+        const height = this.#bodyHeight();
+        this.#scroll = this.#clampScroll(this.#scroll + rows);
+        this.#follow = this.#scroll + height >= (this.#feed?.rows.length ?? 0);
+        const target = this.#selectedTarget();
+        if (target && target.start < this.#scroll + height && target.end > this.#scroll) return;
+        const first = this.#feed?.targets.find((candidate) => candidate.end > this.#scroll);
         if (first) this.#selected = first.key;
       }
       #select(key2) {
@@ -4476,7 +4507,7 @@ var init_app = __esm({
         if (this.#chat && this.#view === "feed" && this.#focus === "prompt" && !this.#lines) {
           parts.push("\u23CE send", "\u2325\u23CE new line");
           if (this.#working) parts.push("esc interrupt");
-          parts.push("tab conversation");
+          parts.push("tab conversation", "pgup/pgdn scroll");
           if (this.#model?.pendingCount()) parts.push("notes go with your message");
           parts.push("^C quit");
           return [{ text: parts.join(" \xB7 "), style: MUTED6 }];
@@ -4574,6 +4605,12 @@ function parseKeys(data) {
       continue;
     }
     if (data[i] === "\x1B") {
+      const mouse = MOUSE.exec(data.slice(i));
+      if (mouse) {
+        keys.push(fromMouse(Number(mouse[1]), Number(mouse[2]), mouse[3]));
+        i += mouse[0].length;
+        continue;
+      }
       const sequence = CSI.exec(data.slice(i));
       if (sequence) {
         keys.push(fromCsi(sequence[1], sequence[2]));
@@ -4606,6 +4643,11 @@ function single(char) {
   if (code2 < 32) return key("unknown");
   return key(char, { text: char });
 }
+function fromMouse(button, column, final) {
+  const direction = button & 3;
+  if ((button & WHEEL) === 0 || direction > 1 || final !== "M") return key("mouse");
+  return key(direction === 0 ? "wheelup" : "wheeldown", { column: column - 1 });
+}
 function fromCsi(params, final) {
   const [first = "", modifier = "1"] = params.split(";");
   const bits = Math.max(0, Number(modifier) - 1);
@@ -4621,13 +4663,15 @@ function fromCsi(params, final) {
   if (final === "Z") return key("tab", { ...mods, shift: true });
   return key(CSI_LETTERS.get(final) ?? "unknown", mods);
 }
-var PASTE_START, PASTE_END, CSI, CSI_LETTERS, CSI_TILDES, CSI_U_CODES;
+var PASTE_START, PASTE_END, CSI, MOUSE, WHEEL, CSI_LETTERS, CSI_TILDES, CSI_U_CODES;
 var init_keys = __esm({
   "src/tui/keys.ts"() {
     "use strict";
     PASTE_START = "\x1B[200~";
     PASTE_END = "\x1B[201~";
     CSI = /^\x1b[[O]([0-9;]*)([A-Za-z~])/;
+    MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
+    WHEEL = 64;
     CSI_LETTERS = /* @__PURE__ */ new Map([
       ["A", "up"],
       ["B", "down"],
@@ -4657,13 +4701,15 @@ var init_keys = __esm({
 });
 
 // src/tui/screen.ts
-var ENTER, LEAVE, SYNC_START, SYNC_END, Screen;
+var MOUSE_ON, MOUSE_OFF, ENTER, LEAVE, SYNC_START, SYNC_END, Screen;
 var init_screen = __esm({
   "src/tui/screen.ts"() {
     "use strict";
     init_keys();
-    ENTER = "\x1B[?1049h\x1B[?7l\x1B[?2004h\x1B[?25l\x1B[2J";
-    LEAVE = "\x1B[?2004l\x1B[?7h\x1B[?25h\x1B[?1049l";
+    MOUSE_ON = "\x1B[?1000h\x1B[?1006h";
+    MOUSE_OFF = "\x1B[?1006l\x1B[?1000l";
+    ENTER = `\x1B[?1049h\x1B[?7l\x1B[?2004h${MOUSE_ON}\x1B[?25l\x1B[2J`;
+    LEAVE = `${MOUSE_OFF}\x1B[?2004l\x1B[?7h\x1B[?25h\x1B[?1049l`;
     SYNC_START = "\x1B[?2026h";
     SYNC_END = "\x1B[?2026l";
     Screen = class {

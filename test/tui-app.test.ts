@@ -686,3 +686,154 @@ test("chat: ] and [ move between threads, and narrow windows show the thread ful
   assert.ok(narrow.terminal.has("Thread · on the reply from"), "the thread replaces the conversation");
   assert.ok(!narrow.terminal.has("│ thread ·"));
 });
+
+const LONG_REPLY = Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1}.`).join("\n\n");
+const WHEEL_UP = "\x1b[<64;5;5M";
+const WHEEL_DOWN = "\x1b[<65;5;5M";
+
+test("chat: the wheel scrolls from the prompt line, and leaves the message being typed alone", async () => {
+  const { app, terminal } = await startChat(
+    new FakeApi([reply(1, LONG_REPLY)]),
+    new FakeChat(),
+    new FakeTerminal(130, 14),
+  );
+  await press(app, "draft");
+  assert.ok(terminal.has("Paragraph 30."), "opens at the latest");
+
+  await press(app, WHEEL_UP.repeat(3));
+  assert.ok(!terminal.has("Paragraph 30."));
+  assert.ok(terminal.has("Paragraph 23."));
+
+  await press(app, " more");
+  assert.ok(terminal.has("you › draft more"), "the keys still go to the prompt line");
+  assert.ok(!terminal.has("Paragraph 30."), "typing doesn't jump back");
+
+  await press(app, WHEEL_DOWN.repeat(3));
+  assert.ok(terminal.has("Paragraph 30."));
+});
+
+test("chat: the wheel stops at both ends", async () => {
+  const { app, terminal } = await startChat(
+    new FakeApi([reply(1, LONG_REPLY)]),
+    new FakeChat(),
+    new FakeTerminal(130, 14),
+  );
+  await press(app, WHEEL_DOWN.repeat(5));
+  assert.ok(terminal.has("Paragraph 30."));
+  await press(app, WHEEL_UP.repeat(50));
+  assert.ok(terminal.has("Paragraph 1."));
+  await press(app, WHEEL_DOWN);
+  assert.ok(!terminal.has("Paragraph 1."), "one notch is enough to come back from the top");
+});
+
+test("chat: scrolling up stops following Claude, and reaching the bottom starts it again", async () => {
+  const { app, chat, terminal } = await startChat(
+    new FakeApi([reply(1, LONG_REPLY)]),
+    new FakeChat(),
+    new FakeTerminal(130, 14),
+  );
+  const stream = async (text: string): Promise<void> => {
+    chat.change({
+      state: "working",
+      live: { prompt: "Go on", notes_sent: 0, started_at: 993, parts: [{ kind: "text", text }] },
+    });
+    await app.refreshConversation();
+  };
+  await stream("First words.");
+  assert.ok(terminal.has("First words."), "following");
+
+  await press(app, WHEEL_UP.repeat(4));
+  await stream("Second words.");
+  assert.ok(!terminal.has("Second words."), "what is being read stays put");
+  assert.ok(terminal.has("Paragraph 2") || terminal.has("Paragraph 1"));
+
+  await press(app, WHEEL_DOWN.repeat(10));
+  await stream("Third words.");
+  assert.ok(terminal.has("Third words."), "following again, without pressing anything");
+});
+
+test("chat: PgUp and PgDn scroll from the prompt line", async () => {
+  const { app, terminal } = await startChat(
+    new FakeApi([reply(1, LONG_REPLY)]),
+    new FakeChat(),
+    new FakeTerminal(130, 14),
+  );
+  await press(app, "draft\x1b[5~");
+  assert.ok(!terminal.has("Paragraph 30."));
+  assert.ok(terminal.has("you › draft"));
+  assert.match(terminal.text.at(-1)!, /pgup\/pgdn scroll/);
+  await press(app, "\x1b[6~\x1b[6~");
+  assert.ok(terminal.has("Paragraph 30."));
+  assert.ok(terminal.has("you › draft"), "the page keys type nothing");
+});
+
+test("the wheel keeps the cursor in view, so the next key doesn't jump back", async () => {
+  const { app, terminal } = await start(new FakeApi([reply(1, LONG_REPLY)]), new FakeTerminal(80, 12));
+  await press(app, WHEEL_DOWN.repeat(6));
+  assert.equal(terminal.selected.length, 1, "the cursor is on a row in view");
+  const [before] = terminal.selected;
+  await press(app, "j");
+  assert.notEqual(terminal.selected[0], before);
+  assert.ok(!terminal.has("Paragraph 1."), "moving carries on from here");
+});
+
+test("beside a thread, the wheel scrolls the half under the pointer", async () => {
+  const body = Array.from({ length: 40 }, (_, i) => `Thread line ${i + 1}`).join("\n");
+  const api = new FakeApi([reply(2, LONG_REPLY)], [note({ id: 7, body, block_index: 29, quote: "Paragraph 30." })]);
+  const { app, terminal } = await startChat(api, new FakeChat(), new FakeTerminal(130, 16));
+  await press(app, "\tG]\r");
+  assert.ok(terminal.has("Thread line 1"), "the thread is open");
+  const left = (): string[] => terminal.text.map((row) => row.slice(0, 65));
+
+  const conversation = left();
+  await press(app, "\x1b[<65;100;5M".repeat(3));
+  assert.ok(!terminal.text.some((row) => row.trimEnd().endsWith("Thread line 1")), "the thread moved");
+  assert.deepEqual(left(), conversation, "the conversation didn't");
+
+  const thread = terminal.text.map((row) => row.slice(66));
+  await press(app, "\x1b[<64;10;5M".repeat(3));
+  assert.notDeepEqual(left(), conversation, "the conversation moved");
+  assert.deepEqual(
+    terminal.text.map((row) => row.slice(66)),
+    thread,
+    "the thread didn't",
+  );
+});
+
+test("a full-width thread scrolls with the wheel wherever the pointer is", async () => {
+  const body = Array.from({ length: 40 }, (_, i) => `Thread line ${i + 1}`).join("\n");
+  const api = new FakeApi([reply(2, "One block.")], [note({ id: 7, body })]);
+  const { app, terminal } = await start(api, new FakeTerminal(70, 14));
+  await press(app, "j\r");
+  assert.ok(terminal.has("Thread line 1"));
+  await press(app, WHEEL_DOWN.repeat(4));
+  assert.ok(!terminal.text.some((row) => row.trimEnd().endsWith("Thread line 1")));
+});
+
+test("the wheel leaves a note being written, and picked lines, where they are", async () => {
+  const code = `\`\`\`js\n${Array.from({ length: 30 }, (_, i) => `line${i + 1}();`).join("\n")}\n\`\`\``;
+  const { app, terminal } = await start(new FakeApi([reply(1, LONG_REPLY), reply(2, code)]), new FakeTerminal(80, 14));
+  await press(app, "n");
+  const writing = [...terminal.frame];
+  await press(app, WHEEL_DOWN.repeat(3));
+  assert.deepEqual(terminal.frame, writing);
+  await press(app, "\x1b\x1b");
+
+  await press(app, "Gv");
+  const picking = [...terminal.frame];
+  await press(app, WHEEL_DOWN.repeat(3));
+  assert.deepEqual(terminal.frame, picking);
+});
+
+test("clicks do nothing: no text, no lost message, and a delete stays armed", async () => {
+  const { app, terminal } = await startChat(new FakeApi([reply(1, "Hello.")]), new FakeChat());
+  await press(app, "hi\x1b[<0;5;5M\x1b[<0;5;5m there");
+  assert.ok(terminal.has("you › hi there"));
+
+  const api = new FakeApi([reply(2, "Hello.")], [note({ id: 7, body: "Why?" })]);
+  const tui = await start(api, new FakeTerminal(80, 20));
+  await press(tui.app, "jx");
+  await press(tui.app, "\x1b[<0;5;5M\x1b[<0;5;5m" + WHEEL_DOWN);
+  await press(tui.app, "x");
+  assert.deepEqual(api.deleted, [7], "the second x still confirms");
+});

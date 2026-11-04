@@ -1,21 +1,27 @@
 // Reads keypresses from what a terminal sends in raw mode: plain characters, control keys,
-// Alt (ESC followed by the key), and CSI sequences for arrows and the like. Bracketed paste
-// arrives as one event, so a pasted newline never sends a note.
+// Alt (ESC followed by the key), CSI sequences for arrows and the like, and mouse reports in SGR
+// form. Bracketed paste arrives as one event, so a pasted newline never sends a note.
 
 export interface Key {
   /** The character typed, or a name: enter, tab, backspace, delete, escape, up, down, left,
-   * right, home, end, pageup, pagedown, paste. Ctrl+letter is the letter with ctrl set. */
+   * right, home, end, pageup, pagedown, paste, wheelup, wheeldown, mouse (any other mouse
+   * report). Ctrl+letter is the letter with ctrl set. */
   name: string;
   /** What to insert into text: the character typed, or the pasted text. */
   text: string;
   ctrl: boolean;
   alt: boolean;
   shift: boolean;
+  /** For the wheel: the column the pointer is on, from 0. */
+  column?: number;
 }
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 const CSI = /^\x1b[[O]([0-9;]*)([A-Za-z~])/;
+/** Button, column and row, each from 1, then M for a press and m for a release. */
+const MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
+const WHEEL = 64;
 
 const CSI_LETTERS: ReadonlyMap<string, string> = new Map([
   ["A", "up"],
@@ -59,6 +65,12 @@ export function parseKeys(data: string): Key[] {
       continue;
     }
     if (data[i] === "\x1b") {
+      const mouse = MOUSE.exec(data.slice(i));
+      if (mouse) {
+        keys.push(fromMouse(Number(mouse[1]), Number(mouse[2]), mouse[3]!));
+        i += mouse[0].length;
+        continue;
+      }
       const sequence = CSI.exec(data.slice(i));
       if (sequence) {
         keys.push(fromCsi(sequence[1]!, sequence[2]!));
@@ -92,6 +104,13 @@ function single(char: string): Key {
   if (code >= 0x01 && code <= 0x1a) return key(String.fromCharCode(code + 0x60), { ctrl: true });
   if (code < 0x20) return key("unknown");
   return key(char, { text: char });
+}
+
+function fromMouse(button: number, column: number, final: string): Key {
+  // Modifier keys add bits below WHEEL; the two lowest say which way, and 2 and 3 are sideways.
+  const direction = button & 3;
+  if ((button & WHEEL) === 0 || direction > 1 || final !== "M") return key("mouse");
+  return key(direction === 0 ? "wheelup" : "wheeldown", { column: column - 1 });
 }
 
 function fromCsi(params: string, final: string): Key {

@@ -70,6 +70,8 @@ export interface AppOptions {
 /** Same limit as the page's editor: enough context for Claude without the whole reply. */
 const MAX_QUOTE_CHARS = 600;
 const GUTTER = 2;
+/** Rows one notch of the mouse wheel scrolls, the usual three. */
+const WHEEL_ROWS = 3;
 const EDITOR_MAX_ROWS = 6;
 const PROMPT_LABEL = "you › ";
 const REPLY_LABEL = "reply › ";
@@ -230,6 +232,12 @@ export class App {
   // ---- Keys -----------------------------------------------------------------------------
 
   async handleKey(key: Key): Promise<void> {
+    // Before anything is reset: looking around doesn't cancel a delete being confirmed.
+    if (key.name === "mouse") return;
+    if (key.name === "wheelup" || key.name === "wheeldown") {
+      this.#wheel(key.name === "wheelup" ? -WHEEL_ROWS : WHEEL_ROWS, key.column ?? 0);
+      return;
+    }
     const confirming = this.#confirmDelete;
     this.#confirmDelete = null;
     this.#message = null;
@@ -436,6 +444,10 @@ export class App {
       return;
     }
     if (key.name === "tab") return this.#focusFeed();
+    if (key.name === "pageup" || key.name === "pagedown") {
+      const page = Math.max(1, this.#bodyHeight() - 2);
+      return this.#scrollFeed(key.name === "pageup" ? -page : page);
+    }
     if (key.name === "enter" && !(key.alt || key.shift)) return this.#sendMessage();
     const edited = await this.#editText(this.#prompt, key, this.#promptWidth());
     if (edited) this.#prompt = edited;
@@ -551,6 +563,30 @@ export class App {
     this.#scroll += Math.trunc(pages * Math.max(1, height - 2)) || (pages > 0 ? 1 : -1);
     this.#scroll = this.#clampScroll(this.#scroll);
     const first = this.#feed?.targets.find((target) => target.end > this.#scroll);
+    if (first) this.#selected = first.key;
+  }
+
+  /** The wheel scrolls the pane under the pointer, wherever the keys are going. */
+  #wheel(rows: number, column: number): void {
+    // A note being written pins the view to it, and picked lines to the cursor.
+    if (this.#editor || this.#lines) return;
+    const inThread = this.#view === "thread" && (!this.#split() || column > this.#halves().left);
+    if (inThread) this.#threadScroll += rows;
+    else this.#scrollFeed(rows);
+    this.render();
+  }
+
+  /**
+   * Scrolls without taking the keys from the prompt line. Following stops away from the bottom and
+   * starts again there, since G can't be typed from the prompt line. The cursor stays in view.
+   */
+  #scrollFeed(rows: number): void {
+    const height = this.#bodyHeight();
+    this.#scroll = this.#clampScroll(this.#scroll + rows);
+    this.#follow = this.#scroll + height >= (this.#feed?.rows.length ?? 0);
+    const target = this.#selectedTarget();
+    if (target && target.start < this.#scroll + height && target.end > this.#scroll) return;
+    const first = this.#feed?.targets.find((candidate) => candidate.end > this.#scroll);
     if (first) this.#selected = first.key;
   }
 
@@ -1200,7 +1236,7 @@ export class App {
     if (this.#chat && this.#view === "feed" && this.#focus === "prompt" && !this.#lines) {
       parts.push("⏎ send", "⌥⏎ new line");
       if (this.#working) parts.push("esc interrupt");
-      parts.push("tab conversation");
+      parts.push("tab conversation", "pgup/pgdn scroll");
       if (this.#model?.pendingCount()) parts.push("notes go with your message");
       parts.push("^C quit");
       return [{ text: parts.join(" · "), style: MUTED }];

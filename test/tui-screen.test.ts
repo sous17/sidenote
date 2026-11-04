@@ -56,3 +56,23 @@ test("only rows that changed are written again", () => {
   assert.ok(!output.written.includes("\x1b[1;1H") && !output.written.includes("\x1b[3;1H"));
   assert.ok(output.written.includes("\x1b[2;3H\x1b[?25h"), "the text cursor is shown where the editor needs it");
 });
+
+test("mouse reports are on only while the app has the terminal, so a shell or $EDITOR never gets them", () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const screen = new Screen(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+  const lastMouseState = (): string | undefined => output.written.match(/\x1b\[\?1000[hl]/g)?.at(-1);
+
+  screen.start(
+    () => {},
+    () => {},
+  );
+  assert.equal(lastMouseState(), "\x1b[?1000h");
+  assert.ok(output.written.includes("\x1b[?1006h"), "SGR reports: the only form with no limit on columns");
+
+  screen.suspend(() => assert.equal(lastMouseState(), "\x1b[?1000l"));
+  assert.equal(lastMouseState(), "\x1b[?1000h", "and back on after $EDITOR");
+
+  screen.stop();
+  assert.equal(lastMouseState(), "\x1b[?1000l");
+});

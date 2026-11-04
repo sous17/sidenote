@@ -3,8 +3,12 @@
 // doesn't flicker. Autowrap is off, so a row can never spill onto the next.
 import { parseKeys, type Key } from "./keys.ts";
 
-const ENTER = "\x1b[?1049h\x1b[?7l\x1b[?2004h\x1b[?25l\x1b[2J";
-const LEAVE = "\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l";
+// Mouse reports, for the wheel. Terminals otherwise turn the wheel into arrow keys here or send
+// nothing, which can't scroll from the prompt line. Selecting text then needs Option or Shift.
+const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF = "\x1b[?1006l\x1b[?1000l";
+const ENTER = `\x1b[?1049h\x1b[?7l\x1b[?2004h${MOUSE_ON}\x1b[?25l\x1b[2J`;
+const LEAVE = `${MOUSE_OFF}\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l`;
 const SYNC_START = "\x1b[?2026h";
 const SYNC_END = "\x1b[?2026l";
 

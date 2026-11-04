@@ -63,3 +63,13 @@ test("the note text wraps to the editor, with the cursor where it is typed", () 
   const wide = new NoteText("日本語");
   assert.deepEqual(wide.layout(4), { rows: ["日本", "語"], cursorRow: 1, cursorColumn: 2 });
 });
+
+test("the wheel is read with the pointer's column, and other mouse reports do nothing", () => {
+  assert.deepEqual(names("\x1b[<64;10;5M\x1b[<65;10;5M"), ["wheelup", "wheeldown"]);
+  assert.equal(parseKeys("\x1b[<65;10;5M")[0]!.column, 9, "columns are reported from 1");
+  assert.deepEqual(names("\x1b[<68;1;1M"), ["wheelup"], "with Shift held");
+  assert.deepEqual(names("\x1b[<66;1;1M\x1b[<67;1;1M"), ["mouse", "mouse"], "sideways");
+  assert.deepEqual(names("\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<2;3;4M"), ["mouse", "mouse", "mouse"], "clicks");
+  assert.deepEqual(names("a\x1b[<64;1;1Mb"), ["a", "wheelup", "b"]);
+  assert.equal(parseKeys("\x1b[<0;3;4M")[0]!.text, "", "a click inserts nothing");
+});
