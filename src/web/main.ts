@@ -33,16 +33,17 @@ function showUnavailable(title: string, text: string): void {
   byId("empty-help").hidden = true;
 }
 
-/** Top left: the window's folder, the selected session, and a button to open the folder. */
+/** Top left: the window's folder, which opens it on a click, and the selected session. */
 function renderWindowTitle(model: Model, panel: SessionPanel, newSession: NewSessionForm): void {
   const { session, folder, sessions, can_start_sessions } = model.snapshot;
   byId("window-title").hidden = false;
   byId("folder-name").textContent = folder;
-  byId("folder-name").title = session?.cwd ?? "";
+  const openFolder = byId<HTMLButtonElement>("open-folder");
+  openFolder.hidden = !folder;
+  openFolder.disabled = !session?.cwd;
+  openFolder.title = session?.cwd ? `Open ${session.cwd}` : "";
   const selected = sessions.find((row) => row.id === model.sessionId);
   byId("session-name").textContent = selected ? sessionLabel(selected) : "";
-  byId("open-folder").hidden = !session?.cwd;
-  byId("open-folder").title = session?.cwd ? `Open ${session.cwd}` : "";
   panel.render(sessions, model.sessionId);
   newSession.render(can_start_sessions, session?.cwd ?? "");
   document.title = folder ? `${folder} · sidenote` : "sidenote";

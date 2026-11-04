@@ -37,8 +37,8 @@ note on its own, and each answer lands in that note's thread.
   `/rename`, or its first message, with whether it is listening and how many notes are pending.
   In a narrow window, or while a thread is open, the list folds away; the button left of the
   folder name brings it back. Notes always go back to the session they were written on.
-- **Open folder.** The button beside the folder name opens the folder on your computer, with
-  whatever app your system opens folders with.
+- **Open folder.** Click the folder name to open the folder on your computer, with whatever app
+  your system opens folders with.
 - **Start a session from the window.** The **+** above the session list opens a terminal in the
   folder, running Claude with the first prompt you type there, and selects the new session. Claude
   asks for permissions in that terminal; after its first reply you can carry on from the window.

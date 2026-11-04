@@ -134,7 +134,7 @@ button {
   color: var(--text);
 }
 
-/* The panel button, the window's folder and selected session, and a button to open the folder. */
+/* The panel button, the window's folder, which opens it on a click, and the selected session. */
 .window-title {
   display: flex;
   align-items: center;
@@ -188,7 +188,6 @@ button {
   text-align: center;
 }
 .folder-name {
-  flex: none;
   max-width: 220px;
   font-weight: 600;
   font-size: 15px;
@@ -197,7 +196,6 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.folder-name:empty,
 .session-name:empty {
   display: none;
 }
@@ -218,18 +216,25 @@ button {
   gap: 6px;
   flex: none;
   height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
+  padding: 0 8px;
+  border: none;
   border-radius: 8px;
-  background: var(--surface);
+  background: none;
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
   cursor: pointer;
 }
-.open-folder:hover {
+.open-folder:hover:enabled {
   color: var(--text);
   background: var(--sunken);
+}
+/* Until sidenote knows the session's folder, the name is only a title. */
+.open-folder:disabled {
+  padding: 0;
+  cursor: default;
+}
+.open-folder:disabled svg {
+  display: none;
 }
 .open-folder svg {
   width: 15px;
@@ -1128,9 +1133,6 @@ li.block:hover:has(li.block:hover) {
     padding: 12px 16px 16px;
   }
   .pane-bar .meta .session-id {
-    display: none;
-  }
-  .open-folder span {
     display: none;
   }
 }
