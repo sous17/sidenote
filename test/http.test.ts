@@ -1,29 +1,42 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { isSameProcess, pidInUse, processInfo } from "../src/node/process.ts";
+import type { NewSession } from "../src/node/terminal.ts";
 import { Delivery } from "../src/server/delivery.ts";
 import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
+import { SessionProcesses } from "../src/server/processes.ts";
 import { Store } from "../src/server/store.ts";
-import type {
-  ClaimResult,
-  LaunchCodeResult,
-  NewResponseResult,
-  Note,
-  PromptResult,
-  RedeemResult,
-  SessionListResult,
-  StateSnapshot,
-  WaiterPollResult,
+import {
+  MAX_PROMPT_CHARS,
+  type ClaimResult,
+  type ErrorResult,
+  type LaunchCodeResult,
+  type NewResponseResult,
+  type Note,
+  type PromptResult,
+  type RedeemResult,
+  type SessionListResult,
+  type StartSessionResult,
+  type StateSnapshot,
+  type WaiterPollResult,
 } from "../src/shared/types.ts";
 
 const TOKEN = "test-token-0123456789";
 const server = createServer();
 let base = "";
 let port = 0;
+/** Folders the server asked the desktop to open. */
+const openedFolders: string[] = [];
+/** Sessions the server asked a terminal to start, and the error the next start fails with, if any. */
+const startedSessions: NewSession[] = [];
+let nextStartFails: string | null = null;
 
 before(async () => {
   const webDir = mkdtempSync(join(tmpdir(), "sidenote-web-"));
@@ -43,6 +56,14 @@ before(async () => {
       token: TOKEN,
       allowedHosts: new Set([`127.0.0.1:${port}`]),
       webDir,
+      openFolder: (path) => {
+        openedFolders.push(path);
+      },
+      processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+      startSession: async (session) => {
+        if (nextStartFails) throw new Error(nextStartFails);
+        startedSessions.push(session);
+      },
     }),
   );
 });
@@ -82,6 +103,15 @@ describe("page", () => {
     assert.equal(response.headers.get("referrer-policy"), "no-referrer");
     assert.equal(response.headers.get("x-frame-options"), "DENY");
     assert.equal((await fetch(`${base}/static/app.js`)).status, 200);
+  });
+
+  test("is served for a folder's window, and only one path segment deep", async () => {
+    for (const path of ["/shop-api", "/my%20project"]) {
+      const response = await fetch(base + path);
+      assert.equal(response.status, 200, path);
+      assert.match(response.headers.get("content-security-policy") ?? "", /script-src 'self'/);
+    }
+    assert.equal((await fetch(`${base}/shop-api/x`)).status, 404);
   });
 
   test("refuses paths outside the page directory and malformed ones", async () => {
@@ -175,6 +205,41 @@ describe("round trip", () => {
   });
 });
 
+describe("folder windows", () => {
+  test("show the session asked for, else the folder's latest, with the folder's sessions", async () => {
+    // A minute older, so two replies in the same millisecond can't tie.
+    const aMinuteAgo = Date.now() / 1000 - 60;
+    await call("POST", "/api/responses", { session_id: "f1", cwd: "/a/shop", text: "One.", created_at: aMinuteAgo });
+    await call("POST", "/api/responses", { session_id: "f2", cwd: "/b/shop", text: "Two." });
+    await call("POST", "/api/responses", { session_id: "f3", cwd: "/a/other", text: "Three." });
+
+    const byFolder = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=&f=shop"));
+    assert.equal(byFolder.session?.id, "f2", "no session named: the folder's latest");
+    assert.equal(byFolder.folder, "shop");
+    assert.deepEqual(
+      byFolder.sessions.map((row) => [row.id, row.status]),
+      [
+        ["f2", "offline"],
+        ["f1", "offline"],
+      ],
+    );
+    assert.equal(byFolder.responses[0]?.text, "Two.");
+
+    const asked = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=f1&f=shop"));
+    assert.equal(asked.session?.id, "f1");
+    assert.equal(asked.responses[0]?.text, "One.");
+
+    const forgotten = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=gone&f=shop"));
+    assert.equal(forgotten.session?.id, "f2", "a session sidenote forgot falls back to the latest");
+
+    const oldLink = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=f3"));
+    assert.equal(oldLink.folder, "other", "a link without a folder learns it from the session");
+
+    const empty = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=&f=nothing-here"));
+    assert.deepEqual([empty.session, empty.folder, empty.sessions], [null, "nothing-here", []]);
+  });
+});
+
 describe("messages from the page", () => {
   test("reach a listening session's waiter, and show in the state from the moment they are sent", async () => {
     await call("POST", "/api/responses", { session_id: "p", cwd: "/w", text: "Done." });
@@ -223,5 +288,171 @@ describe("messages from the page", () => {
       state.messages.map((m) => [m.text, m.source, m.delivered_at !== null]),
       [["Fix the bug", "terminal", true]],
     );
+  });
+});
+
+describe("open folder", () => {
+  test("opens only the folder sidenote recorded for the session, and only while it exists", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-folder-"));
+    await call("POST", "/api/sessions", { session_id: "o1", cwd: folder });
+    await call("POST", "/api/sessions", { session_id: "o2", cwd: join(folder, "gone") });
+    const open = (body: object, headers: Record<string, string> = {}) =>
+      call("POST", "/api/open-folder", body, headers);
+
+    assert.equal((await open({ session_id: "o1" })).status, 204);
+    assert.equal((await open({ session_id: "o1", cwd: "/etc" })).status, 204, "a path in the request is ignored");
+    assert.equal((await open({ session_id: "o2" })).status, 404, "the folder no longer exists");
+    assert.equal((await open({ session_id: "unknown" })).status, 404);
+    assert.equal((await open({ session_id: "../x" })).status, 400);
+    assert.equal((await open({ session_id: "o1" }, { "X-Review-Token": "wrong" })).status, 403);
+    assert.deepEqual(openedFolders, [folder, folder]);
+  });
+});
+
+describe("starting a session", () => {
+  test("opens a terminal in the folder sidenote recorded, and lists the new session right away", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-start-"));
+    await call("POST", "/api/sessions", { session_id: "st1", cwd: folder });
+    const start = (body: object) => call("POST", "/api/sessions/start", body);
+
+    const response = await start({ session_id: "st1", prompt: " --help me ", cwd: "/etc" });
+    assert.equal(response.status, 201);
+    const { session_id } = (await response.json()) as StartSessionResult;
+    assert.match(session_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(startedSessions.at(-1), { cwd: folder, sessionId: session_id, prompt: "--help me", name: "" });
+
+    const state = await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=${session_id}`));
+    assert.equal(state.session?.id, session_id, "selectable before Claude's first reply");
+    assert.equal(state.session?.cwd, folder);
+    assert.equal(state.can_start_sessions, true);
+
+    assert.equal((await start({ session_id: "st1" })).status, 201, "a prompt is optional");
+    assert.equal(startedSessions.at(-1)?.prompt, "");
+    assert.equal((await start({ session_id: "unknown" })).status, 404);
+    assert.equal((await start({ session_id: "st1", prompt: "x".repeat(MAX_PROMPT_CHARS + 1) })).status, 400);
+    assert.equal((await start({ session_id: "st1", prompt: 42 })).status, 400);
+  });
+
+  test("says why a terminal didn't open, and lists nothing then", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-start-"));
+    await call("POST", "/api/sessions", { session_id: "st2", cwd: folder });
+    const before = (await json<SessionListResult>(call("GET", "/api/sessions"))).sessions.length;
+    nextStartFails = "Not authorized to send Apple events to Terminal.";
+    try {
+      const response = await call("POST", "/api/sessions/start", { session_id: "st2" });
+      assert.equal(response.status, 502);
+      assert.match(((await response.json()) as ErrorResult).error, /Not authorized to send Apple events/);
+    } finally {
+      nextStartFails = null;
+    }
+    assert.equal((await json<SessionListResult>(call("GET", "/api/sessions"))).sessions.length, before);
+  });
+
+  test("is refused where there is no terminal to open", async () => {
+    const store = new Store();
+    store.touchSession("st3", "", mkdtempSync(join(tmpdir(), "sidenote-start-")));
+    const allowedHosts = new Set<string>();
+    const bare = createServer(
+      createApp({
+        store,
+        delivery: new Delivery(store),
+        launchCodes: new LaunchCodes(),
+        token: TOKEN,
+        allowedHosts,
+        webDir: tmpdir(),
+        openFolder: () => {},
+        startSession: null,
+        processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+      }),
+    );
+    await new Promise<void>((resolve) => bare.listen(0, "127.0.0.1", resolve));
+    const address = bare.address();
+    const bareBase = `127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    allowedHosts.add(bareBase);
+    try {
+      const headers = { "X-Review-Token": TOKEN, "Content-Type": "application/json" };
+      const state = await (await fetch(`http://${bareBase}/api/state?v=-1&s=st3`, { headers })).json();
+      assert.equal((state as StateSnapshot).can_start_sessions, false);
+      const response = await fetch(`http://${bareBase}/api/sessions/start`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ session_id: "st3" }),
+      });
+      assert.equal(response.status, 501);
+    } finally {
+      bare.close();
+    }
+  });
+});
+
+describe("renaming, ending and removing sessions", () => {
+  const sessions = async (folder: string) =>
+    (await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=&f=${folder}`))).sessions;
+
+  test("a name given in the window shows instead of the /rename name, until it is cleared", async () => {
+    await call("POST", "/api/responses", { session_id: "rn", session_name: "auth", cwd: "/x/rename", text: "Hi." });
+    assert.equal((await call("POST", "/api/sessions/rename", { session_id: "rn", label: "DM-1782" })).status, 204);
+    assert.deepEqual(
+      (await sessions("rename")).map((row) => [row.label, row.name]),
+      [["DM-1782", "auth"]],
+    );
+    await call("POST", "/api/sessions/rename", { session_id: "rn", label: "" });
+    assert.equal((await sessions("rename"))[0]?.label, "");
+    assert.equal((await call("POST", "/api/sessions/rename", { session_id: "nope", label: "x" })).status, 404);
+  });
+
+  test("ending a session stops the Claude process its hooks reported, and takes it off the list", async () => {
+    const claude = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
+    const exited = once(claude, "exit");
+    try {
+      const reported = { pid: claude.pid!, started: processInfo(claude.pid!)!.started };
+      await call("POST", "/api/responses", { session_id: "en", cwd: "/x/end", text: "Hi." });
+      assert.equal(
+        (await call("POST", "/api/sessions/end", { session_id: "en" })).status,
+        409,
+        "no hook has reported its process yet",
+      );
+      await call("POST", "/api/claim", { session_id: "en", claude_process: reported });
+      assert.equal((await sessions("end"))[0]?.process, "running");
+      assert.equal(
+        (await call("POST", "/api/sessions/forget", { session_id: "en" })).status,
+        409,
+        "a running session is ended, not just removed",
+      );
+
+      assert.equal((await call("POST", "/api/sessions/end", { session_id: "en" })).status, 204);
+      const [, signal] = await exited;
+      assert.equal(signal, "SIGTERM");
+      assert.deepEqual(await sessions("end"), []);
+    } finally {
+      claude.kill();
+    }
+  });
+
+  test("a session whose process ended shows as ended and can be removed; a reused pid is left alone", async () => {
+    const gone = spawn(process.execPath, ["-e", ""]);
+    const started = processInfo(gone.pid!)?.started ?? "0";
+    await once(gone, "exit");
+    await call("POST", "/api/responses", { session_id: "rm", cwd: "/x/remove", text: "Hi." });
+    await call("POST", "/api/claim", { session_id: "rm", claude_process: { pid: gone.pid, started } });
+    assert.equal((await sessions("remove"))[0]?.process, "ended");
+    assert.equal((await call("POST", "/api/sessions/forget", { session_id: "rm" })).status, 204);
+    assert.deepEqual(await sessions("remove"), []);
+    assert.equal((await call("POST", "/api/sessions/forget", { session_id: "rm" })).status, 404);
+
+    await call("POST", "/api/responses", { session_id: "rp", cwd: "/x/reused", text: "Hi." });
+    await call("POST", "/api/claim", { session_id: "rp", claude_process: { pid: process.pid, started: "long ago" } });
+    assert.equal((await call("POST", "/api/sessions/end", { session_id: "rp" })).status, 204);
+    assert.deepEqual(await sessions("reused"), [], "removed from the list, but the test process still runs");
+  });
+
+  test("a new session started with a name gets it in the window and in Claude", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-start-"));
+    await call("POST", "/api/sessions", { session_id: "nm", cwd: folder });
+    const response = await call("POST", "/api/sessions/start", { session_id: "nm", name: " DM-1782  OAuth " });
+    const { session_id } = (await response.json()) as StartSessionResult;
+    assert.equal(startedSessions.at(-1)?.name, "DM-1782 OAuth");
+    const state = await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=${session_id}`));
+    assert.equal(state.session?.label, "DM-1782 OAuth");
   });
 });

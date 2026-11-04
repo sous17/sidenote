@@ -18,9 +18,27 @@
         </svg>
         <span class="wordmark">sidenote</span>
       </div>
-      <div id="session-title" class="session-title" hidden>
+      <div id="window-title" class="window-title" hidden>
+        <button
+          id="panel-toggle"
+          class="panel-toggle"
+          type="button"
+          title="Sessions in this folder"
+          aria-label="Sessions in this folder"
+          aria-controls="session-panel"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+            <path d="M6 2.5v11" />
+          </svg>
+        </button>
+        <button id="open-folder" class="open-folder" type="button" hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M1.5 4a1 1 0 0 1 1-1h3.6l1.5 1.5h5.9a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" />
+          </svg>
+          <span id="folder-name" class="folder-name"></span>
+        </button>
         <span id="session-name" class="session-name"></span>
-        <span id="session-detail" class="session-detail"></span>
       </div>
       <div class="topbar-end">
         <button id="pending-summary" class="pending-summary" type="button" hidden></button>
@@ -47,6 +65,40 @@
         </div>
       </div>
     </header>
+
+    <aside id="session-panel" class="session-panel" aria-label="Sessions in this folder">
+      <div class="session-panel-head">
+        <h2>Sessions</h2>
+        <button
+          id="new-session"
+          class="new-session"
+          type="button"
+          title="Start a new session in this folder"
+          aria-label="Start a new session in this folder"
+          aria-expanded="false"
+          aria-controls="new-session-form"
+          hidden
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
+        </button>
+      </div>
+      <form id="new-session-form" class="new-session-form" hidden>
+        <input
+          id="new-session-name"
+          type="text"
+          maxlength="200"
+          placeholder="Name, e.g. DM-1782 OAuth fix (optional)"
+          aria-label="Name of the new session"
+        />
+        <textarea id="new-session-prompt" rows="3" placeholder="What should Claude do? (optional)"></textarea>
+        <div class="editor-actions">
+          <button type="submit" class="send-button">Start</button>
+          <button id="new-session-cancel" type="button" class="link-button">Cancel</button>
+        </div>
+        <p id="new-session-hint" class="new-session-hint"></p>
+      </form>
+      <nav id="session-list" class="session-list"></nav>
+    </aside>
 
     <div id="app" class="app">
       <main id="feed" class="feed" aria-label="All replies">

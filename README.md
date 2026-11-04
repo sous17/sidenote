@@ -31,9 +31,24 @@ note on its own, and each answer lands in that note's thread.
 - **Code changes as diffs.** When you ask Claude to see or change code, in a note or in the
   terminal, it explains each change and shows it as a diff, with the edited words highlighted.
   Answers that touch several files fold each file open from its header.
-- **One window per session.** Each Claude Code session gets its own window, titled with the
-  name you gave the session with `/rename` (or its project folder). Notes always go back to
-  the session they were written on.
+- **One window per folder, with its sessions in a list.** Each folder gets its own window, at an
+  address you can bookmark: `http://sidenote.localhost:<port>/<folder>`. The list on the left
+  holds every Claude Code session that ran in that folder, named with the name you gave it with
+  `/rename`, or its first message, with whether it is listening and how many notes are pending.
+  In a narrow window, or while a thread is open, the list folds away; the button left of the
+  folder name brings it back. Notes always go back to the session they were written on.
+- **Open folder.** Click the folder name to open the folder on your computer, with whatever app
+  your system opens folders with.
+- **Start a session from the window.** The **+** above the session list opens a terminal in the
+  folder, running Claude with the first prompt you type there, and selects the new session. Claude
+  asks for permissions in that terminal; after its first reply you can carry on from the window.
+  This needs GNOME Terminal on Linux, or Terminal on macOS, where the first start asks you to let
+  the app sidenote runs under control Terminal. A name you give it there also titles the terminal.
+- **Name, end and remove sessions.** The **⋯** on a session's row renames it, for example after a
+  ticket, with a name only sidenote shows. It also ends a running session, which stops its Claude
+  process even mid-turn and takes it off the list, and removes a session that has ended. A session
+  shows as ended once sidenote knows its process, which it learns from the session's next prompt
+  or reply.
 - **Light, dark, or system theme**, from the switch in the top right.
 - **Local only.** Everything stays on your machine. See [Security](#security).
 
@@ -66,8 +81,9 @@ Then restart Claude Code, or run `/reload-plugins`, and turn sidenote on:
 /sidenote:on
 ```
 
-Your browser opens this session's sidenote window. From now on, every reply Claude finishes
-shows up there. Other sessions get their own window, which opens with their first reply.
+Your browser opens the sidenote window of this session's folder. From now on, every reply Claude
+finishes shows up there. Other sessions in the same folder join its session list; a session in
+another folder opens that folder's window with its first reply.
 
 ### From a local copy
 
@@ -94,10 +110,10 @@ claude plugin install sidenote@sidenote
 
 | Command              | What it does                                                                     |
 | -------------------- | -------------------------------------------------------------------------------- |
-| `/sidenote:on`       | Turns sidenote on and opens this session's window                                |
+| `/sidenote:on`       | Turns sidenote on and opens its folder's window on this session                  |
 | `/sidenote:off`      | Turns it off for all sessions. Pending notes are kept for next time              |
-| `/sidenote:restart`  | Restarts the server and opens this session's window. Pending notes are kept      |
-| `/sidenote:open`     | Reopens this session's window, for example after closing the tab                 |
+| `/sidenote:restart`  | Restarts the server and opens the window on this session. Pending notes are kept |
+| `/sidenote:open`     | Reopens the window on this session, for example after closing it                 |
 | `/sidenote:status`   | Shows this session's window address, replies, pending notes, and Send now status |
 | `/sidenote:backfill` | Imports this session's earlier replies, so you can leave notes on those too      |
 
@@ -125,11 +141,19 @@ turned on, or the plugin installed, after that session's last reply. Send any pr
 session; once Claude replies, the button turns on. Saved notes still go with your next prompt.
 
 **Nothing appears in the window.** Run `/sidenote:status` in that session. If it says
-`enabled: no`, run `/sidenote:on`. If the tab says "Stale tab" or "This link has expired",
-run `/sidenote:open`: links to a window work once, and a restart of sidenote retires old tabs.
+`enabled: no`, run `/sidenote:on`. If the tab says "Stale tab" or "Not connected yet", run
+`/sidenote:open` once: a restart of sidenote retires the browser's token, and the window that
+opens hands it a new one, which every open sidenote tab picks up.
 
-**The window shows the folder name, not the session name.** Name the session with `/rename`;
-the window picks up the new name with Claude's next reply.
+**The list shows a session's first message, not its name.** Rename it from its **⋯**, or name
+it with `/rename` in Claude, which the list picks up with Claude's next reply.
+
+**End session is greyed out.** sidenote knows a session's process only once one of its hooks ran
+since sidenote started. Send a prompt in that session, or wait for its next reply.
+
+**Two folders share a window.** A window is named after the last part of the folder's path, so
+`~/work/shop` and `~/play/shop` share one. Hover over the folder name to see the selected
+session's full path.
 
 **Hooks can't find Node.** Hooks don't always get your shell's `PATH`, for example with nvm
 when Claude Code isn't started from a terminal. sidenote also looks in the usual Homebrew,
@@ -166,16 +190,29 @@ Anyone who can call sidenote's API can put words in front of your Claude session
 locked down:
 
 - **Local only.** The server listens on `127.0.0.1`, and refuses requests whose `Host` header
-  isn't its own address, which blocks DNS-rebinding attacks.
+  isn't one of its own addresses (`127.0.0.1`, `localhost` or `sidenote.localhost`, each with
+  its port), which blocks DNS-rebinding attacks.
 - **A token for every call.** A random 256-bit token, created on each start, is stored in
   `~/.sidenote/server.json`, readable only by you. It travels in a custom header, which other
   websites can't send to the server: the server never approves a cross-origin request.
 - **No token in URLs.** The CLI opens a window with a single-use launch code in the URL
   fragment, which browsers never send over the network. The page trades the code for the token
-  once and keeps it in the tab's session storage, so browser history, synced history and
-  `ps` only ever see a spent code that expires within two minutes anyway.
+  once, so browser history, synced history and `ps` only ever see a spent code that expires
+  within two minutes anyway. The page keeps the token in local storage, which only pages from
+  sidenote's own address can read, so a window's address works when typed or bookmarked. The
+  token stops working when the server restarts, since each start makes a new one.
 - **Validated input.** Every request body is parsed against a fixed shape, with size limits,
   before it reaches the store. Session ids must look like ids.
+- **Recorded folders only.** Open folder and the **+** name a session, not a path: the server
+  opens the folder it recorded for that session, or starts Claude there, and nothing else.
+- **No shell for your prompt.** A new session's first prompt reaches `claude` as one argument
+  after `--`, so it can't add options, and on Linux it never passes through a shell. On macOS,
+  Terminal runs the command through your shell, so AppleScript's `quoted form of` quotes the
+  folder and the prompt first.
+- **Only Claude's own processes.** Ending a session stops the process the session's own hooks
+  reported as its Claude, and only while that pid still belongs to the process that started at the
+  reported time. A request never names a pid. Beyond talking to running sessions, the token can
+  open the folders sidenote knows, start sessions in them, and end the sessions it knows.
 - **Inert replies.** Raw HTML in a reply is shown as text. The rendered markdown is sanitized
   with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own
   controls. The page's content security policy allows no inline or remote scripts, and every

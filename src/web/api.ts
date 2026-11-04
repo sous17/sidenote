@@ -8,6 +8,7 @@ import {
   type PromptResult,
   type RedeemResult,
   type SendResult,
+  type StartSessionResult,
   type StateSnapshot,
 } from "../shared/types.ts";
 
@@ -38,9 +39,10 @@ async function request<T>(method: string, path: string, token: string | null, bo
 }
 
 /**
- * The API token for this tab. A newly opened window carries a single-use launch code in its URL
- * fragment; it is traded for the token once, the fragment is removed, and the token is kept in
- * sessionStorage, which belongs to this tab and this origin only. A reload finds it there.
+ * The API token. A newly opened window carries a single-use launch code in its URL fragment; it is
+ * traded for the token once, the fragment is removed, and the token is kept in localStorage, which
+ * belongs to this origin only. Every tab on a window's address finds it there, so the address can
+ * be typed or bookmarked, until the server restarts with a new token.
  */
 export async function obtainToken(): Promise<string | null> {
   const fragment = new URLSearchParams(location.hash.slice(1));
@@ -54,31 +56,53 @@ export async function obtainToken(): Promise<string | null> {
       return result.token;
     }
   }
+  return storedToken();
+}
+
+/** The token the last opened window stored for every tab, or null. */
+export function storedToken(): string | null {
   try {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    return localStorage.getItem(TOKEN_STORAGE_KEY);
   } catch {
     return null;
   }
 }
 
+/** Calls back when another tab stores a token, after /sidenote:open. */
+export function onTokenStored(callback: () => void): void {
+  window.addEventListener("storage", (event) => {
+    if (event.key === TOKEN_STORAGE_KEY && event.newValue) callback();
+  });
+}
+
 function writeToken(token: string): void {
   try {
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
   } catch {
     // Storage blocked: this page load still works, a reload will need /sidenote:open.
   }
 }
 
 export class Api {
-  readonly #token: string;
+  #token: string;
 
   constructor(token: string) {
     this.#token = token;
   }
 
-  /** The session's state, or null when nothing changed since knownVersion. */
-  state(knownVersion: number, sessionId: string): Promise<StateSnapshot | null> {
-    return request("GET", `/api/state?v=${knownVersion}&s=${encodeURIComponent(sessionId)}`, this.#token);
+  /** Switches to a newer stored token, once a restarted server has refused this one. */
+  adoptStoredToken(): boolean {
+    const stored = storedToken();
+    if (!stored || stored === this.#token) return false;
+    this.#token = stored;
+    return true;
+  }
+
+  /** The window's state, or null when nothing changed since knownVersion. */
+  state(knownVersion: number, sessionId: string, folder: string): Promise<StateSnapshot | null> {
+    const query = new URLSearchParams({ v: String(knownVersion), s: sessionId });
+    if (folder) query.set("f", folder);
+    return request("GET", `/api/state?${query}`, this.#token);
   }
 
   addNote(note: NewNoteRequest): Promise<Note | null> {
@@ -92,6 +116,31 @@ export class Api {
   /** Sends a message to the session's Claude, as if it were typed in the terminal. */
   prompt(sessionId: string, text: string): Promise<PromptResult | null> {
     return request("POST", "/api/prompt", this.#token, { session_id: sessionId, text });
+  }
+
+  /** Starts a new session in a terminal, in the folder of the session given. */
+  startSession(sessionId: string, prompt: string, name: string): Promise<StartSessionResult | null> {
+    return request("POST", "/api/sessions/start", this.#token, { session_id: sessionId, prompt, name });
+  }
+
+  /** Names the session in the window; "" removes the name. */
+  renameSession(sessionId: string, label: string): Promise<null> {
+    return request("POST", "/api/sessions/rename", this.#token, { session_id: sessionId, label });
+  }
+
+  /** Ends the session's Claude process and removes the session from the list. */
+  endSession(sessionId: string): Promise<null> {
+    return request("POST", "/api/sessions/end", this.#token, { session_id: sessionId });
+  }
+
+  /** Removes a session that no longer runs from the list. */
+  forgetSession(sessionId: string): Promise<null> {
+    return request("POST", "/api/sessions/forget", this.#token, { session_id: sessionId });
+  }
+
+  /** Opens the session's folder on the desktop. */
+  openFolder(sessionId: string): Promise<null> {
+    return request("POST", "/api/open-folder", this.#token, { session_id: sessionId });
   }
 
   send(sessionId: string): Promise<SendResult | null> {

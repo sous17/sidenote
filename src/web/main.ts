@@ -1,9 +1,13 @@
-// The sidenote page: one Claude Code session's replies, with notes in the margin.
-import { Api, ApiError, obtainToken } from "./api.ts";
-import { byId, projectName } from "./dom.ts";
+// The sidenote page: a folder's Claude Code sessions in a list, the selected one's replies with
+// notes in the margin.
+import { folderFromPath, folderPath } from "../shared/folders.ts";
+import { Api, ApiError, obtainToken, onTokenStored } from "./api.ts";
+import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
-import { Model } from "./model.ts";
+import { Model, sessionLabel } from "./model.ts";
+import { NewSessionForm } from "./newsession.ts";
+import { SessionPanel, rememberSession, rememberedSession } from "./panel.ts";
 import { PromptBox } from "./prompt.ts";
 import { installNoteStarters } from "./selection.ts";
 import { Sending } from "./sending.ts";
@@ -29,35 +33,48 @@ function showUnavailable(title: string, text: string): void {
   byId("empty-help").hidden = true;
 }
 
-/** Top left: the session's /rename name, or its folder; then folder and short id. */
-function renderSessionTitle(model: Model): void {
-  const { session } = model.snapshot;
-  const folder = session ? projectName(session.cwd) : "";
-  const shortId = model.sessionId.slice(0, 8);
-  const name = session?.name || folder || `Session ${shortId}`;
-  byId("session-title").hidden = false;
-  byId("session-name").textContent = name;
-  byId("session-detail").textContent = session?.name && folder ? `${folder} · ${shortId}` : shortId;
-  byId("session-title").title = `Session ${model.sessionId}${session?.cwd ? `\n${session.cwd}` : ""}`;
-  document.title = `${name} · sidenote`;
+/** Top left: the window's folder, which opens it on a click, and the selected session. */
+function renderWindowTitle(model: Model, panel: SessionPanel, newSession: NewSessionForm): void {
+  const { session, folder, sessions, can_start_sessions } = model.snapshot;
+  byId("window-title").hidden = false;
+  byId("folder-name").textContent = folder;
+  const openFolder = byId<HTMLButtonElement>("open-folder");
+  openFolder.hidden = !folder;
+  openFolder.disabled = !session?.cwd;
+  openFolder.title = session?.cwd ? `Open ${session.cwd}` : "";
+  const selected = sessions.find((row) => row.id === model.sessionId);
+  byId("session-name").textContent = selected ? sessionLabel(selected) : "";
+  panel.render(sessions, model.sessionId);
+  newSession.render(can_start_sessions, session?.cwd ?? "");
+  document.title = folder ? `${folder} · sidenote` : "sidenote";
+}
+
+/** Keeps the address on the folder, so it can be bookmarked. A session with no known folder keeps ?s=. */
+function syncAddress(model: Model): void {
+  const { folder } = model.snapshot;
+  const address = folder ? folderPath(folder) : `/?s=${encodeURIComponent(model.sessionId)}`;
+  if (`${location.pathname}${location.search}` !== address) history.replaceState(null, "", address + location.hash);
 }
 
 async function start(): Promise<void> {
-  const sessionId = new URLSearchParams(location.search).get("s");
-  if (!sessionId) {
+  // Links from the CLI name the session; a typed or bookmarked address names only the folder.
+  let folder = folderFromPath(location.pathname);
+  const sessionId = new URLSearchParams(location.search).get("s") ?? rememberedSession(folder) ?? "";
+  if (!folder && !sessionId) {
     showUnavailable(
       "Open this window from a Claude Code session",
-      "Each session has its own sidenote window. Run /sidenote:open in the session you want to see.",
+      "Each folder has its own sidenote window. Run /sidenote:open in a session to open its folder's window.",
     );
     return;
   }
   const token = await obtainToken().catch(() => null);
   if (!token) {
     showUnavailable(
-      "This link has expired",
-      "Links to a sidenote window work once. Run /sidenote:open in the session to open it again.",
+      "Not connected yet",
+      "Run /sidenote:open in a Claude Code session once. After that, sidenote addresses work in any tab of this browser.",
     );
     setConnection("error", "Run /sidenote:open");
+    onTokenStored(() => location.reload());
     return;
   }
 
@@ -67,14 +84,22 @@ async function start(): Promise<void> {
   const threadFromUrl = Number(/^#n(\d+)$/.exec(location.hash)?.[1]) || null;
 
   const refresh = async (): Promise<void> => {
+    const asked = model.sessionId;
     try {
-      const next = await api.state(model.snapshot.version, sessionId);
+      const next = await api.state(model.snapshot.version, asked, folder);
+      // Another tab was selected while this was on its way; its own refresh brings its state.
+      if (model.sessionId !== asked) return;
       if (next) {
         model.snapshot = next;
+        // The server picks the folder's latest session when the page names none, or one it forgot.
+        if (next.session) model.sessionId = next.session.id;
+        folder = next.folder || folder;
         render();
       }
       setConnection("live", "Live");
     } catch (error) {
+      // A restarted server has a new token; a window opened since then stored it for every tab.
+      if (error instanceof ApiError && error.status === 403 && api.adoptStoredToken()) return;
       if (error instanceof ApiError && error.status === 403) setConnection("error", "Stale tab: run /sidenote:open");
       else if (error instanceof ApiError) setConnection("error", `Server error ${error.status}`);
       else setConnection("error", "Disconnected: is sidenote on?");
@@ -133,9 +158,67 @@ async function start(): Promise<void> {
     close: byId<HTMLButtonElement>("pane-close"),
   });
 
+  const selectSession = (selected: string): void => {
+    // Don't throw away a half-written note or thread reply: each takes the focus instead.
+    if (selected === model.sessionId || !editor.release() || !thread.release()) return;
+    model.select(selected);
+    feed.reset();
+    panel.render(model.snapshot.sessions, selected);
+    void refresh();
+  };
+  const panel: SessionPanel = new SessionPanel({
+    panel: byId("session-panel"),
+    list: byId("session-list"),
+    toggle: byId<HTMLButtonElement>("panel-toggle"),
+    app: byId("app"),
+    actions: {
+      select: selectSession,
+      rename: async (sessionId, label) => {
+        await api.renameSession(sessionId, label);
+        await refresh();
+      },
+      end: async (sessionId) => {
+        await api.endSession(sessionId);
+        await refresh();
+      },
+      remove: async (sessionId) => {
+        await api.forgetSession(sessionId);
+        await refresh();
+      },
+    },
+  });
+  const newSession = new NewSessionForm({
+    button: byId<HTMLButtonElement>("new-session"),
+    form: byId<HTMLFormElement>("new-session-form"),
+    prompt: byId<HTMLTextAreaElement>("new-session-prompt"),
+    name: byId<HTMLInputElement>("new-session-name"),
+    cancel: byId<HTMLButtonElement>("new-session-cancel"),
+    hint: byId("new-session-hint"),
+    start: async (prompt, name) => {
+      const started = await api.startSession(model.sessionId, prompt, name);
+      if (started) selectSession(started.session_id);
+    },
+  });
+
   let rendered = false;
+  let shownSessionId = "";
   function render(): void {
-    renderSessionTitle(model);
+    if (!model.snapshot.session) {
+      if (folder) {
+        showUnavailable(
+          `Nothing from ${folder} yet`,
+          `This window shows the Claude Code sessions in a folder named ${folder}. Run /sidenote:open in one of them.`,
+        );
+      }
+    } else {
+      syncAddress(model);
+      if (model.sessionId !== shownSessionId) {
+        shownSessionId = model.sessionId;
+        rememberSession(folder, model.sessionId);
+        promptBox.load();
+      }
+    }
+    renderWindowTitle(model, panel, newSession);
     feed.render();
     sending.render();
     promptBox.render();
@@ -153,6 +236,9 @@ async function start(): Promise<void> {
     },
   });
   byId("pending-summary").addEventListener("click", () => feed.showFirstPending());
+  byId("open-folder").addEventListener("click", () => {
+    api.openFolder(model.sessionId).catch(showError);
+  });
   document.addEventListener("keydown", (event) => {
     if ((event.target as Element | null)?.closest?.("textarea, input, select")) return;
     if (event.key === "Escape" && thread.isOpen) thread.close();

@@ -100,3 +100,13 @@ test("a session's messages are forgotten with it", () => {
   assert.equal(store.sessionContent(SESSION).messages.length, 0);
   assert.equal(store.sessionContent("not-seen-yet").messages.length, 0);
 });
+
+test("names given in the window are kept, and stores from before them load with none", () => {
+  const old = migrate({ sessions: { a: { name: "auth", cwd: "/w", last_active: 1 } } });
+  assert.equal(old.sessions.get("a")?.label, "");
+  const file = join(mkdtempSync(join(tmpdir(), "sidenote-store-")), "store.json");
+  const store = new Store({ file });
+  store.touchSession(SESSION, "", "/w");
+  store.renameSession(SESSION, "DM-1782 OAuth fix");
+  assert.equal(new Store({ file }).session(SESSION)?.label, "DM-1782 OAuth fix");
+});

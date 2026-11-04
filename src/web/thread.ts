@@ -90,6 +90,12 @@ export class ThreadPane {
     this.#feed.revealNote(rootId);
   }
 
+  /** Closes the pane unless a reply is half-written in it, which gets the focus instead. */
+  release(): boolean {
+    if (this.isOpen) this.close();
+    return !this.isOpen;
+  }
+
   /** Closes the pane, unless a reply is half-written and force is false. */
   close(force = false): void {
     if (!force && this.#text.value.trim()) {

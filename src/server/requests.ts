@@ -2,15 +2,20 @@
 // throws BadRequest. Handlers never touch raw input.
 import { MAX_ACTIVITY_CHARS, MAX_PROGRESS_DELTA_CHARS } from "../shared/tools.ts";
 import {
+  MAX_PROMPT_CHARS,
   SESSION_ID_PATTERN,
   type ActivityRequest,
   type ClaimRequest,
+  type ClaudeProcess,
   type ProgressRequest,
   type PromptRequest,
+  type StartSessionRequest,
   type EpochSeconds,
   type NewResponseRequest,
   type RedeemRequest,
+  type RenameSessionRequest,
   type SendRequest,
+  type SessionRequest,
   type TouchSessionRequest,
   type WaiterRequest,
 } from "../shared/types.ts";
@@ -77,8 +82,11 @@ function nonEmpty(value: string, key: string): string {
   return value;
 }
 
-export function parseNewResponse(input: unknown): Required<Omit<NewResponseRequest, "created_at">> & {
+export function parseNewResponse(input: unknown): Required<
+  Omit<NewResponseRequest, "created_at" | "claude_process">
+> & {
   created_at: EpochSeconds | undefined;
+  claude_process: ClaudeProcess | undefined;
 } {
   const body = asObject(input);
   const createdAt = body["created_at"];
@@ -91,6 +99,7 @@ export function parseNewResponse(input: unknown): Required<Omit<NewResponseReque
     cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
     text: string(body, "text", LIMITS.replyText),
     created_at: createdAt,
+    claude_process: optionalProcess(body),
   };
 }
 
@@ -126,7 +135,10 @@ export function parseClaim(input: unknown): ClaimRequest {
   const body = asObject(input);
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
-  return prompt === undefined ? { session_id } : { session_id, prompt };
+  const claim: ClaimRequest = prompt === undefined ? { session_id } : { session_id, prompt };
+  const claudeProcess = optionalProcess(body);
+  if (claudeProcess) claim.claude_process = claudeProcess;
+  return claim;
 }
 
 export function parseActivity(input: unknown): ActivityRequest {
@@ -149,10 +161,13 @@ export function parseProgress(input: unknown): ProgressRequest {
 
 export function parseWaiter(input: unknown): WaiterRequest {
   const body = asObject(input);
-  return {
+  const waiter: WaiterRequest = {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     waiter_id: matching(body, "waiter_id", WAITER_ID_PATTERN),
   };
+  const claudeProcess = optionalProcess(body);
+  if (claudeProcess) waiter.claude_process = claudeProcess;
+  return waiter;
 }
 
 export function parseSend(input: unknown): SendRequest {
@@ -172,5 +187,34 @@ export function parsePrompt(input: unknown): PromptRequest {
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     text: nonEmpty(string(body, "text", LIMITS.message), "text").trim(),
+  };
+}
+
+export function parseSessionRequest(input: unknown): SessionRequest {
+  return { session_id: matching(asObject(input), "session_id", SESSION_ID_PATTERN) };
+}
+
+export function parseRename(input: unknown): RenameSessionRequest {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    label: string(body, "label", LIMITS.sessionName).replace(/\s+/g, " ").trim(),
+  };
+}
+
+/** The Claude process a hook reports, if it found one. */
+function optionalProcess(body: JsonObject): ClaudeProcess | undefined {
+  const value = body["claude_process"];
+  if (value === undefined || value === null) return undefined;
+  const fields = asObject(value);
+  return { pid: integer(fields, "pid", 2), started: nonEmpty(string(fields, "started", 64), "started") };
+}
+
+export function parseStartSession(input: unknown): Required<StartSessionRequest> {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim(),
+    name: (optionalString(body, "name", LIMITS.sessionName) ?? "").replace(/\s+/g, " ").trim(),
   };
 }

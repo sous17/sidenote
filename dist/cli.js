@@ -17,16 +17,34 @@ var paths = {
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
 
+// src/shared/folders.ts
+function folderName(cwd) {
+  return cwd.split("/").filter(Boolean).pop() ?? "";
+}
+function folderPath(folder) {
+  return folder ? `/${encodeURIComponent(folder)}` : "/";
+}
+
 // src/cli/client.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join as join2 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+// src/node/open.ts
+import { spawn } from "node:child_process";
+function openWithSystem(target, onError) {
+  const [command2, args] = process.platform === "darwin" ? ["open", [target]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", target]] : ["xdg-open", [target]];
+  const child = spawn(command2, args, { detached: true, stdio: "ignore" });
+  child.on("error", onError);
+  child.unref();
+}
+
 // src/shared/types.ts
 var TOKEN_HEADER = "X-Review-Token";
 var LAUNCH_FRAGMENT_KEY = "launch";
+var PAGE_HOST = "sidenote.localhost";
 
 // src/cli/client.ts
 var SERVER_START_TIMEOUT_MS = 1e4;
@@ -72,13 +90,20 @@ var SidenoteClient = class _SidenoteClient {
     return this.#request("POST", path, body);
   }
   /**
+   * The address of the window for a folder. Only browsers get the page host: Node may resolve it
+   * to ::1, where the server doesn't listen, so the CLI's own requests stay on 127.0.0.1.
+   */
+  windowAddress(cwd) {
+    return `http://${PAGE_HOST}:${this.#server.port}${folderPath(folderName(cwd))}`;
+  }
+  /**
    * A one-time link to a session's window. The launch code sits in the URL fragment, which the
    * browser never sends to the server; the page trades it for the token once.
    */
-  async windowUrl(sessionId) {
+  async windowUrl(sessionId, cwd = "") {
     const { code } = await this.post("/api/launch", {});
     const query = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
-    return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
+    return `${this.windowAddress(cwd)}${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
   }
   async #request(method, path, body) {
     const response = await fetch(this.origin + path, {
@@ -111,7 +136,7 @@ function serverPid() {
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
   const log = openSync(paths.logFile(), "a", 384);
-  spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
+  spawn2(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const client = await SidenoteClient.connect();
@@ -121,16 +146,59 @@ async function startServer() {
   throw new Error(`the sidenote server did not start; see ${paths.logFile()}`);
 }
 function openBrowser(url) {
-  const [command2, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
-  const child = spawn(command2, args, { detached: true, stdio: "ignore" });
-  child.on("error", () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
-  child.unref();
+  openWithSystem(url, () => console.error(`Couldn't open a browser. Open this link instead (valid once): ${url}`));
 }
 
 // src/cli/hooks.ts
 import { randomBytes } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
+
+// src/node/process.ts
+import { spawnSync } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+var MAX_DEPTH = 8;
+function processInfo(pid, platform = process.platform) {
+  try {
+    return platform === "linux" ? linuxInfo(pid) : platform === "darwin" ? psInfo(pid) : null;
+  } catch {
+    return null;
+  }
+}
+function linuxInfo(pid) {
+  const stat = readFileSync2(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const fields = stat.slice(close + 2).split(" ");
+  return {
+    ppid: Number(fields[1]),
+    started: fields[19],
+    name: stat.slice(stat.indexOf("(") + 1, close),
+    args: readFileSync2(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+  };
+}
+function psInfo(pid) {
+  const ps = (field) => spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  const ppid = ps("ppid");
+  if (!ppid) return null;
+  return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
+}
+function isClaude(info) {
+  const base = (path) => path.split("/").pop() ?? "";
+  return base(info.name) === "claude" || base(info.args.split(" ")[0] ?? "") === "claude" || /@anthropic-ai\/claude-code\/cli\.js/.test(info.args);
+}
+function findClaude(pid, info) {
+  let current = pid;
+  for (let depth = 0; depth < MAX_DEPTH && current > 1; depth += 1) {
+    const found = info(current);
+    if (!found) return null;
+    if (isClaude(found)) return { pid: current, started: found.started };
+    current = found.ppid;
+  }
+  return null;
+}
+function claudeProcess() {
+  return findClaude(process.ppid, (pid) => processInfo(pid));
+}
 
 // src/cli/format.ts
 var MAX_CONTEXT_CHARS = 9500;
@@ -265,7 +333,7 @@ function firstLine(text) {
 }
 
 // src/cli/transcript.ts
-import { existsSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync, readdirSync, readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 var QUESTION_TOOLS = /* @__PURE__ */ new Set(["AskUserQuestion", "ExitPlanMode"]);
 function findTranscript(transcriptsDir, sessionId) {
@@ -337,7 +405,7 @@ function cwdFromTranscript(transcript) {
   return "";
 }
 function readTranscript(file) {
-  return readFileSync2(file, "utf8");
+  return readFileSync3(file, "utf8");
 }
 function isUserPrompt(entry) {
   if (entry.isMeta) return false;
@@ -349,10 +417,14 @@ function isUserPrompt(entry) {
 // src/cli/hooks.ts
 var WAITER_POLL_MS = 1e3;
 var MAX_SHOWN_PROMPT_CHARS = 1e5;
+function reportedProcess() {
+  const found = claudeProcess();
+  return found ? { claude_process: found } : {};
+}
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
-    return sessionNameFromTranscript(readFileSync3(transcriptPath, "utf8"));
+    return sessionNameFromTranscript(readFileSync4(transcriptPath, "utf8"));
   } catch {
     return "";
   }
@@ -366,10 +438,11 @@ async function hookStop(input) {
     session_id: sessionId,
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
-    text
+    text,
+    ...reportedProcess()
   };
   const result = await client.post("/api/responses", reply);
-  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
 }
 async function hookSession() {
   const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
@@ -379,7 +452,7 @@ async function hookSession() {
 async function hookPrompt(input) {
   const client = await SidenoteClient.connect();
   if (!client || !input.session_id) return;
-  const claim = { session_id: input.session_id };
+  const claim = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post("/api/claim", claim);
   if (!comments.length && prompt === void 0) return;
@@ -414,7 +487,11 @@ async function hookWait(input) {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
-  const waiter = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  const waiter = {
+    session_id: input.session_id,
+    waiter_id: randomBytes(8).toString("hex"),
+    ...reportedProcess()
+  };
   await client.post("/api/waiters", waiter);
   for (; ; ) {
     await sleep2(WAITER_POLL_MS);
@@ -488,10 +565,11 @@ async function touchSession(client, sessionId) {
 async function openWindow(client, requested) {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? await latestSession(client);
-  openBrowser(await client.windowUrl(sessionId));
   const { session } = await fetchState(client, sessionId);
-  const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
-  return `Opened the ${label} window in your browser (${client.origin}).`;
+  const cwd = session?.cwd ?? "";
+  openBrowser(await client.windowUrl(sessionId, cwd));
+  const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
+  return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
 }
 function stopServer() {
   const pid = serverPid();
@@ -560,6 +638,7 @@ var commands = {
       return;
     }
     console.log(`session: ${session.name || "(unnamed)"} \xB7 ${session.id.slice(0, 8)} \xB7 ${session.cwd}`);
+    console.log(`window:  ${client.windowAddress(session.cwd)}`);
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);

@@ -40,6 +40,12 @@ Anyone who can call the API can put text in front of the user's agent, so:
   never `innerHTML`.
 - Keep the content security policy free of inline and remote scripts, and keep the server bound
   to `127.0.0.1` with its `Host` check.
+- Anything that starts or stops a process takes a session id, never a path or a pid from the
+  request. Starting uses the folder recorded for the session; stopping uses the Claude process the
+  session's hooks reported, and checks its start time first, so a reused pid is never signalled
+  (`src/node/process.ts`). A new session's prompt goes to `claude` as one argument after `--`, its
+  name inside `--name=`; never build a shell command from them, except on macOS, where
+  AppleScript's `quoted form of` quotes them (`src/node/terminal.ts`).
 
 ## Hooks
 
@@ -52,10 +58,13 @@ Anyone who can call the API can put text in front of the user's agent, so:
 
 These were settled with the maintainer. Don't change them without asking.
 
-- **One window per agent session.** No all-sessions view or session picker: the top left shows
-  the session's name (`/rename`), or its folder.
+- **One window per folder, its sessions in a list on the left.** The window's address names the
+  folder (`/<folder>`, the last segment of the session's cwd), so it can be bookmarked. The list
+  names each session by the name given in the window, else `/rename`, else its first message. It
+  docks only where the feed keeps
+  room for notes in the margin, and folds away while a thread is open. No view across folders.
 - **Notes sit in the margin beside the reply.** Clicking a note splits the screen into two halves,
-  the feed and that note's thread. Never three panes.
+  the feed and that note's thread. Never three panes: the session list folds away meanwhile.
 - **No duplicated text.** The agent answers each note under a `**↳ Re: note N**` marker; those
   sections live only in the note's thread. A reply that only answers notes shows as a one-line
   row in the feed.

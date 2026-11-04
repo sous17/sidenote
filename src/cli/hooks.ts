@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type {
   ActivityRequest,
   ClaimRequest,
+  ClaudeProcess,
   ProgressRequest,
   ClaimResult,
   NewResponseRequest,
@@ -12,6 +13,7 @@ import type {
   WaiterPollResult,
   WaiterRequest,
 } from "../shared/types.ts";
+import { claudeProcess } from "../node/process.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "./format.ts";
 import { MAX_PROGRESS_DELTA_CHARS, toolActivity } from "../shared/tools.ts";
@@ -40,6 +42,12 @@ export interface HookInput {
   delta?: string;
 }
 
+/** The Claude process this hook runs under, so the window can end its session. */
+function reportedProcess(): { claude_process?: ClaudeProcess } {
+  const found = claudeProcess();
+  return found ? { claude_process: found } : {};
+}
+
 /** The session's /rename name, or "" if the transcript can't be read or has none. */
 function sessionName(transcriptPath: string | undefined): string {
   if (!transcriptPath) return "";
@@ -61,9 +69,10 @@ export async function hookStop(input: HookInput): Promise<void> {
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
     text,
+    ...reportedProcess(),
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
-  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
 }
 
 /** SessionStart: tells Claude how to show code changes so the window can draw them as diffs. */
@@ -76,7 +85,7 @@ export async function hookSession(): Promise<void> {
 export async function hookPrompt(input: HookInput): Promise<void> {
   const client = await SidenoteClient.connect();
   if (!client || !input.session_id) return;
-  const claim: ClaimRequest = { session_id: input.session_id };
+  const claim: ClaimRequest = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post<ClaimResult>("/api/claim", claim);
   if (!comments.length && prompt === undefined) return;
@@ -128,7 +137,11 @@ export async function hookWait(input: HookInput): Promise<void> {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
-  const waiter: WaiterRequest = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  const waiter: WaiterRequest = {
+    session_id: input.session_id,
+    waiter_id: randomBytes(8).toString("hex"),
+    ...reportedProcess(),
+  };
   await client.post("/api/waiters", waiter);
   for (;;) {
     await sleep(WAITER_POLL_MS);
