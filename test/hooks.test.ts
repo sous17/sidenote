@@ -41,14 +41,20 @@ interface Run {
 }
 
 /** Runs the launcher; extra holds variables to set, such as a terminal's. */
-function run(args: string[], stdin = "", extra: Record<string, string> = {}): Promise<Run> {
+function hookEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
     PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
     SIDENOTE_NODE: process.execPath,
   };
-  const child = spawn(launcher, args, { env: { ...env, ...extra } });
+  // Run from inside sidenote chat, this would make every hook stand aside.
+  delete env["SIDENOTE_HEADLESS"];
+  return env;
+}
+
+function run(args: string[], stdin = "", extra: Record<string, string> = {}): Promise<Run> {
+  const child = spawn(launcher, args, { env: { ...hookEnv(), ...extra } });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
@@ -317,12 +323,7 @@ test("a hook reports the Claude process it runs under, so the window can end the
     spawnSync(process.argv[1], ["hook-prompt"], { input: process.argv[2], stdio: ["pipe", "ignore", "ignore"] });
     process.stdout.write(String(process.pid));`;
   const child = spawn(claude, ["-e", runHook, launcher, hookInput({ prompt: "Go" })], {
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
-      SIDENOTE_NODE: process.execPath,
-    },
+    env: hookEnv(),
   });
   let pid = "";
   child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
@@ -466,12 +467,7 @@ test("a waiter stops when its Claude dies, so it can't keep the server running",
     process.stdout.write(String(waiter.pid));
     setTimeout(() => process.exit(0), 1500);`;
   const child = spawn(claude, ["-e", leaveWaiter, launcher, hookInput({ session_id: "orphan" })], {
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
-      SIDENOTE_NODE: process.execPath,
-    },
+    env: hookEnv(),
   });
   let pid = "";
   child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
