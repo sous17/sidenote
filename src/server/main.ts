@@ -12,6 +12,7 @@ import { Delivery } from "./delivery.ts";
 import { SessionHost } from "./host.ts";
 import { createApp } from "./http.ts";
 import { LaunchCodes } from "./launch.ts";
+import { acquireServerLock, releaseServerLock } from "./lock.ts";
 import { Store } from "./store.ts";
 
 // Bundled to dist/server.js, next to the page files in dist/web.
@@ -55,6 +56,9 @@ function removeServerFile(): void {
 
 async function main(): Promise<void> {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
+  // Whoever started this one finds the running server through server.json.
+  if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
+  process.on("exit", () => releaseServerLock(paths.lockFile()));
   const store = new Store({ file: paths.storeFile() });
   const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
   const token = randomBytes(32).toString("base64url");

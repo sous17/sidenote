@@ -1,6 +1,6 @@
 // Talking to the sidenote server from the CLI and the hooks.
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -114,7 +114,8 @@ export function serverPid(): number | null {
 
 async function startServer(): Promise<SidenoteClient> {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
-  rmSync(paths.serverFile(), { force: true });
+  // Leave server.json alone: another process may have just started the server. A stale one fails
+  // the health check below until the new server replaces it.
   const log = openSync(paths.logFile(), "a", 0o600);
   spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;

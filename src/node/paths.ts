@@ -9,6 +9,7 @@ export const paths = {
   stateDir,
   storeFile: (): string => join(stateDir(), "store.json"),
   serverFile: (): string => join(stateDir(), "server.json"),
+  lockFile: (): string => join(stateDir(), "server.lock"),
   portFile: (): string => join(stateDir(), "port"),
   logFile: (): string => join(stateDir(), "server.log"),
   enabledFlag: (): string => join(stateDir(), "enabled"),

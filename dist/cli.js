@@ -25,6 +25,7 @@ var init_paths = __esm({
       stateDir,
       storeFile: () => join(stateDir(), "store.json"),
       serverFile: () => join(stateDir(), "server.json"),
+      lockFile: () => join(stateDir(), "server.lock"),
       portFile: () => join(stateDir(), "port"),
       logFile: () => join(stateDir(), "server.log"),
       enabledFlag: () => join(stateDir(), "enabled"),
@@ -46,7 +47,7 @@ var init_types = __esm({
 
 // src/cli/client.ts
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join as join2 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -62,7 +63,6 @@ function serverPid() {
 }
 async function startServer() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
-  rmSync(paths.serverFile(), { force: true });
   const log = openSync(paths.logFile(), "a", 384);
   spawn(process.execPath, [SERVER_SCRIPT], { detached: true, stdio: ["ignore", log, log] }).unref();
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
@@ -4470,7 +4470,7 @@ __export(main_exports, {
   terminalOptions: () => terminalOptions
 });
 import { spawnSync } from "node:child_process";
-import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync4, rmSync as rmSync2, writeFileSync } from "node:fs";
+import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync4, rmSync, writeFileSync } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
 import { join as join4 } from "node:path";
 import { setTimeout as sleep3 } from "node:timers/promises";
@@ -4608,7 +4608,7 @@ function editInEditor(text) {
   } catch {
     return null;
   } finally {
-    rmSync2(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 var POLL_INTERVAL_MS;
@@ -4626,7 +4626,7 @@ var init_main = __esm({
 });
 
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname as dirname2, join as join5 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -4934,7 +4934,7 @@ var commands = {
     console.log(`sidenote is on. ${await show(client, sessionArgument2())}`);
   },
   async off() {
-    rmSync3(paths.enabledFlag(), { force: true });
+    rmSync2(paths.enabledFlag(), { force: true });
     const pid = serverPid();
     if (pid) {
       try {

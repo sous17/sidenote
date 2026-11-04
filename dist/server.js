@@ -1,6 +1,6 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync3, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join as join2 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ var paths = {
   stateDir,
   storeFile: () => join(stateDir(), "store.json"),
   serverFile: () => join(stateDir(), "server.json"),
+  lockFile: () => join(stateDir(), "server.lock"),
   portFile: () => join(stateDir(), "port"),
   logFile: () => join(stateDir(), "server.log"),
   enabledFlag: () => join(stateDir(), "enabled"),
@@ -2968,6 +2969,58 @@ var LaunchCodes = class {
   }
 };
 
+// src/server/lock.ts
+import { closeSync, openSync, readFileSync as readFileSync2, rmSync, statSync, writeSync } from "node:fs";
+var STARTUP_GRACE_MS = 3e4;
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function registeredPid(serverFile) {
+  try {
+    return JSON.parse(readFileSync2(serverFile, "utf8")).pid;
+  } catch {
+    return null;
+  }
+}
+function isHeld(lockFile, serverFile) {
+  let pid;
+  let ageMs;
+  try {
+    pid = Number.parseInt(readFileSync2(lockFile, "utf8"), 10);
+    ageMs = Date.now() - statSync(lockFile).mtimeMs;
+  } catch {
+    return false;
+  }
+  if (ageMs < STARTUP_GRACE_MS) return Number.isNaN(pid) || isRunning(pid);
+  return !Number.isNaN(pid) && isRunning(pid) && registeredPid(serverFile) === pid;
+}
+function acquireServerLock(lockFile, serverFile) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const descriptor = openSync(lockFile, "wx", 384);
+      writeSync(descriptor, String(process.pid));
+      closeSync(descriptor);
+      return true;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    if (isHeld(lockFile, serverFile)) return false;
+    rmSync(lockFile, { force: true });
+  }
+  return false;
+}
+function releaseServerLock(lockFile) {
+  try {
+    if (Number.parseInt(readFileSync2(lockFile, "utf8"), 10) === process.pid) rmSync(lockFile);
+  } catch {
+  }
+}
+
 // src/server/main.ts
 var WEB_DIR = join2(dirname(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
@@ -2983,7 +3036,7 @@ function listenOn(server, port) {
 async function listen(server) {
   let preferred = 0;
   try {
-    preferred = Number.parseInt(readFileSync2(paths.portFile(), "utf8"), 10) || 0;
+    preferred = Number.parseInt(readFileSync3(paths.portFile(), "utf8"), 10) || 0;
   } catch {
   }
   try {
@@ -2995,13 +3048,15 @@ async function listen(server) {
 }
 function removeServerFile() {
   try {
-    const current = JSON.parse(readFileSync2(paths.serverFile(), "utf8"));
-    if (current.pid === process.pid) rmSync(paths.serverFile());
+    const current = JSON.parse(readFileSync3(paths.serverFile(), "utf8"));
+    if (current.pid === process.pid) rmSync2(paths.serverFile());
   } catch {
   }
 }
 async function main() {
   mkdirSync(paths.stateDir(), { recursive: true, mode: 448 });
+  if (!acquireServerLock(paths.lockFile(), paths.serverFile())) return;
+  process.on("exit", () => releaseServerLock(paths.lockFile()));
   const store = new Store({ file: paths.storeFile() });
   const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
   const token = randomBytes2(32).toString("base64url");
