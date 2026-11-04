@@ -63,7 +63,7 @@ export async function hookStop(input: HookInput): Promise<void> {
     text,
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
-  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
 }
 
 /** SessionStart: tells Claude how to show code changes so the window can draw them as diffs. */

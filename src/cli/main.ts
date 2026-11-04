@@ -2,6 +2,7 @@
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { paths } from "../node/paths.ts";
+import { folderName } from "../shared/folders.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
 import { hookActivity, hookProgress, hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
@@ -67,10 +68,11 @@ async function touchSession(client: SidenoteClient, sessionId: string): Promise<
 async function openWindow(client: SidenoteClient, requested: string | undefined): Promise<string> {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? (await latestSession(client));
-  openBrowser(await client.windowUrl(sessionId));
   const { session } = await fetchState(client, sessionId);
-  const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
-  return `Opened the ${label} window in your browser (${client.origin}).`;
+  const cwd = session?.cwd ?? "";
+  openBrowser(await client.windowUrl(sessionId, cwd));
+  const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
+  return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
 }
 
 /** Asks the server to stop, and returns its pid if there was one to ask. */
@@ -150,6 +152,7 @@ const commands: Record<string, () => Promise<void>> = {
       return;
     }
     console.log(`session: ${session.name || "(unnamed)"} · ${session.id.slice(0, 8)} · ${session.cwd}`);
+    console.log(`window:  ${client.windowAddress(session.cwd)}`);
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);

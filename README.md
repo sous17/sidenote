@@ -166,7 +166,8 @@ Anyone who can call sidenote's API can put words in front of your Claude session
 locked down:
 
 - **Local only.** The server listens on `127.0.0.1`, and refuses requests whose `Host` header
-  isn't its own address, which blocks DNS-rebinding attacks.
+  isn't one of its own addresses (`127.0.0.1`, `localhost` or `sidenote.localhost`, each with
+  its port), which blocks DNS-rebinding attacks.
 - **A token for every call.** A random 256-bit token, created on each start, is stored in
   `~/.sidenote/server.json`, readable only by you. It travels in a custom header, which other
   websites can't send to the server: the server never approves a cross-origin request.

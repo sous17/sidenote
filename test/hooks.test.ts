@@ -2,12 +2,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { Note, RedeemResult, ServerInfo, StateSnapshot } from "../src/shared/types.ts";
+import { PAGE_HOST, type Note, type RedeemResult, type ServerInfo, type StateSnapshot } from "../src/shared/types.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const launcher = join(root, "bin", "sidenote");
@@ -55,6 +56,18 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
   return (await response.json()) as T;
 }
 
+/** fetch() can't set Host, so this goes through node:http. */
+function statusWithHost(host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port: server().port, path: "/demo", headers: { Host: host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 let openedCount = 0;
 
 /** The next URL the stand-in browser is asked to open. The opener runs detached, so wait for it. */
@@ -97,12 +110,16 @@ test("windows open with a single-use launch code, never the token", async () => 
   assert.equal(on.code, 0);
   assert.match(on.stdout, /sidenote is on\. Opened the sidenote window/);
   const url = await lastOpened();
+  assert.equal(url.host, `${PAGE_HOST}:${server().port}`);
+  assert.equal(url.pathname, "/");
   assert.equal(url.search, "", "no session yet");
   assert.match(url.hash, /^#launch=[\w-]{32}$/);
   assert.ok(!url.href.includes(server().token));
+  assert.equal(await statusWithHost(`${PAGE_HOST}:${server().port}`), 200, "the server answers its page host");
 
+  // Node may resolve the page host to ::1, where the server doesn't listen.
   const redeem = (): Promise<Response> =>
-    fetch(`${url.origin}/api/launch/redeem`, {
+    fetch(`http://127.0.0.1:${server().port}/api/launch/redeem`, {
       method: "POST",
       body: JSON.stringify({ code: url.hash.slice("#launch=".length) }),
     });
@@ -117,7 +134,9 @@ test("windows open with a single-use launch code, never the token", async () => 
 test("Stop, Send now waking Claude with exit code 2, and a terminal prompt instead", async () => {
   // Claude finishes a session's first reply: the hook posts it and opens that session's window.
   assert.equal((await run(["hook-stop"], hookInput({ last_assistant_message: "Para one." }))).code, 0);
-  assert.equal((await lastOpened()).searchParams.get("s"), SESSION);
+  const url = await lastOpened();
+  assert.equal(url.pathname, "/demo", "the window is the session's folder");
+  assert.equal(url.searchParams.get("s"), SESSION);
   const waiter = run(["hook-wait"], hookInput({}));
   await sleep(1500);
   let state = await api<StateSnapshot>("GET", `/api/state?v=-1&s=${SESSION}`);
@@ -201,6 +220,7 @@ test("status and open act on the session", async () => {
   assert.match(status.stdout, /enabled: yes/);
   assert.match(status.stdout, /replies: 3/);
   assert.match(status.stdout, /pending notes: 0/);
+  assert.match(status.stdout, new RegExp(`window: +http://${PAGE_HOST}:\\d+/demo\\n`));
   assert.doesNotMatch(status.stdout, new RegExp(server().token), "status never prints the token");
 
   await run(["open"]);

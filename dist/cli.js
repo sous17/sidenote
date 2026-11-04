@@ -17,6 +17,14 @@ var paths = {
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
 
+// src/shared/folders.ts
+function folderName(cwd) {
+  return cwd.split("/").filter(Boolean).pop() ?? "";
+}
+function folderPath(folder) {
+  return folder ? `/${encodeURIComponent(folder)}` : "/";
+}
+
 // src/cli/client.ts
 import { spawn } from "node:child_process";
 import { mkdirSync, openSync, readFileSync } from "node:fs";
@@ -27,6 +35,7 @@ import { fileURLToPath } from "node:url";
 // src/shared/types.ts
 var TOKEN_HEADER = "X-Review-Token";
 var LAUNCH_FRAGMENT_KEY = "launch";
+var PAGE_HOST = "sidenote.localhost";
 
 // src/cli/client.ts
 var SERVER_START_TIMEOUT_MS = 1e4;
@@ -72,13 +81,20 @@ var SidenoteClient = class _SidenoteClient {
     return this.#request("POST", path, body);
   }
   /**
+   * The address of the window for a folder. Only browsers get the page host: Node may resolve it
+   * to ::1, where the server doesn't listen, so the CLI's own requests stay on 127.0.0.1.
+   */
+  windowAddress(cwd) {
+    return `http://${PAGE_HOST}:${this.#server.port}${folderPath(folderName(cwd))}`;
+  }
+  /**
    * A one-time link to a session's window. The launch code sits in the URL fragment, which the
    * browser never sends to the server; the page trades it for the token once.
    */
-  async windowUrl(sessionId) {
+  async windowUrl(sessionId, cwd = "") {
     const { code } = await this.post("/api/launch", {});
     const query = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
-    return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
+    return `${this.windowAddress(cwd)}${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
   }
   async #request(method, path, body) {
     const response = await fetch(this.origin + path, {
@@ -369,7 +385,7 @@ async function hookStop(input) {
     text
   };
   const result = await client.post("/api/responses", reply);
-  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId));
+  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
 }
 async function hookSession() {
   const output = { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: sessionContext() } };
@@ -488,10 +504,11 @@ async function touchSession(client, sessionId) {
 async function openWindow(client, requested) {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? await latestSession(client);
-  openBrowser(await client.windowUrl(sessionId));
   const { session } = await fetchState(client, sessionId);
-  const label = session ? `"${session.name || session.cwd.split("/").pop() || session.id.slice(0, 8)}"` : "sidenote";
-  return `Opened the ${label} window in your browser (${client.origin}).`;
+  const cwd = session?.cwd ?? "";
+  openBrowser(await client.windowUrl(sessionId, cwd));
+  const label = session ? `"${session.name || folderName(cwd) || session.id.slice(0, 8)}"` : "sidenote";
+  return `Opened the ${label} window in your browser (${client.windowAddress(cwd)}).`;
 }
 function stopServer() {
   const pid = serverPid();
@@ -560,6 +577,7 @@ var commands = {
       return;
     }
     console.log(`session: ${session.name || "(unnamed)"} \xB7 ${session.id.slice(0, 8)} \xB7 ${session.cwd}`);
+    console.log(`window:  ${client.windowAddress(session.cwd)}`);
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);

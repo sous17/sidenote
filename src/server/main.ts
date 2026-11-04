@@ -5,7 +5,7 @@ import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paths } from "../node/paths.ts";
-import type { ServerInfo } from "../shared/types.ts";
+import { PAGE_HOST, type ServerInfo } from "../shared/types.ts";
 import { Delivery } from "./delivery.ts";
 import { createApp } from "./http.ts";
 import { LaunchCodes } from "./launch.ts";
@@ -75,6 +75,7 @@ async function main(): Promise<void> {
   const port = await listen(server);
   allowedHosts.add(`127.0.0.1:${port}`);
   allowedHosts.add(`localhost:${port}`);
+  allowedHosts.add(`${PAGE_HOST}:${port}`);
   writeFileSync(paths.portFile(), String(port), { mode: 0o600 });
   writeFileSync(paths.serverFile(), JSON.stringify({ port, token, pid: process.pid } satisfies ServerInfo), {
     mode: 0o600,

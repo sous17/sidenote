@@ -43,6 +43,7 @@ import {
 import type { Store } from "./store.ts";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const FOLDER_PATH = /^\/[^/]+$/;
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -303,7 +304,11 @@ export function createApp(options: AppOptions): RequestListener {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) return send(response, await serveApi(request, url));
     if (request.method !== "GET") throw new HttpError(405);
-    if (url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
+    // "/<folder>" is a folder's window; the page reads the folder from its own path. The path as
+    // sent is checked, so "/static/../x", which URL parsing turns into "/x", isn't taken for one.
+    if (url.pathname === "/" || FOLDER_PATH.test((request.url ?? "").split("?")[0]!)) {
+      return sendFile(response, resolve(webDir, "index.html"));
+    }
     if (url.pathname.startsWith("/static/")) return sendFile(response, staticPath(webDir, url.pathname));
     throw new HttpError(404);
   };

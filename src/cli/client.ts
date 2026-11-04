@@ -5,8 +5,10 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { paths } from "../node/paths.ts";
+import { folderName, folderPath } from "../shared/folders.ts";
 import {
   LAUNCH_FRAGMENT_KEY,
+  PAGE_HOST,
   TOKEN_HEADER,
   type ErrorResult,
   type LaunchCodeResult,
@@ -66,13 +68,21 @@ export class SidenoteClient {
   }
 
   /**
+   * The address of the window for a folder. Only browsers get the page host: Node may resolve it
+   * to ::1, where the server doesn't listen, so the CLI's own requests stay on 127.0.0.1.
+   */
+  windowAddress(cwd: string): string {
+    return `http://${PAGE_HOST}:${this.#server.port}${folderPath(folderName(cwd))}`;
+  }
+
+  /**
    * A one-time link to a session's window. The launch code sits in the URL fragment, which the
    * browser never sends to the server; the page trades it for the token once.
    */
-  async windowUrl(sessionId: string | undefined): Promise<string> {
+  async windowUrl(sessionId: string | undefined, cwd = ""): Promise<string> {
     const { code } = await this.post<LaunchCodeResult>("/api/launch", {});
     const query = sessionId ? `?s=${encodeURIComponent(sessionId)}` : "";
-    return `${this.origin}/${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
+    return `${this.windowAddress(cwd)}${query}#${LAUNCH_FRAGMENT_KEY}=${code}`;
   }
 
   async #request<T>(method: string, path: string, body?: object): Promise<T> {

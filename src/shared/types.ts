@@ -223,5 +223,8 @@ export const MAX_PROMPT_CHARS = 8000;
 /** URL fragment key that carries a launch code to a newly opened page. */
 export const LAUNCH_FRAGMENT_KEY = "launch";
 
+/** The host windows open on. Browsers resolve *.localhost to this machine without any setup. */
+export const PAGE_HOST = "sidenote.localhost";
+
 /** Session ids are Claude Code UUIDs; anything else is refused. */
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

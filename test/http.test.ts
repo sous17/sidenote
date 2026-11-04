@@ -84,6 +84,15 @@ describe("page", () => {
     assert.equal((await fetch(`${base}/static/app.js`)).status, 200);
   });
 
+  test("is served for a folder's window, and only one path segment deep", async () => {
+    for (const path of ["/shop-api", "/my%20project"]) {
+      const response = await fetch(base + path);
+      assert.equal(response.status, 200, path);
+      assert.match(response.headers.get("content-security-policy") ?? "", /script-src 'self'/);
+    }
+    assert.equal((await fetch(`${base}/shop-api/x`)).status, 404);
+  });
+
   test("refuses paths outside the page directory and malformed ones", async () => {
     for (const path of [
       "/static/../server.js",

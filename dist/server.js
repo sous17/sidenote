@@ -20,16 +20,17 @@ var paths = {
   transcriptsDir: () => join(homedir(), ".claude", "projects")
 };
 
+// src/shared/types.ts
+var TOKEN_HEADER = "X-Review-Token";
+var MAX_PROMPT_CHARS = 8e3;
+var PAGE_HOST = "sidenote.localhost";
+var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
 // src/node/clock.ts
 var systemClock = {
   now: () => Date.now() / 1e3,
   monotonicMs: () => performance.now()
 };
-
-// src/shared/types.ts
-var TOKEN_HEADER = "X-Review-Token";
-var MAX_PROMPT_CHARS = 8e3;
-var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 // src/server/split.ts
 var NOTE_MARKER = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
@@ -332,6 +333,7 @@ function parsePrompt(input) {
 
 // src/server/http.ts
 var MAX_BODY_BYTES = 2 * 1024 * 1024;
+var FOLDER_PATH = /^\/[^/]+$/;
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -550,7 +552,9 @@ function createApp(options) {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname.startsWith("/api/")) return send(response, await serveApi(request, url));
     if (request.method !== "GET") throw new HttpError(405);
-    if (url.pathname === "/") return sendFile(response, resolve(webDir, "index.html"));
+    if (url.pathname === "/" || FOLDER_PATH.test((request.url ?? "").split("?")[0])) {
+      return sendFile(response, resolve(webDir, "index.html"));
+    }
     if (url.pathname.startsWith("/static/")) return sendFile(response, staticPath(webDir, url.pathname));
     throw new HttpError(404);
   };
@@ -1040,6 +1044,7 @@ async function main() {
   const port = await listen(server);
   allowedHosts.add(`127.0.0.1:${port}`);
   allowedHosts.add(`localhost:${port}`);
+  allowedHosts.add(`${PAGE_HOST}:${port}`);
   writeFileSync2(paths.portFile(), String(port), { mode: 384 });
   writeFileSync2(paths.serverFile(), JSON.stringify({ port, token, pid: process.pid }), {
     mode: 384
