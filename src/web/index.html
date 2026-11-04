@@ -83,6 +83,13 @@
         </button>
       </div>
       <form id="new-session-form" class="new-session-form" hidden>
+        <input
+          id="new-session-name"
+          type="text"
+          maxlength="200"
+          placeholder="Name, e.g. DM-1782 OAuth fix (optional)"
+          aria-label="Name of the new session"
+        />
         <textarea id="new-session-prompt" rows="3" placeholder="What should Claude do? (optional)"></textarea>
         <div class="editor-actions">
           <button type="submit" class="send-button">Start</button>

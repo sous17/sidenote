@@ -6,9 +6,10 @@ export class NewSessionForm {
   readonly #button: HTMLButtonElement;
   readonly #form: HTMLFormElement;
   readonly #prompt: HTMLTextAreaElement;
+  readonly #name: HTMLInputElement;
   readonly #submit: HTMLButtonElement;
   readonly #hint: HTMLElement;
-  readonly #start: (prompt: string) => Promise<void>;
+  readonly #start: (prompt: string, name: string) => Promise<void>;
   #cwd = "";
   #starting = false;
 
@@ -16,13 +17,15 @@ export class NewSessionForm {
     button: HTMLButtonElement;
     form: HTMLFormElement;
     prompt: HTMLTextAreaElement;
+    name: HTMLInputElement;
     cancel: HTMLButtonElement;
     hint: HTMLElement;
-    start: (prompt: string) => Promise<void>;
+    start: (prompt: string, name: string) => Promise<void>;
   }) {
     this.#button = options.button;
     this.#form = options.form;
     this.#prompt = options.prompt;
+    this.#name = options.name;
     this.#submit = options.form.querySelector<HTMLButtonElement>("button[type=submit]")!;
     this.#hint = options.hint;
     this.#start = options.start;
@@ -54,7 +57,7 @@ export class NewSessionForm {
     this.#button.setAttribute("aria-expanded", "true");
     this.#form.classList.remove("failed");
     this.#showHint();
-    this.#prompt.focus();
+    this.#name.focus();
   }
 
   #close(): void {
@@ -73,8 +76,9 @@ export class NewSessionForm {
     this.#form.classList.remove("failed");
     this.#hint.textContent = "Opening a terminal…";
     try {
-      await this.#start(this.#prompt.value);
+      await this.#start(this.#prompt.value, this.#name.value);
       this.#prompt.value = "";
+      this.#name.value = "";
       this.#close();
     } catch (error) {
       // The prompt stays in the box, so nothing typed is lost.

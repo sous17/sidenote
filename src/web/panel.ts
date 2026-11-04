@@ -35,29 +35,48 @@ export function rememberSession(folder: string, sessionId: string): void {
   }
 }
 
+/** What the page does when a row asks for it. Each returns once the server has done it. */
+export interface SessionActions {
+  select(sessionId: string): void;
+  rename(sessionId: string, label: string): Promise<void>;
+  end(sessionId: string): Promise<void>;
+  remove(sessionId: string): Promise<void>;
+}
+
+/** A row that shows its menu, its name field, or asks to confirm, instead of just the session. */
+interface OpenRow {
+  sessionId: string;
+  mode: "menu" | "rename" | "end" | "remove";
+  error: string;
+  busy: boolean;
+}
+
 export class SessionPanel {
   readonly #panel: HTMLElement;
   readonly #list: HTMLElement;
   readonly #toggle: HTMLButtonElement;
   readonly #app: HTMLElement;
-  readonly #onSelect: (sessionId: string) => void;
+  readonly #actions: SessionActions;
   /** Whether the user wants the panel docked when the window has room; folding it is remembered. */
   #wantsDocked = readWantsDocked();
   /** Opened over the feed from the top bar, where it can't dock. */
   #overlay = false;
+  #open: OpenRow | null = null;
+  #sessions: readonly FolderSession[] = [];
+  #selectedId = "";
 
   constructor(options: {
     panel: HTMLElement;
     list: HTMLElement;
     toggle: HTMLButtonElement;
     app: HTMLElement;
-    onSelect: (sessionId: string) => void;
+    actions: SessionActions;
   }) {
     this.#panel = options.panel;
     this.#list = options.list;
     this.#toggle = options.toggle;
     this.#app = options.app;
-    this.#onSelect = options.onSelect;
+    this.#actions = options.actions;
 
     this.#toggle.addEventListener("click", () => {
       if (this.#canDock()) {
@@ -76,9 +95,10 @@ export class SessionPanel {
     document.addEventListener(
       "keydown",
       (event) => {
-        if (event.key !== "Escape" || !this.#overlay) return;
+        if (event.key !== "Escape" || (!this.#open && !this.#overlay)) return;
         event.stopPropagation();
-        this.#close();
+        if (this.#open) this.#setOpen(null);
+        else this.#close();
       },
       { capture: true },
     );
@@ -89,28 +109,125 @@ export class SessionPanel {
   }
 
   render(sessions: readonly FolderSession[], selectedId: string): void {
+    this.#sessions = sessions;
+    this.#selectedId = selectedId;
     this.#toggle.dataset["count"] = String(sessions.length);
+    if (this.#open && !sessions.some((session) => session.id === this.#open?.sessionId)) this.#open = null;
+    // Rebuilding the list would take the half-typed name, and the focus, out of the name field.
+    if (this.#open?.mode === "rename") return;
     this.#list.replaceChildren(...sessions.map((session) => this.#row(session, session.id === selectedId)));
   }
 
-  #row(session: FolderSession, selected: boolean): HTMLButtonElement {
-    const row = el("button", "session-row");
-    row.type = "button";
-    row.dataset["status"] = session.status;
+  #row(session: FolderSession, selected: boolean): HTMLElement {
+    const row = el("div", "session-row");
+    row.dataset["status"] = session.process === "ended" ? "ended" : session.status;
     if (selected) row.setAttribute("aria-current", "true");
-    row.title = `Session ${session.id}`;
+
+    const main = el("button", "session-row-main");
+    main.type = "button";
+    main.title = `Session ${session.id}`;
     const text = el("span", "session-row-text");
+    const state = session.process === "ended" ? "Ended" : STATUS_TEXT[session.status];
     text.append(
       el("span", "session-row-label", sessionLabel(session)),
-      el("span", "session-row-meta", `${STATUS_TEXT[session.status]} · ${lastActive(session.last_active)}`),
+      el("span", "session-row-meta", `${state} · ${lastActive(session.last_active)}`),
     );
-    row.append(el("span", "status-dot"), text);
-    if (session.pending_notes) row.append(el("span", "note-count", String(session.pending_notes)));
-    row.addEventListener("click", () => {
+    main.append(el("span", "status-dot"), text);
+    if (session.pending_notes) main.append(el("span", "note-count", String(session.pending_notes)));
+    main.addEventListener("click", () => {
       this.#close();
-      this.#onSelect(session.id);
+      this.#actions.select(session.id);
     });
+
+    const open = this.#open?.sessionId === session.id ? this.#open : null;
+    const more = el("button", "session-row-more", "⋯");
+    more.type = "button";
+    more.title = "Rename, end or remove this session";
+    more.setAttribute("aria-label", more.title);
+    more.setAttribute("aria-expanded", String(open !== null));
+    more.addEventListener("click", () => this.#setOpen(open ? null : { sessionId: session.id, mode: "menu" }));
+
+    row.append(main, more);
+    if (open) row.append(this.#rowPanel(session, open));
     return row;
+  }
+
+  /** Below a row: its menu, its name field, or a question before ending or removing it. */
+  #rowPanel(session: FolderSession, open: OpenRow): HTMLElement {
+    const box = el("div", "session-row-panel");
+    const action = (text: string, onClick: () => void, className = "link-button"): HTMLButtonElement => {
+      const element = el("button", className, text);
+      element.type = "button";
+      element.disabled = open.busy;
+      element.addEventListener("click", onClick);
+      return element;
+    };
+    const cancel = (): HTMLButtonElement => action("Cancel", () => this.#setOpen(null));
+    const run = (work: () => Promise<void>): void => void this.#run(open, work);
+
+    if (open.mode === "menu") {
+      box.append(action("Rename", () => this.#setOpen({ sessionId: session.id, mode: "rename" })));
+      if (session.process === "running") {
+        box.append(action("End session", () => this.#setOpen({ sessionId: session.id, mode: "end" })));
+      } else {
+        if (session.process === "unknown") {
+          const end = action("End session", () => {});
+          end.disabled = true;
+          end.title = "sidenote learns this session's process with its next prompt or reply";
+          box.append(end);
+        }
+        box.append(action("Remove from list", () => this.#setOpen({ sessionId: session.id, mode: "remove" })));
+      }
+    } else if (open.mode === "rename") {
+      const form = el("form", "session-rename");
+      const field = el("input");
+      field.type = "text";
+      field.maxLength = 200;
+      field.value = session.label || session.name;
+      field.placeholder = "A name, e.g. DM-1782 OAuth fix";
+      field.setAttribute("aria-label", "Name of this session in sidenote");
+      form.append(
+        field,
+        action("Save", () => form.requestSubmit(), "send-button"),
+        cancel(),
+      );
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        run(() => this.#actions.rename(session.id, field.value));
+      });
+      box.append(form, el("p", "session-row-hint", "Only sidenote shows this name; empty removes it."));
+      queueMicrotask(() => field.focus());
+    } else if (open.mode === "end") {
+      box.append(
+        el("p", "session-row-hint", "End this session? Claude stops, even in the middle of a turn."),
+        action("End session", () => run(() => this.#actions.end(session.id)), "danger-button"),
+        cancel(),
+      );
+    } else {
+      box.append(
+        el("p", "session-row-hint", "Remove it from the list? Its replies and notes in sidenote go too."),
+        action("Remove", () => run(() => this.#actions.remove(session.id)), "danger-button"),
+        cancel(),
+      );
+    }
+    if (open.error) box.append(el("p", "session-row-error", open.error));
+    return box;
+  }
+
+  async #run(open: OpenRow, work: () => Promise<void>): Promise<void> {
+    this.#setOpen({ ...open, busy: true, error: "" });
+    try {
+      await work();
+      this.#setOpen(null);
+    } catch (error) {
+      this.#setOpen({ ...open, busy: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  #setOpen(open: (Pick<OpenRow, "sessionId" | "mode"> & Partial<OpenRow>) | null): void {
+    this.#open = open && { error: "", busy: false, ...open };
+    // Leaving the name field: the list was held while typing, so bring it up to date now.
+    this.#list.replaceChildren(...this.#sessions.map((session) => this.#row(session, session.id === this.#selectedId)));
   }
 
   #canDock(): boolean {

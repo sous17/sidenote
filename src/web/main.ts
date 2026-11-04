@@ -171,16 +171,31 @@ async function start(): Promise<void> {
     list: byId("session-list"),
     toggle: byId<HTMLButtonElement>("panel-toggle"),
     app: byId("app"),
-    onSelect: selectSession,
+    actions: {
+      select: selectSession,
+      rename: async (sessionId, label) => {
+        await api.renameSession(sessionId, label);
+        await refresh();
+      },
+      end: async (sessionId) => {
+        await api.endSession(sessionId);
+        await refresh();
+      },
+      remove: async (sessionId) => {
+        await api.forgetSession(sessionId);
+        await refresh();
+      },
+    },
   });
   const newSession = new NewSessionForm({
     button: byId<HTMLButtonElement>("new-session"),
     form: byId<HTMLFormElement>("new-session-form"),
     prompt: byId<HTMLTextAreaElement>("new-session-prompt"),
+    name: byId<HTMLInputElement>("new-session-name"),
     cancel: byId<HTMLButtonElement>("new-session-cancel"),
     hint: byId("new-session-hint"),
-    start: async (prompt) => {
-      const started = await api.startSession(model.sessionId, prompt);
+    start: async (prompt, name) => {
+      const started = await api.startSession(model.sessionId, prompt, name);
       if (started) selectSession(started.session_id);
     },
   });

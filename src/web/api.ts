@@ -119,8 +119,23 @@ export class Api {
   }
 
   /** Starts a new session in a terminal, in the folder of the session given. */
-  startSession(sessionId: string, prompt: string): Promise<StartSessionResult | null> {
-    return request("POST", "/api/sessions/start", this.#token, { session_id: sessionId, prompt });
+  startSession(sessionId: string, prompt: string, name: string): Promise<StartSessionResult | null> {
+    return request("POST", "/api/sessions/start", this.#token, { session_id: sessionId, prompt, name });
+  }
+
+  /** Names the session in the window; "" removes the name. */
+  renameSession(sessionId: string, label: string): Promise<null> {
+    return request("POST", "/api/sessions/rename", this.#token, { session_id: sessionId, label });
+  }
+
+  /** Ends the session's Claude process and removes the session from the list. */
+  endSession(sessionId: string): Promise<null> {
+    return request("POST", "/api/sessions/end", this.#token, { session_id: sessionId });
+  }
+
+  /** Removes a session that no longer runs from the list. */
+  forgetSession(sessionId: string): Promise<null> {
+    return request("POST", "/api/sessions/forget", this.#token, { session_id: sessionId });
   }
 
   /** Opens the session's folder on the desktop. */

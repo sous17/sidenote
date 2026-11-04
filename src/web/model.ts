@@ -119,7 +119,7 @@ export function answeredNoteIds(model: Model, response: StoredResponse): Set<num
   return ids;
 }
 
-/** What a session is called: its /rename name, else its first message, else its short id. */
-export function sessionLabel(session: Pick<FolderSession, "id" | "name" | "first_message">): string {
-  return session.name || session.first_message || `Session ${session.id.slice(0, 8)}`;
+/** What a session is called: the name given in the window, its /rename name, its first message, or its short id. */
+export function sessionLabel(session: Pick<FolderSession, "id" | "label" | "name" | "first_message">): string {
+  return session.label || session.name || session.first_message || `Session ${session.id.slice(0, 8)}`;
 }

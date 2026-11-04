@@ -17,9 +17,9 @@ export interface StoreData {
   nextId: number;
 }
 
-/** The JSON layout on disk. */
+/** The JSON layout on disk. Sessions from older versions lack fields added since. */
 interface StoreFile {
-  sessions?: Record<string, SessionMeta>;
+  sessions?: Record<string, Partial<SessionMeta>>;
   responses?: StoredResponse[];
   comments?: Note[];
   messages?: UserMessage[];
@@ -66,11 +66,17 @@ export function migrate(file: StoreFile): StoreData {
   const sessions = new Map<string, SessionMeta>();
   for (const [id, meta] of Object.entries(file.sessions ?? {})) {
     if (!SESSION_ID_PATTERN.test(id)) continue;
-    sessions.set(id, { name: meta.name ?? "", cwd: meta.cwd ?? "", last_active: meta.last_active ?? 0 });
+    // Stores from before names given in the window have no label.
+    sessions.set(id, {
+      name: meta.name ?? "",
+      label: meta.label ?? "",
+      cwd: meta.cwd ?? "",
+      last_active: meta.last_active ?? 0,
+    });
   }
   // Stores from before per-session windows have no session list: rebuild it from the replies.
   for (const response of responses) {
-    const meta = sessions.get(response.session_id) ?? { name: "", cwd: response.cwd, last_active: 0 };
+    const meta = sessions.get(response.session_id) ?? { name: "", label: "", cwd: response.cwd, last_active: 0 };
     meta.last_active = Math.max(meta.last_active, response.created_at);
     sessions.set(response.session_id, meta);
   }

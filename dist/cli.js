@@ -151,8 +151,54 @@ function openBrowser(url) {
 
 // src/cli/hooks.ts
 import { randomBytes } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
+
+// src/node/process.ts
+import { spawnSync } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+var MAX_DEPTH = 8;
+function processInfo(pid, platform = process.platform) {
+  try {
+    return platform === "linux" ? linuxInfo(pid) : platform === "darwin" ? psInfo(pid) : null;
+  } catch {
+    return null;
+  }
+}
+function linuxInfo(pid) {
+  const stat = readFileSync2(`/proc/${pid}/stat`, "utf8");
+  const close = stat.lastIndexOf(")");
+  const fields = stat.slice(close + 2).split(" ");
+  return {
+    ppid: Number(fields[1]),
+    started: fields[19],
+    name: stat.slice(stat.indexOf("(") + 1, close),
+    args: readFileSync2(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+  };
+}
+function psInfo(pid) {
+  const ps = (field) => spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  const ppid = ps("ppid");
+  if (!ppid) return null;
+  return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
+}
+function isClaude(info) {
+  const base = (path) => path.split("/").pop() ?? "";
+  return base(info.name) === "claude" || base(info.args.split(" ")[0] ?? "") === "claude" || /@anthropic-ai\/claude-code\/cli\.js/.test(info.args);
+}
+function findClaude(pid, info) {
+  let current = pid;
+  for (let depth = 0; depth < MAX_DEPTH && current > 1; depth += 1) {
+    const found = info(current);
+    if (!found) return null;
+    if (isClaude(found)) return { pid: current, started: found.started };
+    current = found.ppid;
+  }
+  return null;
+}
+function claudeProcess() {
+  return findClaude(process.ppid, (pid) => processInfo(pid));
+}
 
 // src/cli/format.ts
 var MAX_CONTEXT_CHARS = 9500;
@@ -287,7 +333,7 @@ function firstLine(text) {
 }
 
 // src/cli/transcript.ts
-import { existsSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync, readdirSync, readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 var QUESTION_TOOLS = /* @__PURE__ */ new Set(["AskUserQuestion", "ExitPlanMode"]);
 function findTranscript(transcriptsDir, sessionId) {
@@ -359,7 +405,7 @@ function cwdFromTranscript(transcript) {
   return "";
 }
 function readTranscript(file) {
-  return readFileSync2(file, "utf8");
+  return readFileSync3(file, "utf8");
 }
 function isUserPrompt(entry) {
   if (entry.isMeta) return false;
@@ -371,10 +417,14 @@ function isUserPrompt(entry) {
 // src/cli/hooks.ts
 var WAITER_POLL_MS = 1e3;
 var MAX_SHOWN_PROMPT_CHARS = 1e5;
+function reportedProcess() {
+  const found = claudeProcess();
+  return found ? { claude_process: found } : {};
+}
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
-    return sessionNameFromTranscript(readFileSync3(transcriptPath, "utf8"));
+    return sessionNameFromTranscript(readFileSync4(transcriptPath, "utf8"));
   } catch {
     return "";
   }
@@ -388,7 +438,8 @@ async function hookStop(input) {
     session_id: sessionId,
     session_name: sessionName(input.transcript_path),
     cwd: input.cwd ?? "",
-    text
+    text,
+    ...reportedProcess()
   };
   const result = await client.post("/api/responses", reply);
   if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
@@ -401,7 +452,7 @@ async function hookSession() {
 async function hookPrompt(input) {
   const client = await SidenoteClient.connect();
   if (!client || !input.session_id) return;
-  const claim = { session_id: input.session_id };
+  const claim = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
   const { comments, prompt } = await client.post("/api/claim", claim);
   if (!comments.length && prompt === void 0) return;
@@ -436,7 +487,11 @@ async function hookWait(input) {
   if (!input.session_id) return;
   const client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
-  const waiter = { session_id: input.session_id, waiter_id: randomBytes(8).toString("hex") };
+  const waiter = {
+    session_id: input.session_id,
+    waiter_id: randomBytes(8).toString("hex"),
+    ...reportedProcess()
+  };
   await client.post("/api/waiters", waiter);
   for (; ; ) {
     await sleep2(WAITER_POLL_MS);
