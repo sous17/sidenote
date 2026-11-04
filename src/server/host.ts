@@ -5,12 +5,13 @@
 //
 // Everything here is in memory. A restarted server has no processes; the next message starts
 // one again and resumes the session.
+import { liveProgress } from "./split.ts";
 import { randomUUID } from "node:crypto";
 import type { Agent, AgentDriver, AgentEvent, PermissionRequest, TurnEnd } from "../agent/driver.ts";
 import { systemClock, type Clock } from "../node/clock.ts";
 import { lexReply, replyBlocks } from "../shared/blocks.ts";
 import { formatNotesForClaude } from "../shared/format.ts";
-import { toolDetail, toolSummary } from "../shared/tools.ts";
+import { activityLine, toolDetail, toolSummary } from "../shared/tools.ts";
 import type {
   AgentState,
   ConversationView,
@@ -121,9 +122,19 @@ export class SessionHost {
     const session = this.#sessions.get(sessionId);
     if (!session) return null;
     const busy = session.state === "working" || session.state === "waiting";
-    const status: SendStatus = { status: busy ? "busy" : "listening", send_requested: session.queued.includes("") };
+    const status: SendStatus = {
+      status: busy ? "busy" : "listening",
+      send_requested: session.queued.includes(""),
+      hosted: true,
+    };
     const messages = session.queued.filter((text) => text.trim());
     if (messages.length) status.queued_prompt = messages.join("\n\n");
+    const parts = busy ? (session.live?.parts ?? []) : [];
+    const progress = liveProgress(parts.flatMap((part) => (part.kind === "text" ? [part.text] : [])));
+    if (progress.length) status.progress = progress;
+    const tool = parts.findLast((part) => part.kind === "tool");
+    const activity = tool?.kind === "tool" ? activityLine(tool.tool, tool.summary) : "";
+    if (activity) status.activity = activity;
     return status;
   }
 
@@ -202,6 +213,8 @@ export class SessionHost {
       session.known = true;
     }
     session.live = { prompt: text, notes_sent: notes.length, started_at: this.#clock.now(), parts: [] };
+    // Pages poll the store's revision, and a turn starting changes nothing in the store.
+    this.#store.revision.bump();
     session.streaming = false;
     session.state = "working";
     session.error = "";

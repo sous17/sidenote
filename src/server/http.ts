@@ -33,6 +33,7 @@ import type { LaunchCodes } from "./launch.ts";
 import {
   BadRequest,
   parseActivity,
+  parseProgress,
   parseClaim,
   parseConversationMessage,
   parseNewNote,
@@ -129,7 +130,7 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       path: "/api/state",
       needsToken: true,
       handle: async ({ query }) => {
-        delivery.refresh();
+        delivery.refresh((id) => host.sendStatus(id) ?? delivery.status(id));
         // The page passes the version it has; an unchanged store costs one empty reply.
         const known = query.get("v");
         if (known === String(store.revision.value) && query.get("wait") === "1") {
@@ -266,6 +267,15 @@ function routes({ store, delivery, host, launchCodes, token }: AppOptions): Rout
       handle: ({ body }) => {
         const { session_id, text } = parseActivity(body);
         delivery.setActivity(session_id, text);
+        return ok({ ok: true });
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/progress",
+      needsToken: true,
+      handle: ({ body }) => {
+        delivery.addProgress(parseProgress(body));
         return ok({ ok: true });
       },
     },

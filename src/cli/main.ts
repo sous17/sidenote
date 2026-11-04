@@ -1,12 +1,13 @@
 // sidenote CLI: the /sidenote:* commands and the Claude Code hooks.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { HEADLESS_ENV } from "../agent/claude.ts";
 import { paths } from "../node/paths.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
-import { hookActivity, hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
+import { hookActivity, hookProgress, hookPrompt, hookSession, hookStop, hookWait, type HookInput } from "./hooks.ts";
 import {
   cwdFromTranscript,
   finalResponsesPerTurn,
@@ -24,6 +25,8 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote tui [session]       show the session's replies in this terminal; without a session,
                                the latest one in this folder
   sidenote off                 turn sidenote off; unsent notes are kept
+  sidenote restart [session]   restart the server, for example after an update, and open the
+                               session's window; unsent notes are kept
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
@@ -31,12 +34,14 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-prompt         UserPromptSubmit hook: attach pending notes to the prompt
   sidenote hook-activity       async PreToolUse hook: show what Claude is doing in the window
+  sidenote hook-progress       async MessageDisplay hook: show Claude's messages as it works
   sidenote hook-wait           async Stop hook: wake Claude when the browser clicks Send now
 
 The /sidenote:* commands pass the current session. Without one, the most recently active
 session is used.`;
 
 const NOT_RUNNING = "The sidenote server is not running; use /sidenote:on first.";
+const SERVER_STOP_TIMEOUT_MS = 5000;
 
 /** The launcher, next to dist/: the plugin's bin/ isn't on the user's PATH. */
 const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "sidenote");
@@ -83,25 +88,59 @@ async function show(client: SidenoteClient, requested: string | undefined): Prom
   return `Opened the ${label} window in your browser (${client.origin}).`;
 }
 
+/** Asks the server to stop, and returns its pid if there was one to ask. */
+function stopServer(): number | null {
+  const pid = serverPid();
+  if (!pid) return null;
+  try {
+    process.kill(pid, "SIGTERM");
+    return pid;
+  } catch {
+    return null; // Not running.
+  }
+}
+
+/** Whether the process ended in time. Starting a server before then would find the old one. */
+async function exited(pid: number): Promise<boolean> {
+  const deadline = Date.now() + SERVER_STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await sleep(100);
+  }
+  return false;
+}
+
+/** Turns sidenote on, starting the server if needed, and opens the session's window. */
+async function turnOn(): Promise<string> {
+  mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
+  writeFileSync(paths.enabledFlag(), "");
+  const { client } = await SidenoteClient.ensure();
+  return show(client, sessionArgument());
+}
+
 const commands: Record<string, () => Promise<void>> = {
   async on() {
-    mkdirSync(paths.stateDir(), { recursive: true, mode: 0o700 });
-    writeFileSync(paths.enabledFlag(), "");
-    const { client } = await SidenoteClient.ensure();
-    console.log(`sidenote is on. ${await show(client, sessionArgument())}`);
+    console.log(`sidenote is on. ${await turnOn()}`);
   },
 
   async off() {
     rmSync(paths.enabledFlag(), { force: true });
-    const pid = serverPid();
-    if (pid) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // Not running.
-      }
-    }
+    stopServer();
     console.log("sidenote is off. Unsent notes are kept and go out after the next /sidenote:on.");
+  },
+
+  async restart() {
+    const pid = stopServer();
+    if (pid && !(await exited(pid))) {
+      console.log(`The sidenote server (pid ${pid}) didn't stop, so nothing was restarted.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`sidenote restarted. ${await turnOn()}`);
   },
 
   async open() {
@@ -181,6 +220,7 @@ const commands: Record<string, () => Promise<void>> = {
   "hook-stop": () => runHook(hookStop),
   "hook-prompt": () => runHook(hookPrompt),
   "hook-activity": () => runHook(hookActivity),
+  "hook-progress": () => runHook(hookProgress),
   "hook-wait": () => runHook(hookWait),
 };
 

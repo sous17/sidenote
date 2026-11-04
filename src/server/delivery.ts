@@ -7,11 +7,15 @@
 // session's next turn ends. Notes and messages themselves live in the store, so they survive.
 import { systemClock, type Clock } from "../node/clock.ts";
 import { MAX_PROMPT_CHARS } from "../shared/format.ts";
-import type { SendStatus, SessionState, WaiterPollResult } from "../shared/types.ts";
+import type { ProgressRequest, SendStatus, SessionState, WaiterPollResult } from "../shared/types.ts";
+import { liveProgress } from "./split.ts";
 import type { Store } from "./store.ts";
 
 /** A session counts as listening while its waiter polls at least this often. */
 export const LISTENER_STALE_MS = 5000;
+/** Enough of a turn for the page, which shows only the last of it. */
+const MAX_TRACKED_MESSAGES = 40;
+const MAX_TRACKED_BATCHES = 2000;
 
 interface Waiter {
   id: string;
@@ -28,6 +32,8 @@ export class Delivery {
   readonly #requested = new Set<string>();
   /** The latest tool call of each busy session. Only the page's status line needs it. */
   readonly #activity = new Map<string, string>();
+  /** Each busy session's messages this turn, by message id, as batches by index. */
+  readonly #progress = new Map<string, Map<string, string[]>>();
   #statusSignature = "";
 
   constructor(store: Store, clock: Clock = systemClock) {
@@ -41,12 +47,18 @@ export class Delivery {
     if (waiting) status.queued_prompt = waiting;
     const activity = this.#activity.get(sessionId);
     if (activity) status.activity = activity;
+    const messages = this.#progress.get(sessionId);
+    const progress = messages ? liveProgress([...messages.values()].map((batches) => batches.join(""))) : [];
+    if (progress.length) status.progress = progress;
     return status;
   }
 
-  /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
-  refresh(): void {
-    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, this.status(s.id)]));
+  /**
+   * Bumps the store's revision when a status changed, so pages see it: a waiter gone quiet, or a
+   * session sidenote runs moving on, whose status comes from statusOf.
+   */
+  refresh(statusOf: (sessionId: string) => SendStatus = (id) => this.status(id)): void {
+    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, statusOf(s.id)]));
     if (signature === this.#statusSignature) return;
     this.#statusSignature = signature;
     this.#store.revision.bump();
@@ -56,13 +68,25 @@ export class Delivery {
   registerWaiter(sessionId: string, waiterId: string): void {
     this.#waiters.set(sessionId, { id: waiterId, seenMs: this.#clock.monotonicMs() });
     this.#busy.delete(sessionId);
-    this.#activity.delete(sessionId);
+    this.#forgetTurn(sessionId);
   }
 
   /** Hooks run in the background, so one can land after its turn ended: only a busy session counts. */
   setActivity(sessionId: string, text: string): void {
     if (this.#state(sessionId) !== "busy") return;
     this.#activity.set(sessionId, text);
+    this.#store.revision.bump();
+  }
+
+  /** Part of a message Claude is writing. Like an activity line, it can land after its turn. */
+  addProgress({ session_id: sessionId, message_id: messageId, index, delta }: ProgressRequest): void {
+    if (this.#state(sessionId) !== "busy" || index >= MAX_TRACKED_BATCHES) return;
+    const messages = this.#progress.get(sessionId) ?? new Map<string, string[]>();
+    this.#progress.set(sessionId, messages);
+    const batches = messages.get(messageId) ?? [];
+    messages.set(messageId, batches);
+    batches[index] = delta;
+    if (messages.size > MAX_TRACKED_MESSAGES) messages.delete(messages.keys().next().value!);
     this.#store.revision.bump();
   }
 
@@ -75,7 +99,7 @@ export class Delivery {
     this.#requested.delete(sessionId);
     this.#waiters.delete(sessionId);
     this.#busy.add(sessionId);
-    this.#activity.delete(sessionId);
+    this.#forgetTurn(sessionId);
     const comments = this.#store.claimPending(sessionId);
     const prompt = this.#store.claimMessages(sessionId);
     if (prompt === undefined) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
@@ -101,7 +125,7 @@ export class Delivery {
     this.#waiters.delete(sessionId);
     this.#busy.add(sessionId);
     this.#requested.delete(sessionId);
-    this.#activity.delete(sessionId);
+    this.#forgetTurn(sessionId);
   }
 
   /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */
@@ -111,6 +135,11 @@ export class Delivery {
     for (const id of targets) this.#requested.add(id);
     if (targets.length) this.#store.revision.bump();
     return targets;
+  }
+
+  #forgetTurn(sessionId: string): void {
+    this.#activity.delete(sessionId);
+    this.#progress.delete(sessionId);
   }
 
   #state(sessionId: string): SessionState {

@@ -2,6 +2,7 @@
 import type { Note, StoredResponse, UserMessage } from "../shared/types.ts";
 import { formatTime, plainText, plural, truncate } from "../shared/text.ts";
 import { button, el, flash, tag } from "./dom.ts";
+import { LiveCard } from "./live-card.ts";
 import { renderMarkdownInto } from "./markdown.ts";
 import { answeredNoteIds, isAnswered, type Model } from "../shared/model.ts";
 
@@ -58,8 +59,8 @@ export class Feed {
   readonly #cards = new Map<number, Card>();
   /** The user's messages, which sit between the replies in time order. */
   readonly #messages = new Map<number, HTMLElement>();
-  /** Three dots after the user's latest message, until Claude's reply arrives. */
-  readonly #typing = createTypingIndicator();
+  /** After the user's latest message, until Claude's reply arrives. */
+  readonly #live: LiveCard;
   #firstRender = true;
 
   constructor(options: {
@@ -78,6 +79,7 @@ export class Feed {
     this.#inner = options.inner;
     this.#emptyState = options.emptyState;
     this.#newReply = options.newReply;
+    this.#live = new LiveCard(options.model);
 
     new ResizeObserver(() => this.layout()).observe(this.#feed);
     this.#newReply.addEventListener("click", () => {
@@ -95,7 +97,7 @@ export class Feed {
     const scroller = this.scroller();
     const wasNearBottom = isNearBottom(scroller);
     const added = this.#syncCards();
-    const typingStarted = this.#syncTyping();
+    const liveGrew = this.#syncLive();
 
     this.#emptyState.hidden = this.#model.responses.length + this.#model.messages.length > 0;
     for (const card of this.#cards.values()) this.#renderNotes(card);
@@ -103,7 +105,7 @@ export class Feed {
 
     if (this.#firstRender) {
       scrollToEnd(this.scroller());
-    } else if ((added || typingStarted) && wasNearBottom) {
+    } else if ((added || liveGrew) && wasNearBottom) {
       scrollToEnd(scroller);
     } else if (added) {
       this.#newReply.hidden = false;
@@ -237,13 +239,13 @@ export class Feed {
     return added;
   }
 
-  /** Keeps the dots last in the feed. Returns whether they just appeared. */
-  #syncTyping(): boolean {
-    const wasHidden = this.#typing.hidden;
-    this.#typing.hidden = !this.#model.awaitingReply();
-    setTypingActivity(this.#typing, this.#model.activity());
-    if (this.#inner.lastElementChild !== this.#typing) this.#inner.append(this.#typing);
-    return wasHidden && !this.#typing.hidden;
+  /** Keeps the live card last in the feed. Returns whether it just appeared or grew. */
+  #syncLive(): boolean {
+    const card = this.#live.element;
+    const wasHidden = card.hidden;
+    const changed = this.#live.render();
+    if (this.#inner.lastElementChild !== card) this.#inner.append(card);
+    return !card.hidden && (changed || Boolean(wasHidden));
   }
 
   #inTimeOrder(): HTMLElement[] {
@@ -417,21 +419,6 @@ function createMessage(message: UserMessage): HTMLElement {
   meta.append(el("b", "", "You"), el("span", "", formatTime(message.created_at)));
   element.append(meta, el("div", "user-message-text", message.text));
   return element;
-}
-
-/** Three dots, and beside them what Claude is doing, without the code it writes. */
-export function createTypingIndicator(): HTMLElement {
-  const element = el("div", "typing");
-  element.setAttribute("role", "status");
-  element.setAttribute("aria-label", "Claude is working");
-  element.append(el("span"), el("span"), el("span"), el("div", "typing-activity"));
-  return element;
-}
-
-export function setTypingActivity(indicator: HTMLElement, activity: string): void {
-  const label = indicator.lastElementChild as HTMLElement;
-  label.textContent = activity;
-  label.hidden = !activity;
 }
 
 /** What the user typed for a turn sidenote ran itself, above its reply. */

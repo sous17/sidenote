@@ -166,3 +166,45 @@ test("a new turn doesn't start with the last turn's tool call", () => {
   delivery.markBusy(SESSION);
   assert.equal(delivery.status(SESSION).activity, undefined);
 });
+
+const batch = (message_id: string, index: number, delta: string) => ({ session_id: SESSION, message_id, index, delta });
+
+test("a turn's messages build up from batches, in order, until the turn ends", () => {
+  const { store, delivery } = fixture();
+  reply(store, "Para one.");
+  delivery.markBusy(SESSION);
+  delivery.addProgress(batch("m1", 1, "second line"));
+  delivery.addProgress(batch("m1", 0, "first line\n"));
+  delivery.addProgress(batch("m2", 0, "Next message."));
+  assert.deepEqual(delivery.status(SESSION).progress, ["first line\nsecond line", "Next message."]);
+
+  delivery.registerWaiter(SESSION, "w1");
+  assert.equal(delivery.status(SESSION).progress, undefined, "the turn ended");
+  delivery.addProgress(batch("m3", 0, "Late."));
+  assert.equal(delivery.status(SESSION).progress, undefined, "a background hook landed after the turn");
+});
+
+test("note markers stay out of the live messages, and old messages drop off", () => {
+  const { store, delivery } = fixture();
+  reply(store, "Para one.");
+  delivery.markBusy(SESSION);
+  delivery.addProgress(batch("m1", 0, "**↳ Re: note 12**\nBecause of the token."));
+  assert.deepEqual(delivery.status(SESSION).progress, ["Because of the token."]);
+
+  for (let i = 0; i < 50; i += 1) delivery.addProgress(batch(`n${i}`, 0, `Step ${i}`));
+  const progress = delivery.status(SESSION).progress!;
+  assert.equal(progress.length, 20);
+  assert.equal(progress.at(-1), "Step 49");
+});
+
+test("a session sidenote runs reaches pages through the status it reports", () => {
+  const { store, delivery } = fixture();
+  reply(store, "Para one.");
+  let activity = "Reading a.ts";
+  const statusOf = () => ({ status: "busy" as const, send_requested: false, activity });
+  delivery.refresh(statusOf);
+  const before = store.revision.value;
+  activity = "Editing a.ts";
+  delivery.refresh(statusOf);
+  assert.ok(store.revision.value > before);
+});

@@ -309,8 +309,50 @@ var systemClock = {
   monotonicMs: () => performance.now()
 };
 
+// src/server/split.ts
+var NOTE_MARKER = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
+var TRAILING_RULES = /(?:\n\s*(?:-{3,}|\*{3,}|_{3,})\s*)+$/;
+var FENCE = /^\s*(?:```|~~~)/;
+function splitNoteAnswers(text2, noteIds) {
+  const main2 = [];
+  const sections = /* @__PURE__ */ new Map();
+  let current = null;
+  let inFence = false;
+  for (const line of text2.split(/\r?\n/)) {
+    if (FENCE.test(line)) inFence = !inFence;
+    const ids = inFence ? [] : markerIds(line).filter((id) => noteIds.has(id));
+    if (ids.length) {
+      current = ids;
+      for (const id of ids) if (!sections.has(id)) sections.set(id, []);
+      continue;
+    }
+    if (current === null) main2.push(line);
+    else for (const id of current) sections.get(id).push(line);
+  }
+  const answers = /* @__PURE__ */ new Map();
+  for (const [id, lines] of sections) {
+    const body = lines.join("\n").trim();
+    if (body) answers.set(id, body);
+  }
+  const mainText = main2.join("\n").trim().replace(TRAILING_RULES, "").trim();
+  return { mainText, answers };
+}
+var MAX_PROGRESS_MESSAGES = 20;
+var MAX_PROGRESS_CHARS = 4e3;
+function liveProgress(messages) {
+  return messages.map(
+    (text2) => text2.split(/\r?\n/).filter((line) => !NOTE_MARKER.test(line)).join("\n").trim()
+  ).filter(Boolean).slice(-MAX_PROGRESS_MESSAGES).map((text2) => text2.length > MAX_PROGRESS_CHARS ? `\u2026${text2.slice(-MAX_PROGRESS_CHARS)}` : text2);
+}
+function markerIds(line) {
+  const ids = NOTE_MARKER.exec(line)?.groups?.["ids"];
+  return ids ? [...ids.matchAll(/\d+/g)].map((match) => Number(match[0])) : [];
+}
+
 // src/server/delivery.ts
 var LISTENER_STALE_MS = 5e3;
+var MAX_TRACKED_MESSAGES = 40;
+var MAX_TRACKED_BATCHES = 2e3;
 var Delivery = class {
   #store;
   #clock;
@@ -321,6 +363,8 @@ var Delivery = class {
   #requested = /* @__PURE__ */ new Set();
   /** The latest tool call of each busy session. Only the page's status line needs it. */
   #activity = /* @__PURE__ */ new Map();
+  /** Each busy session's messages this turn, by message id, as batches by index. */
+  #progress = /* @__PURE__ */ new Map();
   #statusSignature = "";
   constructor(store, clock = systemClock) {
     this.#store = store;
@@ -332,11 +376,17 @@ var Delivery = class {
     if (waiting) status.queued_prompt = waiting;
     const activity = this.#activity.get(sessionId2);
     if (activity) status.activity = activity;
+    const messages = this.#progress.get(sessionId2);
+    const progress = messages ? liveProgress([...messages.values()].map((batches) => batches.join(""))) : [];
+    if (progress.length) status.progress = progress;
     return status;
   }
-  /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
-  refresh() {
-    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, this.status(s.id)]));
+  /**
+   * Bumps the store's revision when a status changed, so pages see it: a waiter gone quiet, or a
+   * session sidenote runs moving on, whose status comes from statusOf.
+   */
+  refresh(statusOf = (id) => this.status(id)) {
+    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, statusOf(s.id)]));
     if (signature === this.#statusSignature) return;
     this.#statusSignature = signature;
     this.#store.revision.bump();
@@ -345,12 +395,23 @@ var Delivery = class {
   registerWaiter(sessionId2, waiterId) {
     this.#waiters.set(sessionId2, { id: waiterId, seenMs: this.#clock.monotonicMs() });
     this.#busy.delete(sessionId2);
-    this.#activity.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
   }
   /** Hooks run in the background, so one can land after its turn ended: only a busy session counts. */
   setActivity(sessionId2, text2) {
     if (this.#state(sessionId2) !== "busy") return;
     this.#activity.set(sessionId2, text2);
+    this.#store.revision.bump();
+  }
+  /** Part of a message Claude is writing. Like an activity line, it can land after its turn. */
+  addProgress({ session_id: sessionId2, message_id: messageId, index, delta }) {
+    if (this.#state(sessionId2) !== "busy" || index >= MAX_TRACKED_BATCHES) return;
+    const messages = this.#progress.get(sessionId2) ?? /* @__PURE__ */ new Map();
+    this.#progress.set(sessionId2, messages);
+    const batches = messages.get(messageId) ?? [];
+    messages.set(messageId, batches);
+    batches[index] = delta;
+    if (messages.size > MAX_TRACKED_MESSAGES) messages.delete(messages.keys().next().value);
     this.#store.revision.bump();
   }
   pollWaiter(sessionId2, waiterId) {
@@ -361,7 +422,7 @@ var Delivery = class {
     this.#requested.delete(sessionId2);
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
-    this.#activity.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
     const comments = this.#store.claimPending(sessionId2);
     const prompt = this.#store.claimMessages(sessionId2);
     if (prompt === void 0) return comments.length ? { action: "send", comments } : { action: "exit", comments: [] };
@@ -387,7 +448,7 @@ ${text2}` : text2).length > MAX_PROMPT_CHARS) return "too-long";
     this.#waiters.delete(sessionId2);
     this.#busy.add(sessionId2);
     this.#requested.delete(sessionId2);
-    this.#activity.delete(sessionId2);
+    this.#forgetTurn(sessionId2);
   }
   /** Queues these sessions' pending notes to go now, or as soon as a busy session's turn ends. */
   requestSend(sessionIds) {
@@ -396,6 +457,10 @@ ${text2}` : text2).length > MAX_PROMPT_CHARS) return "too-long";
     for (const id of targets) this.#requested.add(id);
     if (targets.length) this.#store.revision.bump();
     return targets;
+  }
+  #forgetTurn(sessionId2) {
+    this.#activity.delete(sessionId2);
+    this.#progress.delete(sessionId2);
   }
   #state(sessionId2) {
     const waiter = this.#waiters.get(sessionId2);
@@ -1794,6 +1859,21 @@ function collectListItems(token, blocks) {
 var MAX_DETAIL_CHARS = 4e3;
 var MAX_DETAIL_LINES = 40;
 var MAX_ACTIVITY_CHARS = 200;
+var MAX_PROGRESS_DELTA_CHARS = 2e4;
+var ACTIVITY_VERBS = /* @__PURE__ */ new Map([
+  ["Read", "Reading"],
+  ["Edit", "Editing"],
+  ["MultiEdit", "Editing"],
+  ["NotebookEdit", "Editing"],
+  ["Write", "Writing"],
+  ["Bash", "Running"],
+  ["Grep", "Searching for"],
+  ["Glob", "Searching for"],
+  ["WebFetch", "Fetching"],
+  ["WebSearch", "Searching the web for"],
+  ["Task", "Delegating:"],
+  ["Agent", "Delegating:"]
+]);
 var str = (value) => typeof value === "string" ? value : "";
 function shortPath(path, cwd) {
   if (cwd && path.startsWith(`${cwd}/`)) return path.slice(cwd.length + 1);
@@ -1822,6 +1902,12 @@ function toolSummary(tool, input, cwd) {
   }
   const first = Object.values(input).find((value) => typeof value === "string" && value.trim());
   return firstLine(str(first));
+}
+function activityLine(tool, summary) {
+  if (tool === "TodoWrite") return "";
+  const verb = ACTIVITY_VERBS.get(tool);
+  const line = verb ? `${verb} ${summary}`.trim() : `Using ${tool}`;
+  return line.slice(0, MAX_ACTIVITY_CHARS);
 }
 function toolDetail(tool, input, cwd) {
   let detail;
@@ -1910,39 +1996,6 @@ function migrate(file) {
     ...messages.map((m2) => m2.id)
   );
   return { sessions, responses, comments, messages, nextId: Math.max(file.next_id ?? 1, highestId + 1) };
-}
-
-// src/server/split.ts
-var NOTE_MARKER = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*↳?\s*Re:?\s*notes?\s+(?<ids>#?\d+(?:\s*(?:,|and|&)\s*#?\d+)*)\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
-var TRAILING_RULES = /(?:\n\s*(?:-{3,}|\*{3,}|_{3,})\s*)+$/;
-var FENCE = /^\s*(?:```|~~~)/;
-function splitNoteAnswers(text2, noteIds) {
-  const main2 = [];
-  const sections = /* @__PURE__ */ new Map();
-  let current = null;
-  let inFence = false;
-  for (const line of text2.split(/\r?\n/)) {
-    if (FENCE.test(line)) inFence = !inFence;
-    const ids = inFence ? [] : markerIds(line).filter((id) => noteIds.has(id));
-    if (ids.length) {
-      current = ids;
-      for (const id of ids) if (!sections.has(id)) sections.set(id, []);
-      continue;
-    }
-    if (current === null) main2.push(line);
-    else for (const id of current) sections.get(id).push(line);
-  }
-  const answers = /* @__PURE__ */ new Map();
-  for (const [id, lines] of sections) {
-    const body = lines.join("\n").trim();
-    if (body) answers.set(id, body);
-  }
-  const mainText = main2.join("\n").trim().replace(TRAILING_RULES, "").trim();
-  return { mainText, answers };
-}
-function markerIds(line) {
-  const ids = NOTE_MARKER.exec(line)?.groups?.["ids"];
-  return ids ? [...ids.matchAll(/\d+/g)].map((match) => Number(match[0])) : [];
 }
 
 // src/server/store.ts
@@ -2280,9 +2333,19 @@ var SessionHost = class {
     const session = this.#sessions.get(sessionId2);
     if (!session) return null;
     const busy = session.state === "working" || session.state === "waiting";
-    const status = { status: busy ? "busy" : "listening", send_requested: session.queued.includes("") };
+    const status = {
+      status: busy ? "busy" : "listening",
+      send_requested: session.queued.includes(""),
+      hosted: true
+    };
     const messages = session.queued.filter((text2) => text2.trim());
     if (messages.length) status.queued_prompt = messages.join("\n\n");
+    const parts = busy ? session.live?.parts ?? [] : [];
+    const progress = liveProgress(parts.flatMap((part) => part.kind === "text" ? [part.text] : []));
+    if (progress.length) status.progress = progress;
+    const tool = parts.findLast((part) => part.kind === "tool");
+    const activity = tool?.kind === "tool" ? activityLine(tool.tool, tool.summary) : "";
+    if (activity) status.activity = activity;
     return status;
   }
   /** Sends a message, with the session's pending notes; while the agent works, it waits its turn. */
@@ -2355,6 +2418,7 @@ ${formatNotesForClaude(notes)}` : formatNotesForClaude(notes, { sendNow: true })
       session.known = true;
     }
     session.live = { prompt: text2, notes_sent: notes.length, started_at: this.#clock.now(), parts: [] };
+    this.#store.revision.bump();
     session.streaming = false;
     session.state = "working";
     session.error = "";
@@ -2569,6 +2633,15 @@ function parseActivity(input) {
     text: nonEmpty(string(body, "text", MAX_ACTIVITY_CHARS), "text")
   };
 }
+function parseProgress(input) {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    message_id: matching(body, "message_id", REQUEST_ID_PATTERN),
+    index: integer(body, "index", 0),
+    delta: string(body, "delta", MAX_PROGRESS_DELTA_CHARS)
+  };
+}
 function parseWaiter(input) {
   const body = asObject(input);
   return {
@@ -2665,7 +2738,7 @@ function routes({ store, delivery, host, launchCodes, token }) {
       path: "/api/state",
       needsToken: true,
       handle: async ({ query }) => {
-        delivery.refresh();
+        delivery.refresh((id) => host.sendStatus(id) ?? delivery.status(id));
         const known = query.get("v");
         if (known === String(store.revision.value) && query.get("wait") === "1") {
           await store.revision.waitPast(Number(known), LONG_POLL_MS);
@@ -2800,6 +2873,15 @@ function routes({ store, delivery, host, launchCodes, token }) {
       handle: ({ body }) => {
         const { session_id, text: text2 } = parseActivity(body);
         delivery.setActivity(session_id, text2);
+        return ok({ ok: true });
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/progress",
+      needsToken: true,
+      handle: ({ body }) => {
+        delivery.addProgress(parseProgress(body));
         return ok({ ok: true });
       }
     },

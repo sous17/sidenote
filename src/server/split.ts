@@ -39,6 +39,27 @@ export function splitNoteAnswers(text: string, noteIds: ReadonlySet<number>): Sp
   return { mainText, answers };
 }
 
+const MAX_PROGRESS_MESSAGES = 20;
+const MAX_PROGRESS_CHARS = 4000;
+
+/**
+ * A turn's messages as the page shows them while Claude works: without note markers, which would
+ * only make sense once the reply is split, and bounded, because every poll carries them.
+ */
+export function liveProgress(messages: readonly string[]): string[] {
+  return messages
+    .map((text) =>
+      text
+        .split(/\r?\n/)
+        .filter((line) => !NOTE_MARKER.test(line))
+        .join("\n")
+        .trim(),
+    )
+    .filter(Boolean)
+    .slice(-MAX_PROGRESS_MESSAGES)
+    .map((text) => (text.length > MAX_PROGRESS_CHARS ? `…${text.slice(-MAX_PROGRESS_CHARS)}` : text));
+}
+
 function markerIds(line: string): number[] {
   const ids = NOTE_MARKER.exec(line)?.groups?.["ids"];
   return ids ? [...ids.matchAll(/\d+/g)].map((match) => Number(match[0])) : [];

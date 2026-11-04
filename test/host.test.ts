@@ -92,6 +92,7 @@ test("Send now sends only the notes, and waits for the turn in progress", () => 
   host.message(id, "Something slow");
   noteOn(store, store.sessionContent(id).responses[0]!.id, "Shorter please");
   assert.equal(host.sendStatus(id)?.status, "busy");
+  assert.equal(host.sendStatus(id)?.hosted, true, "the page shows the dots from this");
   assert.equal(host.sendNotes(id), true);
   assert.equal(host.sendStatus(id)?.send_requested, true);
   assert.equal(agent.sent.length, 2, "nothing more while the agent works");
@@ -205,4 +206,29 @@ test("closing the host ends every agent process", () => {
   host.message(host.open("/w/a"), "hi");
   host.closeAll();
   assert.equal(agent.closed, 1);
+});
+
+test("a turn starting reaches pages, which poll the store's revision", () => {
+  const { store, agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "First");
+  agent.reply("Answer.");
+  const before = store.revision.value;
+  host.message(id, "Something slow");
+  assert.ok(store.revision.value > before);
+});
+
+test("a turn's text and latest tool call reach the page", () => {
+  const { store, agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Something slow");
+  agent.emit({ type: "text", text: "Looking at it." });
+  agent.emit({ type: "tool_use", id: "t1", name: "Edit", input: { file_path: "/w/shop/a.ts" } });
+  agent.emit({ type: "text", text: "Found it." });
+  assert.deepEqual(host.sendStatus(id)?.progress, ["Looking at it.", "Found it."]);
+  assert.equal(host.sendStatus(id)?.activity, "Editing a.ts");
+
+  agent.reply("Done.");
+  assert.equal(host.sendStatus(id)?.progress, undefined, "the reply took over");
+  assert.ok(store.revision.value > 0);
 });

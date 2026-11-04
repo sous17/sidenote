@@ -5,6 +5,7 @@ import {
   BadRequest,
   LIMITS,
   parseActivity,
+  parseProgress,
   parseNewNote,
   parseNewResponse,
   parsePrompt,
@@ -59,4 +60,12 @@ test("an activity line is short, and not empty", () => {
   assert.throws(() => parseActivity({ session_id, text: " " }), BadRequest);
   assert.throws(() => parseActivity({ session_id, text: "x".repeat(201) }), BadRequest);
   assert.throws(() => parseActivity({ session_id: "../x", text: "Editing a.ts" }), BadRequest);
+});
+
+test("a batch of a message is bounded, and its ids checked", () => {
+  const body = { session_id: "s1", message_id: "5b2a9c8e-1f63", index: 0, delta: "Line\n" };
+  assert.deepEqual(parseProgress(body), body);
+  assert.throws(() => parseProgress({ ...body, message_id: "../x" }), BadRequest);
+  assert.throws(() => parseProgress({ ...body, index: -1 }), BadRequest);
+  assert.throws(() => parseProgress({ ...body, delta: "x".repeat(20_001) }), BadRequest);
 });

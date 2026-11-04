@@ -63,6 +63,8 @@ export class Model {
   awaitingReply(): boolean {
     const { status } = this.sendStatus();
     if (status === "offline") return false;
+    // A session sidenote runs says so itself: its messages only appear once they have a reply.
+    if (status === "busy" && this.sendStatus().hosted) return true;
     // Send now has no message: the turn it starts is only visible through its notes.
     if (status === "busy" && this.notes.some((note) => note.delivered_at !== null && note.answered_by === null)) {
       return true;
@@ -76,6 +78,11 @@ export class Model {
   /** What Claude is doing while the user waits for its reply, or "". */
   activity(): string {
     return this.awaitingReply() ? (this.sendStatus().activity ?? "") : "";
+  }
+
+  /** What Claude has written so far in this turn, while the user waits for its reply. */
+  progress(): readonly string[] {
+    return this.awaitingReply() ? (this.sendStatus().progress ?? []) : [];
   }
 
   /** Unsent, but Send now was clicked: it goes as soon as the session can take it. */

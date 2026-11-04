@@ -91,6 +91,10 @@ export interface SendStatus {
   queued_prompt?: string;
   /** What Claude is doing in this turn, such as "Editing src/app.ts"; absent when unknown. */
   activity?: string;
+  /** What Claude has written so far in this turn, oldest first, as plain text. */
+  progress?: string[];
+  /** Sidenote runs this session. Its messages aren't in the message list until they have a reply. */
+  hosted?: boolean;
 }
 
 /** The session a page shows, with its Send now status. */
@@ -165,6 +169,16 @@ export interface ConversationView {
 export interface ActivityRequest {
   session_id: string;
   text: string;
+}
+
+/** Part of a message Claude is writing, reported by a terminal session's MessageDisplay hook. */
+export interface ProgressRequest {
+  session_id: string;
+  /** The same for every batch of one message. */
+  message_id: string;
+  /** Batches run in the background, so they can arrive out of order. */
+  index: number;
+  delta: string;
 }
 
 export interface StartConversationRequest {
