@@ -9,6 +9,7 @@ import { after, before, describe, test } from "node:test";
 import { isSameProcess, pidInUse, processInfo } from "../src/node/process.ts";
 import type { NewSession } from "../src/node/terminal.ts";
 import { Delivery } from "../src/server/delivery.ts";
+import { SessionHost } from "../src/server/host.ts";
 import { createApp } from "../src/server/http.ts";
 import { LaunchCodes } from "../src/server/launch.ts";
 import { SessionProcesses } from "../src/server/processes.ts";
@@ -52,6 +53,15 @@ before(async () => {
     createApp({
       store,
       delivery: new Delivery(store),
+      host: new SessionHost({
+        store,
+        agent: {
+          name: "None",
+          start: () => {
+            throw new Error("no agent in these tests");
+          },
+        },
+      }),
       launchCodes: new LaunchCodes(),
       token: TOKEN,
       allowedHosts: new Set([`127.0.0.1:${port}`]),
@@ -356,6 +366,7 @@ describe("starting a session", () => {
       createApp({
         store,
         delivery: new Delivery(store),
+        host: new SessionHost({ store, agent: { name: "None", start: () => assert.fail("no agent here") } }),
         launchCodes: new LaunchCodes(),
         token: TOKEN,
         allowedHosts,

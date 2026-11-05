@@ -1,5 +1,6 @@
 // Parsers for request bodies. Each one turns untrusted JSON into a typed, bounded value, or
 // throws BadRequest. Handlers never touch raw input.
+import { isAbsolute } from "node:path";
 import { MAX_ACTIVITY_CHARS, MAX_PROGRESS_DELTA_CHARS } from "../shared/tools.ts";
 import {
   MAX_PROMPT_CHARS,
@@ -7,12 +8,16 @@ import {
   type ActivityRequest,
   type ClaimRequest,
   type ClaudeProcess,
+  type ConversationMessageRequest,
+  type PermissionAnswerRequest,
   type ProgressRequest,
   type PromptRequest,
+  type StartConversationRequest,
   type StartSessionRequest,
   type EpochSeconds,
   type NewResponseRequest,
   type RedeemRequest,
+  type RegisterSessionRequest,
   type RenameSessionRequest,
   type SendRequest,
   type SessionRequest,
@@ -33,7 +38,9 @@ export const LIMITS = {
   message: 100_000,
 } as const;
 
-const MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const DECISIONS: ReadonlySet<string> = new Set(["allow", "deny", "always"]);
+
 const WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 const LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -153,7 +160,7 @@ export function parseProgress(input: unknown): ProgressRequest {
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
-    message_id: matching(body, "message_id", MESSAGE_ID_PATTERN),
+    message_id: matching(body, "message_id", REQUEST_ID_PATTERN),
     index: integer(body, "index", 0),
     delta: string(body, "delta", MAX_PROGRESS_DELTA_CHARS),
   };
@@ -182,11 +189,45 @@ export function parseRedeem(input: unknown): RedeemRequest {
   return { code: matching(asObject(input), "code", LAUNCH_CODE_PATTERN) };
 }
 
+export function parseRegisterSession(input: unknown): RegisterSessionRequest {
+  const body = asObject(input);
+  const cwd = string(body, "cwd", LIMITS.cwd);
+  if (!isAbsolute(cwd) || cwd.includes("\0")) throw new BadRequest("cwd must be an absolute path");
+  const id = optionalString(body, "session_id", 256);
+  return id === undefined ? { cwd } : { cwd, session_id: sessionId(id) };
+}
+
+export function parseStartConversation(input: unknown): Required<StartConversationRequest> {
+  const body = asObject(input);
+  const resume = body["resume"] ?? false;
+  if (typeof resume !== "boolean") throw new BadRequest("resume must be true or false");
+  return { session_id: matching(body, "session_id", SESSION_ID_PATTERN), resume };
+}
+
+export function parseConversationMessage(input: unknown): ConversationMessageRequest {
+  const body = asObject(input);
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    text: string(body, "text", LIMITS.message),
+  };
+}
+
 export function parsePrompt(input: unknown): PromptRequest {
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     text: nonEmpty(string(body, "text", LIMITS.message), "text").trim(),
+  };
+}
+
+export function parsePermissionAnswer(input: unknown): PermissionAnswerRequest {
+  const body = asObject(input);
+  const decision = string(body, "decision", 16);
+  if (!DECISIONS.has(decision)) throw new BadRequest("decision must be allow, deny or always");
+  return {
+    session_id: matching(body, "session_id", SESSION_ID_PATTERN),
+    request_id: matching(body, "request_id", REQUEST_ID_PATTERN),
+    decision: decision as PermissionAnswerRequest["decision"],
   };
 }
 

@@ -2,7 +2,7 @@
 // note editor and the thread's reply box.
 import type { NewNoteRequest, SessionState } from "../shared/types.ts";
 import type { Api } from "./api.ts";
-import type { Model } from "./model.ts";
+import type { Model } from "../shared/model.ts";
 
 const HINTS: Readonly<Record<SessionState, string>> = {
   listening: "⌘↵ send now · Save keeps it for your next prompt",

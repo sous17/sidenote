@@ -2,8 +2,9 @@
 // window it is docked beside the feed; otherwise, and while a thread is open, it folds away and the
 // button in the top bar opens it over the feed.
 import type { FolderSession, SessionState } from "../shared/types.ts";
-import { el, formatTime } from "./dom.ts";
-import { sessionLabel } from "./model.ts";
+import { sessionLabel } from "../shared/model.ts";
+import { formatTime } from "../shared/text.ts";
+import { el } from "./dom.ts";
 
 /** Docked, the panel's 260px still leave the feed the 1000px that notes in the margin need. */
 const DOCK_MIN_WIDTH = 1280;

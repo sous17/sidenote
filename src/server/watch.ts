@@ -15,6 +15,8 @@ export interface WatchChecks {
   /** Whether server.json names this server. */
   isRegistered(): boolean;
   register(): void;
+  /** Whether an agent this server runs is in a turn, which stopping the server would cut short. */
+  working(): boolean;
 }
 
 export class ServerWatch {
@@ -34,7 +36,7 @@ export class ServerWatch {
   tick(): string | null {
     if (!this.#checks.holdsLock()) return "another server holds the lock";
     if (!this.#checks.isRegistered()) this.#checks.register();
-    this.#idleTicks += 1;
+    this.#idleTicks = this.#checks.working() ? 0 : this.#idleTicks + 1;
     return this.#idleTicks >= IDLE_TICKS ? `nothing used it for ${IDLE_MINUTES} minutes` : null;
   }
 }

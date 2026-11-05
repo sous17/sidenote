@@ -8,8 +8,11 @@ import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
 import { isSameProcess, pidInUse } from "../node/process.ts";
 import { canStartSessions, startInTerminal, terminalCommand } from "../node/terminal.ts";
+import { ClaudeAgent } from "../agent/claude.ts";
+import { sessionContext } from "../shared/format.ts";
 import { PAGE_HOST, type ServerInfo } from "../shared/types.ts";
 import { Delivery } from "./delivery.ts";
+import { SessionHost } from "./host.ts";
 import { createApp } from "./http.ts";
 import { SessionProcesses } from "./processes.ts";
 import { LaunchCodes } from "./launch.ts";
@@ -65,6 +68,7 @@ async function main(): Promise<void> {
   if (!acquireServerLock(paths.lockFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
   const store = new Store({ dir: paths.stateDir() });
+  const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
   const token = randomBytes(32).toString("base64url");
   const allowedHosts = new Set<string>();
   let serverInfo = "";
@@ -73,11 +77,13 @@ async function main(): Promise<void> {
     holdsLock: () => holdServerLock(paths.lockFile()),
     isRegistered: () => registeredPid() === process.pid,
     register,
+    working: () => host.working(),
   });
   const server = createServer(
     createApp({
       store,
       delivery: new Delivery(store),
+      host,
       launchCodes: new LaunchCodes(),
       token,
       allowedHosts,
@@ -103,6 +109,7 @@ async function main(): Promise<void> {
   console.error(`sidenote listening on http://127.0.0.1:${port}`);
 
   const shutDown = (): void => {
+    host.closeAll();
     removeServerFile();
     server.close();
     server.closeAllConnections();

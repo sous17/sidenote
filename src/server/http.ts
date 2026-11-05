@@ -19,18 +19,22 @@ import {
   TOKEN_HEADER,
   type ClaimResult,
   type ClearedSessionResult,
+  type ConversationView,
   type ErrorResult,
   type LaunchCodeResult,
   type NewResponseResult,
   type PromptResult,
   type RedeemResult,
   type SendResult,
+  type SendStatus,
   type SessionListResult,
+  type StartConversationResult,
   type StartSessionResult,
   type StateSnapshot,
   type WaiterPollResult,
 } from "../shared/types.ts";
 import type { Delivery } from "./delivery.ts";
+import { HostError, UnknownSession, type SessionHost } from "./host.ts";
 import type { SessionProcesses } from "./processes.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
@@ -38,12 +42,16 @@ import {
   parseActivity,
   parseProgress,
   parseClaim,
+  parseConversationMessage,
   parseNewNote,
   parseNewResponse,
   parseRename,
   parsePrompt,
   parseRedeem,
+  parseRegisterSession,
+  parsePermissionAnswer,
   parseSend,
+  parseStartConversation,
   parseSessionRequest,
   parseStartSession,
   parseTouchSession,
@@ -52,6 +60,8 @@ import {
 import type { Store } from "./store.ts";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/** A long poll (wait=1) is answered at the latest after this, so proxies and timeouts never cut it. */
+export const LONG_POLL_MS = 25_000;
 const FOLDER_PATH = /^\/[^/]+$/;
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -78,6 +88,7 @@ const PAGE_HEADERS: Readonly<Record<string, string>> = {
 export interface AppOptions {
   store: Store;
   delivery: Delivery;
+  host: SessionHost;
   launchCodes: LaunchCodes;
   token: string;
   /** Called for each API request that passed the token check. */
@@ -121,7 +132,18 @@ interface Route {
 const ok = (body: Json, status = 200): Reply => ({ status, body });
 const empty = (status: number): Reply => ({ status });
 
-function routes({ store, delivery, launchCodes, token, openFolder, startSession, processes }: AppOptions): Route[] {
+function routes({
+  store,
+  delivery,
+  host,
+  launchCodes,
+  token,
+  openFolder,
+  startSession,
+  processes,
+}: AppOptions): Route[] {
+  const statusOf = (sessionId: string): SendStatus => host.sendStatus(sessionId) ?? delivery.status(sessionId);
+
   /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
   const snapshot = (sessionId: string | null, folder: string | null): StateSnapshot => {
     const latest = folder === null ? undefined : store.folderSessions(folder)[0];
@@ -143,12 +165,13 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
     const windowFolder = folderName(session.cwd);
     return {
       version,
-      session: { ...session, ...delivery.status(session.id) },
+      session: { ...session, ...statusOf(session.id) },
       folder: windowFolder,
       sessions: store.folderSessions(windowFolder).map((row) => ({
         ...row,
-        status: delivery.status(row.id).status,
-        process: processes.state(row.id),
+        status: statusOf(row.id).status,
+        // A session sidenote runs has no hooks to report its process, and sidenote can end it itself.
+        process: host.owns(row.id) ? "running" : processes.state(row.id),
       })),
       can_start_sessions,
       ...store.sessionContent(session.id),
@@ -168,12 +191,86 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
       method: "GET",
       path: "/api/state",
       needsToken: true,
-      handle: ({ query }) => {
-        delivery.refresh();
+      handle: async ({ query }) => {
+        delivery.refresh(statusOf);
         processes.refresh();
         // The page passes the version it has; an unchanged store costs one empty reply.
-        if (query.get("v") === String(store.revision.value)) return empty(204);
+        const known = query.get("v");
+        if (known === String(store.revision.value) && query.get("wait") === "1") {
+          await store.revision.waitPast(Number(known), LONG_POLL_MS);
+        }
+        if (known === String(store.revision.value)) return empty(204);
         return ok(snapshot(query.get("s"), query.get("f")));
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/conversation",
+      needsToken: true,
+      handle: async ({ query }) => {
+        const sessionId = query.get("s") ?? "";
+        if (!host.owns(sessionId)) throw new HttpError(404, "sidenote isn't running this session");
+        const known = query.get("v");
+        if (known === String(host.revision.value) && query.get("wait") === "1") {
+          await host.revision.waitPast(Number(known), LONG_POLL_MS);
+        }
+        if (known === String(host.revision.value)) return empty(204);
+        const view: ConversationView | null = host.view(sessionId);
+        if (!view) throw new HttpError(404, "sidenote isn't running this session");
+        return ok(view);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/register",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseRegisterSession(body);
+        if (!statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
+          throw new HttpError(400, "cwd is not a folder");
+        }
+        const id = input.session_id ?? randomUUID();
+        // A session keeps its folder: registering never moves one sidenote already knows.
+        if (!store.session(id)?.cwd) store.touchSession(id, "", input.cwd);
+        return ok({ session_id: id } satisfies StartConversationResult, 201);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversations",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, resume } = parseStartConversation(body);
+        const id = host.open(recordedFolder(session_id), session_id, resume);
+        return ok({ session_id: id } satisfies StartConversationResult, 201);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversation/messages",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parseConversationMessage(body);
+        host.message(input.session_id, input.text);
+        return ok({ ok: true }, 202);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversation/interrupt",
+      needsToken: true,
+      handle: ({ body }) => ok({ queued: host.interrupt(parseSessionRequest(body).session_id) }),
+    },
+    {
+      method: "POST",
+      path: "/api/conversation/permission",
+      needsToken: true,
+      handle: ({ body }) => {
+        const input = parsePermissionAnswer(body);
+        if (!host.answer(input.session_id, input.request_id, input.decision)) {
+          throw new HttpError(409, "that permission prompt was already answered or has gone");
+        }
+        return ok({ ok: true });
       },
     },
     {
@@ -285,7 +382,13 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
       method: "POST",
       path: "/api/send",
       needsToken: true,
-      handle: ({ body }) => ok({ sessions: delivery.requestSend(parseSend(body).session_ids) } satisfies SendResult),
+      handle: ({ body }) => {
+        // Sessions sidenote runs take their notes as a message; the others through their waiter.
+        const ids = parseSend(body).session_ids;
+        const hosted = ids.filter((id) => host.owns(id) && host.sendNotes(id));
+        const waiting = delivery.requestSend(ids.filter((id) => !host.owns(id)));
+        return ok({ sessions: [...hosted, ...waiting].sort() } satisfies SendResult);
+      },
     },
     {
       method: "POST",
@@ -294,6 +397,12 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
       handle: ({ body }) => {
         const { session_id, text } = parsePrompt(body);
         if (!store.session(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
+        // Sessions sidenote runs take it as their next message; the others through their waiter.
+        if (host.owns(session_id)) {
+          const busy = host.sendStatus(session_id)?.status === "busy";
+          host.message(session_id, text);
+          return ok({ delivery: busy ? "queued" : "sent" } satisfies PromptResult, 202);
+        }
         const outcome = delivery.requestPrompt(session_id, text);
         if (outcome === "offline") {
           throw new HttpError(
@@ -332,6 +441,10 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
       needsToken: true,
       handle: ({ body }) => {
         const { session_id } = parseSessionRequest(body);
+        if (host.end(session_id)) {
+          store.forgetSession(session_id);
+          return empty(204);
+        }
         if (processes.state(session_id) === "unknown") {
           throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
         }
@@ -349,7 +462,9 @@ function routes({ store, delivery, launchCodes, token, openFolder, startSession,
       needsToken: true,
       handle: ({ body }) => {
         const { session_id } = parseSessionRequest(body);
-        if (processes.running(session_id)) throw new HttpError(409, "this session is still running: end it instead");
+        if (host.owns(session_id) || processes.running(session_id)) {
+          throw new HttpError(409, "this session is still running: end it instead");
+        }
         processes.forget(session_id);
         if (!store.forgetSession(session_id)) throw new HttpError(404, "sidenote doesn't know this session");
         return empty(204);
@@ -454,6 +569,8 @@ export function createApp(options: AppOptions): RequestListener {
       if (response.headersSent) return response.destroy();
       if (error instanceof HttpError) return send(response, errorReply(error.status, error.message));
       if (error instanceof BadRequest) return send(response, errorReply(400, error.message));
+      if (error instanceof UnknownSession) return send(response, errorReply(404, error.message));
+      if (error instanceof HostError) return send(response, errorReply(409, error.message));
       console.error(error);
       send(response, errorReply(500, "internal error"));
     });

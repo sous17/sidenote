@@ -197,3 +197,26 @@ test("names given in the window are kept, and stores from before them load with 
   store.renameSession(SESSION, "DM-1782 OAuth fix");
   assert.equal(new Store({ dir }).session(SESSION)?.label, "DM-1782 OAuth fix");
 });
+
+test("a turn sidenote ran keeps its prompt and steps in the session's file", (t) => {
+  const dir = scratchDir(t);
+  const store = new Store({ dir });
+  store.addResponse({
+    sessionId: SESSION,
+    cwd: "/w",
+    text: "Done.",
+    sessionName: "",
+    createdAt: undefined,
+    turn: {
+      prompt: "Fix it",
+      notesSent: 1,
+      steps: [{ tool: "Edit", summary: "a.ts", after_block: -1, failed: false }],
+      ended: "interrupted",
+    },
+  });
+  const [reply] = new Store({ dir }).sessionContent(SESSION).responses;
+  assert.equal(reply?.prompt, "Fix it");
+  assert.equal(reply?.notes_sent, 1);
+  assert.deepEqual(reply?.steps, [{ tool: "Edit", summary: "a.ts", after_block: -1, failed: false }]);
+  assert.equal(reply?.ended, "interrupted");
+});

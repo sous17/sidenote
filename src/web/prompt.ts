@@ -1,6 +1,6 @@
 // The message box at the bottom of the feed: talk to Claude from the page instead of the terminal.
 // Pending notes ride along with the message, as they do with a prompt typed in the terminal.
-import type { Model } from "./model.ts";
+import type { Model } from "../shared/model.ts";
 import { ApiError, type Api } from "./api.ts";
 
 const MAX_ROWS = 10;

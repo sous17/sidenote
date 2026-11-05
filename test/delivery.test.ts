@@ -197,6 +197,18 @@ test("note markers stay out of the live messages, and old messages drop off", ()
   assert.equal(progress.at(-1), "Step 49");
 });
 
+test("a session sidenote runs reaches pages through the status it reports", () => {
+  const { store, delivery } = fixture();
+  reply(store, "Para one.");
+  let activity = "Reading a.ts";
+  const statusOf = () => ({ status: "busy" as const, send_requested: false, activity });
+  delivery.refresh(statusOf);
+  const before = store.revision.value;
+  activity = "Editing a.ts";
+  delivery.refresh(statusOf);
+  assert.ok(store.revision.value > before);
+});
+
 test("a forgotten session's waiter exits, so a send can't wake the Claude that moved on", () => {
   const { store, delivery } = fixture();
   noteOn(store, reply(store, "Para one.").id);

@@ -1,0 +1,198 @@
+// Reads keypresses from what a terminal sends in raw mode: plain characters, control keys,
+// Alt (ESC followed by the key), CSI sequences for arrows and the like, and mouse reports in SGR
+// form. Bracketed paste arrives as one event, so a pasted newline never sends a note.
+//
+// A read from the terminal can end anywhere, even inside a sequence, so KeyReader holds an
+// unfinished one until the rest arrives. Parsed alone, the tail of a paste would be keystrokes.
+
+export interface Key {
+  /** The character typed, or a name: enter, tab, backspace, delete, escape, up, down, left,
+   * right, home, end, pageup, pagedown, paste, wheelup, wheeldown, mouse (any other mouse
+   * report), background (the terminal's answer to Screen's question about its background).
+   * Ctrl+letter is the letter with ctrl set. */
+  name: string;
+  /** What to insert into text: the character typed, or the pasted text. */
+  text: string;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  /** For the wheel: the column the pointer is on, from 0. */
+  column?: number;
+  /** For background: whether it is light. Undefined if the answer can't be read. */
+  light?: boolean;
+}
+
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+const CSI = /^\x1b[[O]([0-9;]*)([A-Za-z~])/;
+/** Button, column and row, each from 1, then M for a press and m for a release. */
+const MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
+const WHEEL = 64;
+/** The terminal's background color, as rgb:RRRR/GGGG/BBBB, ended by BEL or ST. */
+const BACKGROUND = /^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)/;
+/** The start of an escape sequence with its end still to come. Paste is checked on its own. */
+const UNFINISHED = /^\x1b(?:[[O][0-9;<]*|\][^\x07\x1b]*\x1b?)?$/;
+/** Esc on its own looks like the start of a sequence, so it waits this long for more. */
+const ESCAPE_WAIT_MS = 50;
+/** A paste comes in many reads; if its end never arrives, what came so far is kept. */
+const PASTE_WAIT_MS = 1000;
+const COLOR_REPORT = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i;
+
+const CSI_LETTERS: ReadonlyMap<string, string> = new Map([
+  ["A", "up"],
+  ["B", "down"],
+  ["C", "right"],
+  ["D", "left"],
+  ["H", "home"],
+  ["F", "end"],
+  ["Z", "tab"], // Shift+Tab
+]);
+const CSI_TILDES: ReadonlyMap<string, string> = new Map([
+  ["1", "home"],
+  ["7", "home"],
+  ["4", "end"],
+  ["8", "end"],
+  ["3", "delete"],
+  ["5", "pageup"],
+  ["6", "pagedown"],
+]);
+/** Keys the kitty keyboard protocol reports as CSI <code> u, such as Shift+Enter. */
+const CSI_U_CODES: ReadonlyMap<number, string> = new Map([
+  [13, "enter"],
+  [9, "tab"],
+  [27, "escape"],
+  [127, "backspace"],
+]);
+
+function key(name: string, fields: Partial<Key> = {}): Key {
+  return { name, text: "", ctrl: false, alt: false, shift: false, ...fields };
+}
+
+export function parseKeys(data: string): Key[] {
+  return scan(data, true).keys;
+}
+
+/** Turns reads from the terminal into keys, across reads. */
+export class KeyReader {
+  #rest = "";
+
+  read(data: string): Key[] {
+    const { keys, rest } = scan(this.#rest + data, false);
+    this.#rest = rest;
+    return keys;
+  }
+
+  /** How long to wait for the rest of an unfinished sequence before flush; null if there is none. */
+  get waitMs(): number | null {
+    if (!this.#rest) return null;
+    return this.#rest.startsWith(PASTE_START) ? PASTE_WAIT_MS : ESCAPE_WAIT_MS;
+  }
+
+  /** The rest never came: what was held is all there is. */
+  flush(): Key[] {
+    const keys = parseKeys(this.#rest);
+    this.#rest = "";
+    return keys;
+  }
+}
+
+function unfinished(tail: string): boolean {
+  return tail.startsWith(PASTE_START) ? !tail.includes(PASTE_END) : UNFINISHED.test(tail);
+}
+
+/** The keys in data. Unless it is final, an unfinished sequence at its end comes back as rest. */
+function scan(data: string, final: boolean): { keys: Key[]; rest: string } {
+  const keys: Key[] = [];
+  let i = 0;
+  while (i < data.length) {
+    if (!final && data[i] === "\x1b" && unfinished(data.slice(i))) return { keys, rest: data.slice(i) };
+    if (data.startsWith(PASTE_START, i)) {
+      const end = data.indexOf(PASTE_END, i + PASTE_START.length);
+      const text = data.slice(i + PASTE_START.length, end < 0 ? undefined : end);
+      keys.push(key("paste", { text: text.replace(/\r\n?/g, "\n") }));
+      i = end < 0 ? data.length : end + PASTE_END.length;
+      continue;
+    }
+    if (data[i] === "\x1b") {
+      const background = BACKGROUND.exec(data.slice(i));
+      if (background) {
+        const light = isLight(background[1]!);
+        keys.push(key("background", light === undefined ? {} : { light }));
+        i += background[0].length;
+        continue;
+      }
+      const mouse = MOUSE.exec(data.slice(i));
+      if (mouse) {
+        keys.push(fromMouse(Number(mouse[1]), Number(mouse[2]), mouse[3]!));
+        i += mouse[0].length;
+        continue;
+      }
+      const sequence = CSI.exec(data.slice(i));
+      if (sequence) {
+        keys.push(fromCsi(sequence[1]!, sequence[2]!));
+        i += sequence[0].length;
+        continue;
+      }
+      const next = data.codePointAt(i + 1);
+      if (next === undefined || next === 0x1b) {
+        keys.push(key("escape"));
+        i += 1;
+        continue;
+      }
+      // Alt+key: the terminal sends ESC, then the key.
+      const char = String.fromCodePoint(next);
+      keys.push({ ...single(char), alt: true });
+      i += 1 + char.length;
+      continue;
+    }
+    const char = String.fromCodePoint(data.codePointAt(i)!);
+    keys.push(single(char));
+    i += char.length;
+  }
+  return { keys, rest: "" };
+}
+
+function single(char: string): Key {
+  const code = char.codePointAt(0)!;
+  if (char === "\r" || char === "\n") return key("enter");
+  if (char === "\t") return key("tab");
+  if (code === 0x7f || code === 0x08) return key("backspace");
+  if (code >= 0x01 && code <= 0x1a) return key(String.fromCharCode(code + 0x60), { ctrl: true });
+  if (code < 0x20) return key("unknown");
+  return key(char, { text: char });
+}
+
+/** Each channel has 1 to 4 hex digits, so it is scaled by its own length. */
+function isLight(report: string): boolean | undefined {
+  const channels = COLOR_REPORT.exec(report)?.slice(1);
+  if (!channels) return undefined;
+  const [red, green, blue] = channels.map((hex) => Number.parseInt(hex, 16) / (16 ** hex.length - 1)) as [
+    number,
+    number,
+    number,
+  ];
+  return 0.299 * red + 0.587 * green + 0.114 * blue > 0.5;
+}
+
+function fromMouse(button: number, column: number, final: string): Key {
+  // Modifier keys add bits below WHEEL; the two lowest say which way, and 2 and 3 are sideways.
+  const direction = button & 3;
+  if ((button & WHEEL) === 0 || direction > 1 || final !== "M") return key("mouse");
+  return key(direction === 0 ? "wheelup" : "wheeldown", { column: column - 1 });
+}
+
+function fromCsi(params: string, final: string): Key {
+  const [first = "", modifier = "1"] = params.split(";");
+  const bits = Math.max(0, Number(modifier) - 1);
+  const mods = { shift: (bits & 1) !== 0, alt: (bits & 2) !== 0, ctrl: (bits & 4) !== 0 };
+  if (final === "~") return key(CSI_TILDES.get(first) ?? "unknown", mods);
+  if (final === "u") {
+    const code = Number(first);
+    const name = CSI_U_CODES.get(code);
+    if (name) return key(name, mods);
+    const char = String.fromCodePoint(code);
+    return key(char, { ...mods, text: mods.ctrl || mods.alt ? "" : char });
+  }
+  if (final === "Z") return key("tab", { ...mods, shift: true });
+  return key(CSI_LETTERS.get(final) ?? "unknown", mods);
+}

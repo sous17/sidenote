@@ -1,6 +1,9 @@
 // sidenote CLI: the /sidenote:* commands and the Claude Code hooks.
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { HEADLESS_ENV } from "../agent/claude.ts";
 import { paths } from "../node/paths.ts";
 import { folderName } from "../shared/folders.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
@@ -23,9 +26,14 @@ import {
   sessionNameFromTranscript,
 } from "./transcript.ts";
 
-const USAGE = `sidenote: leave inline notes on Claude Code replies in your browser.
+const USAGE = `sidenote: leave inline notes on Claude Code replies in your browser or terminal.
 
-  sidenote on [session]        turn sidenote on and open the session's window
+  sidenote on [session]        turn sidenote on and open the session's window in the browser
+  sidenote chat [session]      talk to Claude Code here: sidenote runs the session, and you
+                               note its replies as it works; without a session, a new one
+                               starts in this folder
+  sidenote tui [session]       show the session's replies in this terminal; without a session,
+                               the latest one in this folder
   sidenote off                 turn sidenote off; unsent notes are kept
   sidenote restart [session]   restart the server, for example after an update, and open the
                                session's window; unsent notes are kept
@@ -45,6 +53,13 @@ session is used.`;
 
 const NOT_RUNNING = "sidenote is off; use /sidenote:on first.";
 const SERVER_STOP_TIMEOUT_MS = 5000;
+
+/** The launcher, next to dist/: the plugin's bin/ isn't on the user's PATH. */
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "sidenote");
+
+function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
 
 const isEnabled = (): boolean => existsSync(paths.enabledFlag());
 
@@ -74,7 +89,7 @@ async function touchSession(client: SidenoteClient, sessionId: string): Promise<
   });
 }
 
-/** Opens the window of the given session, or of the latest one, and says which. */
+/** Opens the given session's browser window, or the latest one's. Says what it did. */
 async function openWindow(client: SidenoteClient, requested: string | undefined): Promise<string> {
   if (requested) await touchSession(client, requested);
   const sessionId = requested ?? (await latestSession(client));
@@ -171,6 +186,7 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
+    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
   },
 
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
@@ -207,6 +223,17 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`Imported ${imported} earlier replies of this session.`);
   },
 
+  async tui() {
+    // Loaded only for this command, so the hooks don't pay for the terminal UI.
+    const { runTui } = await import("../tui/main.ts");
+    await runTui(process.argv.slice(3));
+  },
+
+  async chat() {
+    const { runChat } = await import("../tui/main.ts");
+    await runChat(process.argv.slice(3));
+  },
+
   "hook-session": () => runHook(hookSession),
   "hook-stop": () => runHook(hookStop),
   "hook-clear": () => runHook(hookClear),
@@ -216,9 +243,12 @@ const commands: Record<string, () => Promise<void>> = {
   "hook-wait": () => runHook(hookWait),
 };
 
-/** A hook must never break the Claude session: failures go to the log, and it exits 0. */
+/**
+ * A hook must never break the Claude session: failures go to the log, and it exits 0. Sessions
+ * sidenote runs itself get their replies and notes from the session host, so hooks skip them.
+ */
 async function runHook(handler: (input: HookInput) => Promise<void>): Promise<void> {
-  if (!isEnabled()) return;
+  if (!isEnabled() || process.env[HEADLESS_ENV]) return;
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk);

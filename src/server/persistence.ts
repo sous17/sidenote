@@ -167,7 +167,8 @@ export class StoreFiles {
 /** Brings a store from any earlier version up to date, dropping anything malformed. */
 export function migrate(file: StoreFile): StoreData {
   const responses = (file.responses ?? []).filter((r) => SESSION_ID_PATTERN.test(r.session_id));
-  // Replies before note threads had no note_answers.
+  // Replies before note threads had no note_answers. The turn fields (prompt, steps, ended)
+  // are optional: replies from the hooks never have them, so older stores load as they are.
   for (const response of responses) response.note_answers ??= {};
 
   const responseIds = new Set(responses.map((r) => r.id));

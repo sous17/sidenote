@@ -15,7 +15,7 @@ import type {
 } from "../shared/types.ts";
 import { claudeProcess, pidInUse } from "../node/process.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
-import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "./format.ts";
+import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "../shared/format.ts";
 import { MAX_PROGRESS_DELTA_CHARS, toolActivity } from "../shared/tools.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
@@ -60,7 +60,7 @@ function sessionName(transcriptPath: string | undefined): string {
   }
 }
 
-/** Stop: sends the finished reply to its session's window, opening the window for a new session. */
+/** Stop: sends the finished reply to its session's window, opening it for a new session. */
 export async function hookStop(input: HookInput): Promise<void> {
   const text = input.last_assistant_message?.trim();
   const sessionId = input.session_id;
@@ -173,7 +173,7 @@ export async function hookWait(input: HookInput): Promise<void> {
     if (result.action === "send") {
       process.stderr.write(
         result.prompt === undefined
-          ? formatNotesForClaude(result.comments, { fromBrowser: true })
+          ? formatNotesForClaude(result.comments, { sendNow: true })
           : formatPromptForClaude(result.prompt, result.comments),
       );
       // Exit code 2 wakes Claude. Set it instead of calling process.exit, so stderr finishes

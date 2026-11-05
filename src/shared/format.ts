@@ -1,4 +1,4 @@
-import type { ClaimedNote, EpochSeconds } from "../shared/types.ts";
+import type { ClaimedNote, EpochSeconds } from "./types.ts";
 
 /** Claude Code caps hook context at 10,000 characters. */
 export const MAX_CONTEXT_CHARS = 9500;
@@ -29,7 +29,7 @@ export const QUESTION_RULE =
 /** Added to every session while sidenote is on, so requests typed in the terminal follow it too. */
 export function sessionContext(): string {
   return (
-    "The user follows this session in the sidenote browser window, which shows your replies and draws ```diff blocks as diffs. " +
+    "The user follows this session in sidenote, which shows your replies and draws ```diff blocks as diffs. " +
     `${CODE_CHANGE_RULE} ${QUESTION_RULE}`
   );
 }
@@ -38,18 +38,18 @@ export function sessionContext(): string {
  * Describes delivered notes for Claude, and asks it to answer each under a marker line
  * ("**↳ Re: note 41**") so the server can file each answer into that note's thread.
  */
-export function formatNotesForClaude(notes: readonly ClaimedNote[], options: { fromBrowser?: boolean } = {}): string {
+export function formatNotesForClaude(notes: readonly ClaimedNote[], options: { sendNow?: boolean } = {}): string {
   const first = notes[0];
   if (!first) return "";
-  const [intro, formatRule] = options.fromBrowser
+  const [intro, formatRule] = options.sendNow
     ? [
-        "The user clicked Send now in the sidenote browser window. There is no new " +
-          "terminal message: answer only these inline notes on your earlier responses.",
+        "The user clicked Send now in sidenote. There is no new " +
+          "message: answer only these inline notes on your earlier responses.",
         "Format: skip any main answer. Answer each note in its own section that " +
           "starts with a line containing only its marker, for example:",
       ]
     : [
-        "The user reviewed your earlier responses in the sidenote browser window and left " +
+        "The user reviewed your earlier responses in sidenote and left " +
           "these inline notes. Address them together with the user's message.",
         "Format: first answer the user's message as usual (skip this part if their " +
           "message only asks you to look at the notes). Then answer each note in its " +
@@ -99,7 +99,7 @@ export function clockTime(epochSeconds: EpochSeconds): string {
 }
 
 /** Opens what the waiter prints to wake Claude. It isn't something the user typed. */
-const WAKE_MARKERS = ["The user clicked Send now in the sidenote browser window", "from the sidenote browser window"];
+const WAKE_MARKERS = ["The user clicked Send now in sidenote", "from the sidenote browser window"];
 
 /** Whether a prompt is sidenote's own wake-up text rather than the user's words. */
 export function isWakeText(prompt: string): boolean {

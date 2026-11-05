@@ -2,7 +2,7 @@
 // doing, and the turn's earlier messages on request. It goes when the reply lands, so nothing
 // stays on the page twice. Messages are plain text: they can stop mid-sentence, so markdown would
 // look broken, and they aren't stored, so notes can't attach to them.
-import type { Model } from "./model.ts";
+import type { Model } from "../shared/model.ts";
 import { button, el } from "./dom.ts";
 
 export class LiveCard {

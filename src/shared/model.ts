@@ -1,5 +1,6 @@
-// The page's state: the latest snapshot from the server, the open thread, and questions about them.
-import type { FolderSession, Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "../shared/types.ts";
+// A session's state as the page and the terminal see it: the latest snapshot from the server, the
+// open thread, and questions about them.
+import type { FolderSession, Note, SendStatus, StateSnapshot, StoredResponse, UserMessage } from "./types.ts";
 
 export type AnsweredNote = Note & { answered_by: number };
 
@@ -82,6 +83,8 @@ export class Model {
   awaitingReply(): boolean {
     const { status } = this.sendStatus();
     if (status === "offline") return false;
+    // A session sidenote runs says so itself: its messages only appear once they have a reply.
+    if (status === "busy" && this.sendStatus().hosted) return true;
     // Send now has no message: the turn it starts is only visible through its notes.
     if (status === "busy" && this.notes.some((note) => note.delivered_at !== null && note.answered_by === null)) {
       return true;

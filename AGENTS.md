@@ -78,7 +78,7 @@ These were settled with the maintainer. Don't change them without asking.
 - **One server per machine, and it never outlives its use:** `src/server/lock.ts` decides who runs,
   by asking the system whether the lock's owner lives, never by reading `server.json`.
   `src/server/watch.ts` puts `server.json` back, gives up if another server owns the lock, and stops
-  the server after 30 minutes without an API request.
+  the server after 30 minutes without an API request, unless an agent it runs is in a turn.
 
 ## Screenshots
 

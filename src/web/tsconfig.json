@@ -4,5 +4,5 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": [".", "../shared/types.ts", "../shared/diff.ts"]
+  "include": [".", "../shared/types.ts", "../shared/diff.ts", "../shared/model.ts", "../shared/text.ts"]
 }

@@ -58,9 +58,12 @@ export class Delivery {
     return status;
   }
 
-  /** Bumps the store's revision when a waiter went quiet, so pages see the session stop listening. */
-  refresh(): void {
-    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, this.status(s.id)]));
+  /**
+   * Bumps the store's revision when a status changed, so pages see it: a waiter gone quiet, or a
+   * session sidenote runs moving on, whose status comes from statusOf.
+   */
+  refresh(statusOf: (sessionId: string) => SendStatus = (id) => this.status(id)): void {
+    const signature = JSON.stringify(this.#store.listSessions().map((s) => [s.id, statusOf(s.id)]));
     if (signature === this.#statusSignature) return;
     this.#statusSignature = signature;
     this.#store.revision.bump();

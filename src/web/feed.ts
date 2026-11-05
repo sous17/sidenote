@@ -1,15 +1,17 @@
 // The feed: one card per reply, with notes in the margin beside the text they are about.
 import type { Note, StoredResponse, UserMessage } from "../shared/types.ts";
-import { button, el, flash, formatTime, plainText, plural, tag, truncate } from "./dom.ts";
+import { formatTime, plainText, plural, truncate } from "../shared/text.ts";
+import { button, el, flash, tag } from "./dom.ts";
 import { LiveCard } from "./live-card.ts";
 import { renderMarkdownInto } from "./markdown.ts";
-import { answeredNoteIds, isAnswered, type Model } from "./model.ts";
+import { answeredNoteIds, isAnswered, type Model } from "../shared/model.ts";
 
 // Must match the @container feed min-width in app.css that moves notes into the margin.
 const MARGIN_LAYOUT_MIN_WIDTH = 1000;
 // The split view needs this much window width; narrower, the thread pane covers the feed.
 const SPLIT_MIN_WIDTH = 900;
 const NOTE_GAP_PX = 8;
+// What notes attach to. The terminal numbers blocks with src/shared/blocks.ts: change both together.
 const BLOCK_SELECTOR = [
   ":scope > p",
   ":scope > pre",
@@ -289,7 +291,7 @@ export class Feed {
     const wholeThread = createMarginThread();
     linkOnHover(meta, wholeThread);
     const answered = el("div", "answered");
-    element.append(meta, body, wholeThread, answered);
+    element.append(...promptOf(response), meta, body, wholeThread, answered);
     this.#inner.append(element);
 
     const card: Card = { element, response, meta, blocks, threads, wholeThread, count, answered };
@@ -304,7 +306,7 @@ export class Feed {
     const meta = createMeta(response);
     const answered = el("div", "answered");
     meta.append(answered);
-    element.append(meta);
+    element.append(...promptOf(response), meta);
     this.#inner.append(element);
     return { element, response, meta, blocks: [], threads: [], answered };
   }
@@ -423,6 +425,14 @@ function createMessage(message: UserMessage): HTMLElement {
   meta.append(el("b", "", "You"), el("span", "", formatTime(message.created_at)));
   element.append(meta, el("div", "user-message-text", message.text));
   return element;
+}
+
+/** What the user typed for a turn sidenote ran itself, above its reply. */
+function promptOf(response: StoredResponse): HTMLElement[] {
+  if (!response.prompt?.trim()) return [];
+  const prompt = el("div", "card-prompt");
+  prompt.append(el("span", "card-prompt-label", "You"), el("div", "card-prompt-text", response.prompt));
+  return [prompt];
 }
 
 export function createMeta(response: StoredResponse): HTMLElement {

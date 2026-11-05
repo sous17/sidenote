@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_CONTEXT_CHARS, formatNotesForClaude, formatPromptForClaude, isWakeText } from "../src/cli/format.ts";
+import { MAX_CONTEXT_CHARS, formatNotesForClaude, formatPromptForClaude, isWakeText } from "../src/shared/format.ts";
 import type { ClaimedNote } from "../src/shared/types.ts";
 
 function claimed(overrides: Partial<ClaimedNote> = {}): ClaimedNote {
@@ -32,7 +32,7 @@ test("asks for one marker per note, using a real note id in the example", () => 
 });
 
 test("Send now asks Claude to skip the main answer", () => {
-  const text = formatNotesForClaude([claimed()], { fromBrowser: true });
+  const text = formatNotesForClaude([claimed()], { sendNow: true });
   assert.match(text, /clicked Send now/);
   assert.match(text, /skip any main answer/);
 });
@@ -67,7 +67,7 @@ test("a message from the page reads as the user's own, with notes asked to be an
 });
 
 test("sidenote's own wake-up texts are told apart from what the user typed", () => {
-  assert.equal(isWakeText(formatNotesForClaude([claimed()], { fromBrowser: true })), true);
+  assert.equal(isWakeText(formatNotesForClaude([claimed()], { sendNow: true })), true);
   assert.equal(isWakeText(formatPromptForClaude("hello", [])), true);
   assert.equal(isWakeText("Why does the import skip empty rows?"), false);
 });

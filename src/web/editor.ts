@@ -1,5 +1,6 @@
 // Writing a new note in the margin of a reply.
-import { button, el, truncate } from "./dom.ts";
+import { truncate } from "../shared/text.ts";
+import { button, el } from "./dom.ts";
 import type { Card, Feed } from "./feed.ts";
 import { isSendNow, submitOnModEnter, type Sending } from "./sending.ts";
 

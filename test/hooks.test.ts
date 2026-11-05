@@ -40,15 +40,21 @@ interface Run {
   stderr: string;
 }
 
-function run(args: string[], stdin = ""): Promise<Run> {
-  const child = spawn(launcher, args, {
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
-      SIDENOTE_NODE: process.execPath,
-    },
-  });
+/** Runs the launcher; extra holds variables to set, such as a terminal's. */
+function hookEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
+    SIDENOTE_NODE: process.execPath,
+  };
+  // Run from inside sidenote chat, this would make every hook stand aside.
+  delete env["SIDENOTE_HEADLESS"];
+  return env;
+}
+
+function run(args: string[], stdin = "", extra: Record<string, string> = {}): Promise<Run> {
+  const child = spawn(launcher, args, { env: { ...hookEnv(), ...extra } });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
@@ -159,6 +165,19 @@ test("windows open with a single-use launch code, never the token", async () => 
   assert.equal((await lastOpened()).search, "");
 });
 
+test("hooks skip sessions sidenote runs headless", async () => {
+  const before = await api<StateSnapshot>("GET", `/api/state?v=-1&s=headless-session`);
+  assert.equal(before.session, null);
+  const input = JSON.stringify({ session_id: "headless-session", cwd: "/w/demo", last_assistant_message: "hi" });
+  const result = await run(["hook-stop"], input, { SIDENOTE_HEADLESS: "1" });
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, "");
+  const prompt = await run(["hook-session"], hookInput({ source: "startup" }), { SIDENOTE_HEADLESS: "1" });
+  assert.equal(prompt.stdout, "");
+  const after = await api<StateSnapshot>("GET", `/api/state?v=-1&s=headless-session`);
+  assert.equal(after.session, null);
+});
+
 test("Stop, Send now waking Claude with exit code 2, and a terminal prompt instead", async () => {
   // Claude finishes a session's first reply: the hook posts it and opens that session's window.
   assert.equal((await run(["hook-stop"], hookInput({ last_assistant_message: "Para one." }))).code, 0);
@@ -248,6 +267,7 @@ test("status and open act on the session", async () => {
   assert.match(status.stdout, /enabled: yes/);
   assert.match(status.stdout, /replies: 3/);
   assert.match(status.stdout, /pending notes: 0/);
+  assert.match(status.stdout, new RegExp(`terminal: '${launcher}' tui ${SESSION}\n`), "the command for sidenote tui");
   assert.match(status.stdout, new RegExp(`window: +http://${PAGE_HOST}:\\d+/demo\\n`));
   assert.doesNotMatch(status.stdout, new RegExp(server().token), "status never prints the token");
 
@@ -303,12 +323,7 @@ test("a hook reports the Claude process it runs under, so the window can end the
     spawnSync(process.argv[1], ["hook-prompt"], { input: process.argv[2], stdio: ["pipe", "ignore", "ignore"] });
     process.stdout.write(String(process.pid));`;
   const child = spawn(claude, ["-e", runHook, launcher, hookInput({ prompt: "Go" })], {
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
-      SIDENOTE_NODE: process.execPath,
-    },
+    env: hookEnv(),
   });
   let pid = "";
   child.stdout.on("data", (chunk: Buffer) => (pid += chunk));
@@ -452,12 +467,7 @@ test("a waiter stops when its Claude dies, so it can't keep the server running",
     process.stdout.write(String(waiter.pid));
     setTimeout(() => process.exit(0), 1500);`;
   const child = spawn(claude, ["-e", leaveWaiter, launcher, hookInput({ session_id: "orphan" })], {
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${join(home, "fakebin")}:${process.env["PATH"]}`,
-      SIDENOTE_NODE: process.execPath,
-    },
+    env: hookEnv(),
   });
   let pid = "";
   child.stdout.on("data", (chunk: Buffer) => (pid += chunk));

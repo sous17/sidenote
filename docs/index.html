@@ -457,6 +457,7 @@
           <li><a href="#watching">Watch Claude work</a></li>
           <li><a href="#diffs">Code changes</a></li>
           <li><a href="#sessions">Windows and sessions</a></li>
+          <li><a href="#terminal">In the terminal</a></li>
           <li><a href="#commands">Commands</a></li>
           <li><a href="#shortcuts">Keyboard shortcuts</a></li>
           <li><a href="#data">Your data and limits</a></li>
@@ -680,6 +681,53 @@ claude plugin install sidenote@sidenote</code></pre>
         <p class="text">
           A session shows as ended once sidenote knows its process, which it learns from the session's next prompt or
           reply.
+        </p>
+
+        <h2 id="terminal">In the terminal (preview)</h2>
+        <p class="text">
+          Both commands below are a work in progress. <code>bin/</code> isn't on your <code>PATH</code>, so
+          <code>/sidenote:status</code> prints the full command for this session on its <code>terminal:</code> line.
+        </p>
+        <p class="text">
+          <code>sidenote tui</code> shows a session's replies, notes and threads in any terminal window, beside or
+          instead of the browser. Without a session id, it shows the latest session in the folder it started in.
+        </p>
+        <p class="text">
+          <code>sidenote chat</code> makes sidenote the whole session: no Claude Code window beside it, and no
+          <code>/sidenote:on</code> needed. Run it in your project folder and type at the <code>you ›</code> line.
+          Claude's reply streams in above it, with its tool calls on one line. <kbd>Esc</kbd> interrupts Claude.
+        </p>
+        <p class="text">
+          Sessions start in Claude Code's auto mode, as they do at the terminal, so routine commands run without asking.
+          When Claude does ask to use a tool, <kbd>y</kbd> allows it, <kbd>a</kbd> always allows it and
+          <kbd>n</kbd> denies it. To be asked about everything, set <code>permissions.defaultMode</code> to
+          <code>"manual"</code> in <code>~/.claude/settings.json</code>. Any other mode you set there is used instead,
+          except <code>bypassPermissions</code>, which sidenote never turns on: it asks instead.
+        </p>
+        <p class="text">
+          <kbd>Tab</kbd> moves between the prompt line and the conversation, where <kbd>n</kbd> notes a block,
+          <kbd>v</kbd> picks lines, and <kbd>]</kbd> and <kbd>[</kbd> go to the next or previous note. Notes ride along
+          with your next message, or go on their own with <kbd>S</kbd>. <kbd>Enter</kbd> on a note opens its thread in
+          the right half.
+        </p>
+        <p class="text">
+          The mouse wheel scrolls the pane under the pointer, and <kbd>PgUp</kbd> and <kbd>PgDn</kbd> scroll the
+          conversation from the prompt line, so you can read back while typing. Scrolling up stops the view following
+          Claude, and reaching the bottom starts it again. To select text with the mouse, hold <kbd>Option</kbd>, or
+          <kbd>Shift</kbd> in most other terminals.
+        </p>
+        <p class="text">
+          The colors follow your terminal: sidenote asks it for its background and picks a light or dark scheme. If your
+          terminal doesn't answer, set <code>SIDENOTE_COLOR=light</code> or <code>SIDENOTE_COLOR=dark</code>.
+        </p>
+        <p class="text">
+          In both commands, the words a note is about are highlighted in the reply, in the same color as the strip
+          beside the note, so you can see which note goes with which lines.
+        </p>
+        <p class="text">
+          Claude runs in the sidenote server, not in the window, so it keeps working if you close the window, and the
+          server stays up until the turn ends. <code>sidenote chat &lt;session id&gt;</code> picks a session up again.
+          These sessions also appear in their folder's window, where you can follow them and end them.
         </p>
 
         <h2 id="commands">Commands</h2>
@@ -998,6 +1046,13 @@ claude plugin update sidenote@sidenote</code></pre>
           </table>
         </div>
 
+        <p class="text">
+          <code>sidenote chat</code> doesn't use the hooks: the server runs Claude Code headless (<code>claude -p</code>
+          with stream-json input and output), one process per session. Claude Code's permission prompts come back to the
+          server as requests, which wait until you answer. Each finished turn is stored like a reply the Stop hook would
+          have sent. The hooks see these sessions too, and stand aside.
+        </p>
+
         <h2 id="security">Security</h2>
         <p class="text">
           Anyone who can call sidenote's API can put words in front of your Claude session, so the API is locked down.
@@ -1007,6 +1062,12 @@ claude plugin update sidenote@sidenote</code></pre>
             <strong>Local only.</strong> The server listens on <code>127.0.0.1</code>, and refuses requests whose
             <code>Host</code> header isn't one of its own addresses (<code>127.0.0.1</code>, <code>localhost</code> or
             <code>sidenote.localhost</code>, each with its port), which blocks DNS-rebinding attacks.
+          </li>
+          <li>
+            <strong>Sessions sidenote runs.</strong> For <code>sidenote chat</code> sessions, the API can also send
+            messages to Claude and answer its permission prompts, under the same token and checks. A session only starts
+            in a folder that exists. Tools run under Claude Code's own permission mode: auto mode's checks decide what
+            runs unasked, and anything Claude Code would ask about waits for your answer.
           </li>
           <li>
             <strong>A token for every call.</strong> A random 256-bit token, created on each start, is stored in

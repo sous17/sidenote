@@ -5,7 +5,7 @@ import { Api, ApiError, obtainToken, onTokenStored } from "./api.ts";
 import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
-import { Model, sessionLabel } from "./model.ts";
+import { Model, sessionLabel } from "../shared/model.ts";
 import { NewSessionForm } from "./newsession.ts";
 import { SessionPanel, rememberSession, rememberedSession } from "./panel.ts";
 import { PromptBox } from "./prompt.ts";

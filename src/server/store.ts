@@ -9,6 +9,7 @@ import type {
   SessionSummary,
   FolderSession,
   StoredResponse,
+  TurnStep,
   UserMessage,
 } from "../shared/types.ts";
 import { StoreFiles, emptyStore, type StoreData } from "./persistence.ts";
@@ -22,14 +23,29 @@ export const SESSION_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 /** Enough of a session's first message to recognize the session by in its tab. */
 const FIRST_MESSAGE_CHARS = 80;
 
-/** A counter pages poll with, so unchanged state costs one 204. */
+/** A counter clients poll with, so unchanged state costs one 204. */
 export class Revision {
   #value = 0;
+  readonly #waiting = new Set<() => void>();
   get value(): number {
     return this.#value;
   }
   bump(): void {
     this.#value += 1;
+    for (const wake of [...this.#waiting]) wake();
+  }
+  /** Resolves when the value moves past `known`, or after timeoutMs: a long poll's wait. */
+  async waitPast(known: number, timeoutMs: number): Promise<void> {
+    if (this.#value !== known) return;
+    await new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        this.#waiting.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, timeoutMs);
+      this.#waiting.add(wake);
+    });
   }
 }
 
@@ -40,6 +56,14 @@ export interface NewReply {
   sessionName: string;
   /** Only for backfilled replies; live replies are stamped now. */
   createdAt: EpochSeconds | undefined;
+  /** For turns sidenote ran itself. */
+  turn?: {
+    prompt: string;
+    notesSent: number;
+    steps: TurnStep[];
+    ended?: "interrupted" | "error";
+    error?: string;
+  };
 }
 
 export class Store {
@@ -77,10 +101,7 @@ export class Store {
       .filter((session) => folderName(session.cwd) === folder)
       .map((session) => ({
         ...session,
-        first_message: (this.#data.messages.find((m) => m.session_id === session.id)?.text ?? "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, FIRST_MESSAGE_CHARS),
+        first_message: this.#firstMessage(session.id).replace(/\s+/g, " ").trim().slice(0, FIRST_MESSAGE_CHARS),
         pending_notes: pending.get(session.id) ?? 0,
       }));
   }
@@ -153,10 +174,18 @@ export class Store {
       created_at: reply.createdAt ?? this.#clock.now(),
       note_answers: {},
     };
+    if (reply.turn) {
+      response.prompt = reply.turn.prompt;
+      response.notes_sent = reply.turn.notesSent;
+      response.steps = reply.turn.steps;
+      if (reply.turn.ended) response.ended = reply.turn.ended;
+      if (reply.turn.error) response.error = reply.turn.error;
+    }
     const newSession = !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
     // Backfilled replies are history: they never answer notes.
-    if (reply.createdAt === undefined) this.#takeAnswers(response);
+    // A turn that didn't finish answered nothing: its notes stay open for the next reply.
+    if (reply.createdAt === undefined && !reply.turn?.ended) this.#takeAnswers(response);
     this.#data.responses.push(response);
     this.#data.responses.sort((a, b) => a.created_at - b.created_at);
     this.#prune();
@@ -238,6 +267,14 @@ export class Store {
     }
     if (claimed.length) this.#changed();
     return claimed;
+  }
+
+  /** Makes claimed notes pending again, when the turn they went with ended before reading them. */
+  returnNotes(noteIds: readonly number[]): void {
+    const ids = new Set(noteIds);
+    const notes = this.#data.comments.filter((note) => ids.has(note.id));
+    for (const note of notes) note.delivered_at = null;
+    if (notes.length) this.#changed();
   }
 
   // ---- Internals -------------------------------------------------------------------------
@@ -325,6 +362,13 @@ export class Store {
     }
     data.messages = keptMessages.reverse();
     return data.responses.length + data.sessions.size + data.messages.length !== before;
+  }
+
+  /** A session sidenote runs keeps what the user typed on each reply, not as a message of its own. */
+  #firstMessage(sessionId: string): string {
+    const message = this.#data.messages.find((m) => m.session_id === sessionId);
+    if (message) return message.text;
+    return this.#data.responses.find((r) => r.session_id === sessionId && r.prompt?.trim())?.prompt ?? "";
   }
 
   #pendingNotesPerSession(): Map<string, number> {

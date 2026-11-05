@@ -1564,6 +1564,28 @@ summary.diff-head:hover {
   bottom: 110px;
 }
 
+/* The message the user sent from the page, above the reply that answers it. */
+.card-prompt {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.card-prompt-label {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.card-prompt-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
 .prompt-bar.failed .prompt-hint {
   color: var(--danger);
   white-space: normal;

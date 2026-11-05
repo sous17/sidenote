@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Model, sessionLabel } from "../src/web/model.ts";
+import { Model, sessionLabel } from "../src/shared/model.ts";
 import type { Note, SessionState, StateSnapshot, StoredResponse, UserMessage } from "../src/shared/types.ts";
 
 function model(status: SessionState, messageAt: number | null, delivered: boolean, replyAt?: number): Model {
@@ -73,6 +73,16 @@ test("a note sent with Send now shows the dots and what Claude is doing, until i
   const idle = model("listening", null, false, 5);
   idle.snapshot.comments = [note];
   assert.equal(idle.awaitingReply(), false, "the turn ended");
+});
+
+test("a session sidenote runs shows the dots from its own status, with no message list", () => {
+  const hosted = model("busy", null, false, 5);
+  hosted.snapshot.session!.hosted = true;
+  assert.equal(hosted.awaitingReply(), true);
+
+  const idle = model("listening", null, false, 5);
+  idle.snapshot.session!.hosted = true;
+  assert.equal(idle.awaitingReply(), false);
 });
 
 test("Claude's messages show only while the reply is awaited", () => {

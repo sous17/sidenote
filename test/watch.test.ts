@@ -5,7 +5,13 @@ import { IDLE_MINUTES, ServerWatch, WATCH_INTERVAL_MS, type WatchChecks } from "
 const IDLE_TICKS = (IDLE_MINUTES * 60_000) / WATCH_INTERVAL_MS;
 
 function watch(overrides: Partial<WatchChecks> = {}): ServerWatch {
-  return new ServerWatch({ holdsLock: () => true, isRegistered: () => true, register: () => {}, ...overrides });
+  return new ServerWatch({
+    holdsLock: () => true,
+    isRegistered: () => true,
+    register: () => {},
+    working: () => false,
+    ...overrides,
+  });
 }
 
 function tick(target: ServerWatch, times: number): string | null {
@@ -52,4 +58,18 @@ test("the lock is checked before server.json, so a replaced server can't overwri
   const target = watch({ holdsLock: () => false, isRegistered: () => false, register: () => (writes += 1) });
   target.tick();
   assert.equal(writes, 0);
+});
+
+test("a turn in progress keeps the server up with no client watching, and the idle time starts after it", () => {
+  let working = true;
+  const target = watch({ working: () => working });
+  assert.equal(tick(target, IDLE_TICKS * 2), null);
+  working = false;
+  assert.equal(tick(target, IDLE_TICKS - 1), null);
+  assert.match(target.tick() ?? "", /nothing used it/);
+});
+
+test("a turn in progress doesn't keep a server that lost the lock", () => {
+  const target = watch({ working: () => true, holdsLock: () => false });
+  assert.match(target.tick() ?? "", /another server/);
 });

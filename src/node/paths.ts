@@ -13,4 +13,9 @@ export const paths = {
   logFile: (): string => join(stateDir(), "server.log"),
   enabledFlag: (): string => join(stateDir(), "enabled"),
   transcriptsDir: (): string => join(homedir(), ".claude", "projects"),
+  claudeSettings: (): string => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
+  managedClaudeSettings: (): string =>
+    process.platform === "darwin"
+      ? "/Library/Application Support/ClaudeCode/managed-settings.json"
+      : "/etc/claude-code/managed-settings.json",
 };

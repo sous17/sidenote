@@ -1,5 +1,8 @@
-// Tool calls in a few words, for the line beside the typing dots. Tool names are Claude Code's.
+// Tool calls in a few words for a one-line row, and in full for a permission prompt. Tool names
+// are Claude Code's; other agents' tools fall back to their first string argument.
 
+const MAX_DETAIL_CHARS = 4000;
+const MAX_DETAIL_LINES = 40;
 /** The longest activity line; the page shows one row of it. */
 export const MAX_ACTIVITY_CHARS = 200;
 /** The most text one MessageDisplay batch may carry to the server. */
@@ -72,7 +75,38 @@ export function activityLine(tool: string, summary: string): string {
   return line.slice(0, MAX_ACTIVITY_CHARS);
 }
 
+/** The call in full, for the user to read before allowing it. */
+export function toolDetail(tool: string, input: Input, cwd: string): string {
+  let detail: string;
+  if (tool === "Bash") {
+    detail = str(input["command"]);
+  } else if (tool === "Write") {
+    detail = `${shortPath(str(input["file_path"]), cwd)}\n${str(input["content"])}`;
+  } else if (tool === "Edit") {
+    const removed = prefixed(str(input["old_string"]), "- ");
+    const added = prefixed(str(input["new_string"]), "+ ");
+    detail = `${shortPath(str(input["file_path"]), cwd)}\n${removed}\n${added}`;
+  } else {
+    detail = JSON.stringify(input, null, 2);
+  }
+  return clip(detail);
+}
+
 function firstLine(text: string): string {
   const lines = text.trim().split("\n");
   return lines.length > 1 ? `${lines[0]} …` : (lines[0] ?? "");
+}
+
+function prefixed(text: string, prefix: string): string {
+  return text
+    .split("\n")
+    .map((line) => prefix + line)
+    .join("\n");
+}
+
+function clip(text: string): string {
+  const lines = text.split("\n");
+  let clipped = lines.slice(0, MAX_DETAIL_LINES).join("\n");
+  if (clipped.length > MAX_DETAIL_CHARS) clipped = clipped.slice(0, MAX_DETAIL_CHARS);
+  return clipped.length < text.length ? `${clipped}\n…` : clipped;
 }
