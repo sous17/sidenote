@@ -13,6 +13,8 @@ export interface ProcessProbe {
 
 export class SessionProcesses {
   readonly #processes = new Map<string, ClaudeProcess>();
+  /** Ended from the window. A reused pid, or a process still shutting down, must not read as running. */
+  readonly #ended = new Set<string>();
   readonly #probe: ProcessProbe;
   readonly #revision: Revision;
   #signature = "";
@@ -23,14 +25,22 @@ export class SessionProcesses {
   }
 
   record(sessionId: string, claudeProcess: ClaudeProcess | undefined): void {
-    if (claudeProcess) this.#processes.set(sessionId, claudeProcess);
+    if (!claudeProcess) return;
+    this.#processes.set(sessionId, claudeProcess);
+    this.#ended.delete(sessionId);
+  }
+
+  markEnded(sessionId: string): void {
+    this.#ended.add(sessionId);
   }
 
   forget(sessionId: string): void {
     this.#processes.delete(sessionId);
+    this.#ended.delete(sessionId);
   }
 
   state(sessionId: string): FolderSession["process"] {
+    if (this.#ended.has(sessionId)) return "ended";
     const recorded = this.#processes.get(sessionId);
     if (!recorded) return "unknown";
     return this.#probe.pidInUse(recorded.pid) ? "running" : "ended";

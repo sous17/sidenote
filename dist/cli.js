@@ -4906,7 +4906,7 @@ __export(main_exports, {
   terminalOptions: () => terminalOptions
 });
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync6, rmSync as rmSync2, writeFileSync } from "node:fs";
+import { existsSync as existsSync3, mkdtempSync, readFileSync as readFileSync6, rmSync as rmSync2, writeFileSync } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
 import { join as join4 } from "node:path";
 import { setTimeout as sleep3 } from "node:timers/promises";
@@ -4940,7 +4940,7 @@ function terminalOptions(env) {
 }
 async function runTui(args) {
   if (!needsTerminal("sidenote tui")) return;
-  if (!existsSync2(paths.enabledFlag())) {
+  if (!existsSync3(paths.enabledFlag())) {
     console.error("sidenote is off. Turn it on in Claude Code with /sidenote:on, then run sidenote tui again.");
     process.exitCode = 1;
     return;
@@ -5069,7 +5069,7 @@ var init_main = __esm({
 });
 
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname as dirname2, join as join5 } from "node:path";
 import { setTimeout as sleep4 } from "node:timers/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -5084,10 +5084,11 @@ init_folders();
 init_client();
 
 // src/cli/hooks.ts
+init_paths();
 init_process();
 init_client();
 import { randomBytes } from "node:crypto";
-import { readFileSync as readFileSync5 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync5 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
 
 // src/shared/format.ts
@@ -5306,6 +5307,7 @@ function isUserPrompt(entry2) {
 
 // src/cli/hooks.ts
 var WAITER_POLL_MS = 1e3;
+var WAITER_REJOIN_MS = 6e4;
 var MAX_SHOWN_PROMPT_CHARS = 1e5;
 function reportedProcess() {
   const found = claudeProcess();
@@ -5384,7 +5386,7 @@ async function hookProgress(input) {
 }
 async function hookWait(input) {
   if (!input.session_id) return;
-  const client = await connectWithin(SERVER_START_TIMEOUT_MS);
+  let client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
   const waiter = {
     session_id: input.session_id,
@@ -5400,7 +5402,9 @@ async function hookWait(input) {
     try {
       result = await client.post("/api/waiters/poll", waiter);
     } catch {
-      return;
+      client = await rejoin(waiter);
+      if (!client) return;
+      continue;
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
@@ -5411,6 +5415,19 @@ async function hookWait(input) {
       return;
     }
   }
+}
+async function rejoin(waiter) {
+  const deadline = Date.now() + WAITER_REJOIN_MS;
+  while (Date.now() < deadline && existsSync2(paths.enabledFlag())) {
+    const client = await SidenoteClient.connect();
+    const joined = await client?.post("/api/waiters", waiter).then(
+      () => true,
+      () => false
+    );
+    if (joined) return client;
+    await sleep2(500);
+  }
+  return null;
 }
 async function connectWithin(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -5452,7 +5469,7 @@ var LAUNCHER = join5(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "si
 function shellQuote(text) {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
-var isEnabled = () => existsSync3(paths.enabledFlag());
+var isEnabled = () => existsSync4(paths.enabledFlag());
 function sessionArgument2() {
   const value = process.argv[3]?.trim();
   return value && !value.includes("$") ? value : void 0;

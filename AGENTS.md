@@ -73,6 +73,9 @@ These were settled with the maintainer. Don't change them without asking.
   Answers that touch several files fold each file open from its header.
 - **Look:** the "Bracket" logo, the `sidenote` wordmark in the normal text color (not purple), and
   a light, dark or system theme switch.
+- **Ending a session keeps it.** The pause icon stops Claude and leaves the row, its replies and its
+  notes; the play icon resumes it in a terminal, where Claude asks for permissions. Only delete
+  removes it. Row actions are icons, and steps that stop or delete something ask in a pop-up.
 - **Retention:** up to 100 replies per session; a session is forgotten after 7 days without
   activity, or at once when `/clear` ends it, unless it holds notes or messages Claude never got.
 

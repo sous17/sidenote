@@ -212,7 +212,7 @@ describe("sessions sidenote runs in a folder window", () => {
     assert.equal((await rowOf(id))?.first_message, "Fix the login");
   });
 
-  test("end with their agent and leave the list; removing one that runs is refused", async () => {
+  test("end with their agent and stay on the list; removing one that runs is refused", async () => {
     const id = await start();
     await call("POST", "/api/conversation/messages", { session_id: id, text: "Hi" });
     assert.equal((await call("POST", "/api/sessions/forget", { session_id: id })).status, 409);
@@ -222,7 +222,7 @@ describe("sessions sidenote runs in a folder window", () => {
     assert.equal((await call("POST", "/api/sessions/end", { session_id: id })).status, 204);
     assert.equal(running.closed, closed + 1);
     running.emit({ type: "exit", message: "closed" });
-    assert.equal(await rowOf(id), undefined);
+    assert.equal((await rowOf(id))?.process, "ended");
     assert.equal((await call("GET", `/api/conversation?s=${id}`)).status, 404);
   });
 

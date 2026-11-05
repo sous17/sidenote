@@ -137,6 +137,10 @@ export class Api {
     return request("POST", "/api/sessions/end", this.#token, { session_id: sessionId });
   }
 
+  resumeSession(sessionId: string): Promise<null> {
+    return request("POST", "/api/sessions/resume", this.#token, { session_id: sessionId });
+  }
+
   /** Removes a session that no longer runs from the list. */
   forgetSession(sessionId: string): Promise<null> {
     return request("POST", "/api/sessions/forget", this.#token, { session_id: sessionId });

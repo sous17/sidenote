@@ -4,7 +4,9 @@
 import type { FolderSession, SessionState } from "../shared/types.ts";
 import { sessionLabel } from "../shared/model.ts";
 import { formatTime } from "../shared/text.ts";
+import { confirmAction } from "./confirm.ts";
 import { el } from "./dom.ts";
+import { icon, type IconName } from "./icons.ts";
 
 /** Docked, the panel's 260px still leave the feed the 1000px that notes in the margin need. */
 const DOCK_MIN_WIDTH = 1280;
@@ -46,13 +48,14 @@ export interface SessionActions {
   select(sessionId: string): void;
   rename(sessionId: string, label: string): Promise<void>;
   end(sessionId: string): Promise<void>;
+  resume(sessionId: string): Promise<void>;
   remove(sessionId: string): Promise<void>;
 }
 
 /** A row that shows its menu, its name field, or asks to confirm, instead of just the session. */
 interface OpenRow {
   sessionId: string;
-  mode: "menu" | "rename" | "end" | "remove";
+  mode: "menu" | "rename";
   error: string;
   busy: boolean;
 }
@@ -86,14 +89,15 @@ export class SessionPanel {
       this.#apply();
     });
     document.addEventListener("click", (event) => {
-      const target = event.target as Node;
+      const target = event.target as Element;
+      if (target.closest?.("dialog")) return;
       if (this.#overlay && !this.#panel.contains(target) && !this.#toggle.contains(target)) this.#close();
     });
     // Ahead of the page's own Escape, which closes the thread: one key, one thing closed.
     document.addEventListener(
       "keydown",
       (event) => {
-        if (event.key !== "Escape" || (!this.#open && !this.#overlay)) return;
+        if (event.key !== "Escape" || (!this.#open && !this.#overlay) || document.querySelector("dialog[open]")) return;
         event.stopPropagation();
         if (this.#open) this.#setOpen(null);
         else this.#close();
@@ -137,7 +141,7 @@ export class SessionPanel {
     const open = this.#open?.sessionId === session.id ? this.#open : null;
     const more = el("button", "session-row-more", "⋯");
     more.type = "button";
-    more.title = "Rename, end or remove this session";
+    more.title = "Rename, end, resume or remove this session";
     more.setAttribute("aria-label", more.title);
     more.setAttribute("aria-expanded", String(open !== null));
     more.addEventListener("click", () => this.#setOpen(open ? null : { sessionId: session.id, mode: "menu" }));
@@ -147,7 +151,7 @@ export class SessionPanel {
     return row;
   }
 
-  /** Below a row: its menu, its name field, or a question before ending or removing it. */
+  /** Below a row: its menu or its name field. Questions open over the page. */
   #rowPanel(session: FolderSession, open: OpenRow): HTMLElement {
     const box = el("div", "session-row-panel");
     const action = (text: string, onClick: () => void, className = "link-button"): HTMLButtonElement => {
@@ -157,21 +161,33 @@ export class SessionPanel {
       element.addEventListener("click", onClick);
       return element;
     };
+    const iconAction = (name: IconName, label: string, onClick: () => void): HTMLButtonElement => {
+      const element = action("", onClick, "session-row-icon");
+      element.append(icon(name));
+      element.title = label;
+      element.setAttribute("aria-label", label);
+      return element;
+    };
     const cancel = (): HTMLButtonElement => action("Cancel", () => this.#setOpen(null));
     const run = (work: () => Promise<void>): void => void this.#run(open, work);
 
     if (open.mode === "menu") {
-      box.append(action("Rename", () => this.#setOpen({ sessionId: session.id, mode: "rename" })));
+      box.append(iconAction("rename", "Rename", () => this.#setOpen({ sessionId: session.id, mode: "rename" })));
       if (session.process === "running") {
-        box.append(action("End session", () => this.#setOpen({ sessionId: session.id, mode: "end" })));
+        box.append(iconAction("pause", "End session", () => this.#askToEnd(session)));
       } else {
-        if (session.process === "unknown") {
-          const end = action("End session", () => {});
+        if (session.process === "ended") {
+          box.append(iconAction("play", "Resume session", () => run(() => this.#actions.resume(session.id))));
+        } else if (session.status === "offline") {
+          // After a restart sidenote can't tell a closed session from one left open with no waiter.
+          box.append(iconAction("play", "Resume session", () => this.#askToResume(session)));
+        } else {
+          const end = iconAction("pause", "End session", () => {});
           end.disabled = true;
           end.title = "sidenote learns this session's process with its next prompt or reply";
           box.append(end);
         }
-        box.append(action("Remove from list", () => this.#setOpen({ sessionId: session.id, mode: "remove" })));
+        box.append(iconAction("remove", "Remove from list", () => this.#askToRemove(session)));
       }
     } else if (open.mode === "rename") {
       const form = el("form", "session-rename");
@@ -192,21 +208,47 @@ export class SessionPanel {
       });
       box.append(form, el("p", "session-row-hint", "Only sidenote shows this name; empty removes it."));
       queueMicrotask(() => field.focus());
-    } else if (open.mode === "end") {
-      box.append(
-        el("p", "session-row-hint", "End this session? Claude stops, even in the middle of a turn."),
-        action("End session", () => run(() => this.#actions.end(session.id)), "danger-button"),
-        cancel(),
-      );
-    } else {
-      box.append(
-        el("p", "session-row-hint", "Remove it from the list? Its replies and notes in sidenote go too."),
-        action("Remove", () => run(() => this.#actions.remove(session.id)), "danger-button"),
-        cancel(),
-      );
     }
     if (open.error) box.append(el("p", "session-row-error", open.error));
     return box;
+  }
+
+  #askToEnd(session: FolderSession): void {
+    this.#setOpen(null);
+    confirmAction(
+      {
+        title: "End this session?",
+        text: `Claude stops in "${sessionLabel(session)}", even in the middle of a turn. You can resume it later.`,
+        action: "End session",
+        danger: true,
+      },
+      () => this.#actions.end(session.id),
+    );
+  }
+
+  #askToResume(session: FolderSession): void {
+    this.#setOpen(null);
+    confirmAction(
+      {
+        title: "Resume this session?",
+        text: `"${sessionLabel(session)}" opens in a new terminal. If it is still open in one, close that first.`,
+        action: "Resume",
+      },
+      () => this.#actions.resume(session.id),
+    );
+  }
+
+  #askToRemove(session: FolderSession): void {
+    this.#setOpen(null);
+    confirmAction(
+      {
+        title: "Remove this session?",
+        text: `"${sessionLabel(session)}" leaves the list, and its replies and notes in sidenote go too.`,
+        action: "Remove",
+        danger: true,
+      },
+      () => this.#actions.remove(session.id),
+    );
   }
 
   async #run(open: OpenRow, work: () => Promise<void>): Promise<void> {

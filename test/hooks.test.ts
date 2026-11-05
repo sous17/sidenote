@@ -300,7 +300,11 @@ test("starting a session opens a terminal running claude in the session's folder
   const args = readFileSync(terminalArgs, "utf8").split("\0").slice(0, -1);
   if (process.platform === "darwin") {
     assert.equal(args[0], "-e");
-    assert.deepEqual(args.slice(-4), [home, session_id, "", "-v fix it"], "folder, id, no name, prompt");
+    assert.deepEqual(
+      args.slice(-5),
+      [home, "--session-id", session_id, "", "-v fix it"],
+      "folder, id, no name, prompt",
+    );
   } else {
     assert.deepEqual(args, [
       `--working-directory=${home}`,
@@ -390,6 +394,44 @@ test("what Claude writes between tool calls shows in the window, and a subagent'
   await run(["hook-progress"], input({ message_id: "m2", delta: "Subagent text.", agent_id: "agent-1" }));
   await run(["hook-progress"], input({ message_id: "m3", delta: "" }));
   assert.deepEqual(await progress(), ["Looking at it."]);
+});
+
+test("a waiter carries on through a restart, and stops when sidenote is turned off", async () => {
+  const session = "through-restart";
+  const status = async () => (await api<StateSnapshot>("GET", `/api/state?v=-1&s=${session}`)).session?.status;
+  const listening = async () => {
+    const deadline = Date.now() + 10_000;
+    while ((await status()) !== "listening") {
+      if (Date.now() > deadline) throw new Error("the session never listened");
+      await sleep(100);
+    }
+  };
+  await run(["hook-stop"], hookInput({ session_id: session, last_assistant_message: "Hi." }));
+  await nextOpened();
+
+  const woken = run(["hook-wait"], hookInput({ session_id: session }));
+  await listening();
+  await run(["restart", session]);
+  await nextOpened();
+  await listening();
+  await api("POST", "/api/prompt", { session_id: session, text: "Still there?" });
+  assert.equal((await woken).code, 2, "the page reaches Claude through the waiter that was already running");
+
+  const stopped = run(["hook-wait"], hookInput({ session_id: session }));
+  await listening();
+  await run(["off"]);
+  assert.equal((await stopped).code, 0);
+  await run(["on", session]);
+  await nextOpened();
+});
+
+test("a resumed session gets a waiter straight away, and the hook's config says so", () => {
+  const config = JSON.parse(readFileSync(join(root, "hooks", "hooks.json"), "utf8")) as {
+    hooks: Record<string, { matcher?: string; hooks: { command: string; asyncRewake?: boolean }[] }[]>;
+  };
+  const onResume = config.hooks["SessionStart"]?.find((group) => group.matcher === "resume")?.hooks[0];
+  assert.match(onResume?.command ?? "", /hook-wait$/);
+  assert.equal(onResume?.asyncRewake, true);
 });
 
 test("a new session joins its folder's open window, and opens one only if there is none", async () => {

@@ -669,22 +669,40 @@ claude plugin install sidenote@sidenote</code></pre>
             </p>
           </div>
           <aside class="note">
-            <strong>Terminal support</strong>This needs GNOME Terminal on Linux, or Terminal on macOS. On macOS the
-            first start asks you to let the app sidenote runs under control Terminal.
+            <strong>Terminal support</strong>Starting and resuming sessions need GNOME Terminal on Linux, or Terminal on
+            macOS. On macOS the first one asks you to let the app sidenote runs under control Terminal.
           </aside>
         </div>
-        <h3>Name, end and remove sessions</h3>
-        <p class="text">The <strong>⋯</strong> on a session's row has three actions:</p>
+        <h3>Name, end, resume and remove sessions</h3>
+        <p class="text">
+          The <strong>⋯</strong> on a session's row shows its actions as icons on the right of the row. Hover one to see
+          its name. A running session has Edit and Pause; one that isn't running has Edit, Play and Delete.
+        </p>
         <ul class="text">
-          <li><strong>Rename</strong> gives it a name only sidenote shows, for example a ticket number.</li>
+          <li><strong>Edit</strong> gives it a name only sidenote shows, for example a ticket number.</li>
           <li>
-            <strong>End</strong> stops a running session's Claude process, even mid-turn, and takes it off the list.
+            <strong>Pause</strong> ends a running session: its Claude process stops, even mid-turn. The session stays on
+            the list as "Ended", with its replies and notes, and unsent notes go with its next prompt once you resume
+            it.
           </li>
-          <li><strong>Remove</strong> deletes a session that has ended.</li>
+          <li>
+            <strong>Play</strong> resumes a session that isn't running, in a new terminal, where Claude asks for
+            permissions. It says "Claude is working" for a moment, then listens without you typing anything, so you can
+            carry on from the window.
+          </li>
+          <li>
+            <strong>Delete</strong> removes a session that isn't running, with its replies and notes in sidenote.
+            Claude's own transcript stays, so <code>claude --resume</code> can still bring the session back.
+          </li>
         </ul>
         <p class="text">
+          Pause and Delete ask first, in a pop-up over the page. Cancel, Escape or a click outside it leaves the session
+          as it was. If the step fails, the error shows in the pop-up.
+        </p>
+        <p class="text">
           A session shows as ended once sidenote knows its process, which it learns from the session's next prompt or
-          reply.
+          reply. After a restart sidenote can't always tell, so Play first asks you to close any terminal still running
+          the session. A session left open keeps listening through a restart.
         </p>
 
         <h2 id="terminal">In the terminal (preview)</h2>
@@ -754,7 +772,10 @@ claude plugin install sidenote@sidenote</code></pre>
               </tr>
               <tr>
                 <td><code>/sidenote:restart</code></td>
-                <td>Restarts the server and opens the window on this session. Pending notes are kept.</td>
+                <td>
+                  Restarts the server and opens the window on this session. Pending notes are kept, and sessions open in
+                  Claude Code keep listening.
+                </td>
               </tr>
               <tr>
                 <td><code>/sidenote:open</code></td>
@@ -865,6 +886,7 @@ claude plugin install sidenote@sidenote</code></pre>
             <ul>
               <li>Up to 100 replies per session.</li>
               <li>A session is forgotten, with its replies and notes, after 7 days without a new reply.</li>
+              <li>Ending a session with the pause icon keeps it for those 7 days, so you can resume it.</li>
               <li>
                 <code>/clear</code> forgets the session it ends right away, so its window moves on to the folder's next
                 session.
@@ -928,7 +950,16 @@ claude plugin update sidenote@sidenote</code></pre>
             <p>
               The session isn't listening yet. That happens when sidenote was turned on, or the plugin installed, after
               that session's last reply. Send any prompt in that session. Once Claude replies, the button turns on.
-              Saved notes still go with your next prompt.
+              Saved notes still go with your next prompt. If the session was closed, resume it with the play icon on its
+              row.
+            </p>
+          </div>
+          <div class="problem">
+            <h3>A resumed session stays on "Claude is working"</h3>
+            <p>
+              Claude hasn't started. Look at the terminal that opened: it may be waiting for an answer, or show an
+              error. If Claude isn't running there, run <code>/sidenote:restart</code> in any session, then use the play
+              icon again.
             </p>
           </div>
           <div class="problem">
@@ -948,7 +979,7 @@ claude plugin update sidenote@sidenote</code></pre>
             </p>
           </div>
           <div class="problem">
-            <h3>End session is greyed out</h3>
+            <h3>The pause icon is greyed out</h3>
             <p>
               sidenote knows a session's process only once one of its hooks ran since sidenote started. Send a prompt in
               that session, or wait for its next reply.
@@ -1010,8 +1041,15 @@ claude plugin update sidenote@sidenote</code></pre>
                 <td>Stop, background</td>
                 <td><code>hook-wait</code></td>
                 <td>
-                  Waits for Send now or a message from the window, then wakes Claude. Uses <code>asyncRewake</code>.
+                  Waits for Send now or a message from the window, then wakes Claude. Uses <code>asyncRewake</code>. If
+                  the server restarts, it rejoins the new one; it gives up after a minute, or when sidenote is turned
+                  off.
                 </td>
+              </tr>
+              <tr>
+                <td>SessionStart on resume, background</td>
+                <td><code>hook-wait</code></td>
+                <td>The same waiter, so a resumed session listens before it has replied.</td>
               </tr>
               <tr>
                 <td>PreToolUse, background</td>

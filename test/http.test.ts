@@ -455,7 +455,9 @@ describe("renaming, ending and removing sessions", () => {
       assert.equal((await call("POST", "/api/sessions/end", { session_id: "en" })).status, 204);
       const [, signal] = await exited;
       assert.equal(signal, "SIGTERM");
-      assert.deepEqual(await sessions("end"), []);
+      assert.equal((await sessions("end"))[0]?.process, "ended", "ending keeps the session, to resume it");
+      const state = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=en"));
+      assert.equal(state.responses.length, 1);
     } finally {
       claude.kill();
     }
@@ -475,7 +477,40 @@ describe("renaming, ending and removing sessions", () => {
     await call("POST", "/api/responses", { session_id: "rp", cwd: "/x/reused", text: "Hi." });
     await call("POST", "/api/claim", { session_id: "rp", claude_process: { pid: process.pid, started: "long ago" } });
     assert.equal((await call("POST", "/api/sessions/end", { session_id: "rp" })).status, 204);
-    assert.deepEqual(await sessions("reused"), [], "removed from the list, but the test process still runs");
+    assert.equal(
+      (await sessions("reused"))[0]?.process,
+      "ended",
+      "the test process still runs, but isn't the session's",
+    );
+  });
+
+  test("an ended session resumes in a terminal in its folder, once", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "sidenote-resume-"));
+    const resume = () => call("POST", "/api/sessions/resume", { session_id: "rs" });
+    await call("POST", "/api/responses", { session_id: "rs", cwd: folder, text: "Hi." });
+    await call("POST", "/api/claim", { session_id: "rs", claude_process: { pid: process.pid, started: "long ago" } });
+    await call("POST", "/api/waiters", { session_id: "rs", waiter_id: "ab".repeat(8) });
+    assert.equal((await resume()).status, 409, "it is listening: a second Claude would clash with the first");
+    await call("POST", "/api/sessions/end", { session_id: "rs" });
+
+    nextStartFails = "no terminal";
+    assert.equal((await resume()).status, 502);
+    nextStartFails = null;
+    assert.equal((await resume()).status, 204, "a terminal that failed can be tried again");
+    assert.deepEqual(startedSessions.at(-1), { cwd: folder, sessionId: "rs", prompt: "", name: "", resume: true });
+    assert.equal((await resume()).status, 409, "a second click doesn't start a second Claude");
+
+    await call("POST", "/api/waiters", { session_id: "rs", waiter_id: "cd".repeat(8) });
+    const state = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=rs"));
+    assert.equal(state.session?.status, "listening", "resumed sessions listen before anything is typed");
+  });
+
+  test("a session still running can't be resumed, whatever its waiter is doing", async () => {
+    await call("POST", "/api/responses", { session_id: "rr", cwd: "/x/still-running", text: "Hi." });
+    const started = processInfo(process.pid)!.started;
+    await call("POST", "/api/claim", { session_id: "rr", claude_process: { pid: process.pid, started } });
+    await call("POST", "/api/waiters", { session_id: "rr", waiter_id: "ab".repeat(8) });
+    assert.equal((await call("POST", "/api/sessions/resume", { session_id: "rr" })).status, 409);
   });
 
   test("a new session started with a name gets it in the window and in Claude", async () => {

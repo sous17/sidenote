@@ -1,6 +1,6 @@
 // The Claude Code hooks. Each reads Claude Code's JSON hook input from stdin (see main.ts).
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
   ActivityRequest,
@@ -13,6 +13,7 @@ import type {
   WaiterPollResult,
   WaiterRequest,
 } from "../shared/types.ts";
+import { paths } from "../node/paths.ts";
 import { claudeProcess, pidInUse } from "../node/process.ts";
 import { SERVER_START_TIMEOUT_MS, SidenoteClient, openBrowser } from "./client.ts";
 import { formatNotesForClaude, formatPromptForClaude, isWakeText, sessionContext } from "../shared/format.ts";
@@ -20,6 +21,8 @@ import { MAX_PROGRESS_DELTA_CHARS, toolActivity } from "../shared/tools.ts";
 import { sessionNameFromTranscript } from "./transcript.ts";
 
 const WAITER_POLL_MS = 1000;
+/** Plenty for a restart. A server gone for longer gets a new waiter with Claude's next reply. */
+const WAITER_REJOIN_MS = 60_000;
 /** A huge paste is cut for the window; Claude still gets all of it from Claude Code. */
 const MAX_SHOWN_PROMPT_CHARS = 100_000;
 
@@ -154,7 +157,7 @@ export async function hookProgress(input: HookInput): Promise<void> {
  */
 export async function hookWait(input: HookInput): Promise<void> {
   if (!input.session_id) return;
-  const client = await connectWithin(SERVER_START_TIMEOUT_MS);
+  let client = await connectWithin(SERVER_START_TIMEOUT_MS);
   if (!client) return;
   const waiter: WaiterRequest = {
     session_id: input.session_id,
@@ -171,7 +174,9 @@ export async function hookWait(input: HookInput): Promise<void> {
     try {
       result = await client.post<WaiterPollResult>("/api/waiters/poll", waiter);
     } catch {
-      return; // sidenote was turned off or restarted
+      client = await rejoin(waiter);
+      if (!client) return;
+      continue;
     }
     if (result.action === "exit") return;
     if (result.action === "send") {
@@ -189,6 +194,25 @@ export async function hookWait(input: HookInput): Promise<void> {
 }
 
 /** The Stop hook that starts the server runs alongside hook-wait, so give it time. */
+/**
+ * Finds the server that replaced a lost one and waits there, so a restart doesn't leave a session
+ * that nothing can wake. A new server knows no waiters, and has a new token. Null once sidenote was
+ * turned off, or no server came back.
+ */
+async function rejoin(waiter: WaiterRequest): Promise<SidenoteClient | null> {
+  const deadline = Date.now() + WAITER_REJOIN_MS;
+  while (Date.now() < deadline && existsSync(paths.enabledFlag())) {
+    const client = await SidenoteClient.connect();
+    const joined = await client?.post("/api/waiters", waiter).then(
+      () => true,
+      () => false,
+    );
+    if (joined) return client;
+    await sleep(500);
+  }
+  return null;
+}
+
 async function connectWithin(timeoutMs: number): Promise<SidenoteClient | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
