@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { openWithSystem } from "../node/open.ts";
 import { paths } from "../node/paths.ts";
 import { isSameClaude, pidInUse } from "../node/process.ts";
+import { isTrustedFolder } from "../node/trust.ts";
 import { canStartSessions, startInTerminal, terminalCommand } from "../node/terminal.ts";
 import { ClaudeAgent } from "../agent/claude.ts";
 import { sessionContext } from "../shared/format.ts";
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
       onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
       processes: new SessionProcesses({ pidInUse, isSameProcess: isSameClaude }, store.revision),
+      isTrusted: (folder) => isTrustedFolder(folder),
       startSession: canStartSessions()
         ? (session) => startInTerminal(terminalCommand(process.platform, session)!)
         : null,

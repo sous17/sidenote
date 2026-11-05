@@ -1,8 +1,8 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync5, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname as dirname2, join as join6 } from "node:path";
+import { dirname as dirname3, join as join7 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/node/open.ts
@@ -27,6 +27,8 @@ var paths = {
   enabledFlag: () => join(stateDir(), "enabled"),
   transcriptsDir: () => join(homedir(), ".claude", "projects"),
   claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
+  /** Claude Code's own state, which records the folders the user trusted. */
+  claudeConfig: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? homedir(), ".claude.json"),
   managedClaudeSettings: () => process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : "/etc/claude-code/managed-settings.json"
 };
 
@@ -74,10 +76,53 @@ function pidInUse(pid) {
   }
 }
 
+// src/node/trust.ts
+import { readFileSync as readFileSync2, statSync } from "node:fs";
+import { dirname, join as join2, resolve } from "node:path";
+var WORKTREE_GITDIR = /^gitdir: (.+)\/\.git\/worktrees\/[^/\n]+\s*$/;
+function read(file) {
+  try {
+    return readFileSync2(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+function mainCheckout(folder) {
+  const gitFile = join2(folder, ".git");
+  const gitDir = /^gitdir: (.+?)\s*$/.exec(read(gitFile))?.[1];
+  const main2 = WORKTREE_GITDIR.exec(read(gitFile))?.[1];
+  if (!gitDir || !main2) return null;
+  return read(join2(resolve(folder, gitDir), "gitdir")).trim() === gitFile ? resolve(folder, main2) : null;
+}
+function repositoryRoot(folder) {
+  for (let dir = folder; ; dir = dirname(dir)) {
+    const git = statSync(join2(dir, ".git"), { throwIfNoEntry: false });
+    if (git) return git.isFile() && mainCheckout(dir) || dir;
+    if (dir === dirname(dir)) return null;
+  }
+}
+function isTrustedFolder(folder, configFile = paths.claudeConfig()) {
+  let projects;
+  try {
+    projects = JSON.parse(read(configFile)).projects;
+  } catch {
+    return false;
+  }
+  if (typeof projects !== "object" || projects === null) return false;
+  const known = new Map(Object.entries(projects));
+  const accepted = (path) => known.get(path)?.hasTrustDialogAccepted === true;
+  const repository = repositoryRoot(folder);
+  if (repository) return accepted(repository);
+  for (let dir = folder; ; dir = dirname(dir)) {
+    if (accepted(dir)) return true;
+    if (dir === dirname(dir)) return false;
+  }
+}
+
 // src/node/terminal.ts
 import { spawn as spawn2 } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { delimiter, join as join2 } from "node:path";
+import { delimiter, join as join3 } from "node:path";
 var STILL_STARTING_MS = 3e3;
 var MACOS_SCRIPT = [
   "on run argv",
@@ -114,7 +159,7 @@ function canStartSessions(platform = process.platform) {
   return platform === "linux" && onPath("gnome-terminal");
 }
 function startInTerminal(command) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = spawn2(command[0], [...command[1]], { detached: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => {
@@ -123,7 +168,7 @@ function startInTerminal(command) {
     const stillStarting = setTimeout(() => {
       child.stderr.destroy();
       child.unref();
-      resolve2();
+      resolve3();
     }, STILL_STARTING_MS);
     child.on("error", (error) => {
       clearTimeout(stillStarting);
@@ -131,7 +176,7 @@ function startInTerminal(command) {
     });
     child.on("exit", (code) => {
       clearTimeout(stillStarting);
-      if (code === 0) resolve2();
+      if (code === 0) resolve3();
       else reject(new Error(stderr.trim() || `${command[0]} exited with ${code}`));
     });
   });
@@ -139,7 +184,7 @@ function startInTerminal(command) {
 function onPath(name) {
   return (process.env["PATH"] ?? "").split(delimiter).filter(Boolean).some((dir) => {
     try {
-      accessSync(join2(dir, name), constants.X_OK);
+      accessSync(join3(dir, name), constants.X_OK);
       return true;
     } catch {
       return false;
@@ -149,8 +194,8 @@ function onPath(name) {
 
 // src/agent/claude.ts
 import { spawn as spawn3 } from "node:child_process";
-import { existsSync, readFileSync as readFileSync2 } from "node:fs";
-import { dirname, join as join3 } from "node:path";
+import { existsSync, readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
 import { createInterface } from "node:readline";
 var HEADLESS_ENV = "SIDENOTE_HEADLESS";
 var CLOSE_GRACE_MS = 3e3;
@@ -165,7 +210,7 @@ function startingMode(settingsFile, overriding = []) {
 function chosenMode(settingsFile) {
   let contents;
   try {
-    contents = readFileSync2(settingsFile, "utf8");
+    contents = readFileSync3(settingsFile, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? void 0 : null;
   }
@@ -176,14 +221,14 @@ function chosenMode(settingsFile) {
   }
 }
 function overridingSettings(cwd) {
-  const inFolder = (folder, file) => join3(folder, ".claude", file);
+  const inFolder = (folder, file) => join4(folder, ".claude", file);
   const files = [paths.managedClaudeSettings(), inFolder(cwd, "settings.local.json"), inFolder(cwd, "settings.json")];
-  for (let folder = cwd; ; folder = dirname(folder)) {
-    if (existsSync(join3(folder, ".git"))) {
+  for (let folder = cwd; ; folder = dirname2(folder)) {
+    if (existsSync(join4(folder, ".git"))) {
       files.push(inFolder(folder, "settings.local.json"));
       return files;
     }
-    if (folder === dirname(folder)) return files;
+    if (folder === dirname2(folder)) return files;
   }
 }
 function claudeArgs(options) {
@@ -2132,8 +2177,8 @@ function folderName(cwd) {
 }
 
 // src/server/persistence.ts
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join as join4 } from "node:path";
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync4, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join as join5 } from "node:path";
 function emptyStore() {
   return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
@@ -2181,14 +2226,14 @@ var StoreFiles = class {
   #written = /* @__PURE__ */ new Map();
   #writtenNextId = 0;
   constructor(dir) {
-    this.#sessionsDir = join4(dir, "sessions");
-    this.#idsFile = join4(dir, "ids.json");
-    this.#legacyFile = join4(dir, "store.json");
+    this.#sessionsDir = join5(dir, "sessions");
+    this.#idsFile = join5(dir, "ids.json");
+    this.#legacyFile = join5(dir, "store.json");
   }
   load() {
     mkdirSync(this.#sessionsDir, { recursive: true, mode: 448 });
     if (existsSync2(this.#legacyFile)) {
-      const data = migrate(JSON.parse(readFileSync3(this.#legacyFile, "utf8")));
+      const data = migrate(JSON.parse(readFileSync4(this.#legacyFile, "utf8")));
       this.save(data);
       renameSync(this.#legacyFile, `${this.#legacyFile}.migrated`);
       return data;
@@ -2203,7 +2248,7 @@ var StoreFiles = class {
     for (const entry of readdirSync(this.#sessionsDir)) {
       const id = entry.endsWith(".json") ? entry.slice(0, -".json".length) : "";
       if (!SESSION_ID_PATTERN.test(id)) continue;
-      const contents = readFileSync3(join4(this.#sessionsDir, entry), "utf8");
+      const contents = readFileSync4(join5(this.#sessionsDir, entry), "utf8");
       const file = parseSessionFile(contents);
       if (!file) {
         console.error(`skipping ${entry}: it isn't a session file`);
@@ -2229,19 +2274,19 @@ var StoreFiles = class {
     const files = sessionFiles(data);
     for (const [id, contents] of files) {
       if (this.#written.get(id) === contents) continue;
-      writeAtomically(join4(this.#sessionsDir, `${id}.json`), contents);
+      writeAtomically(join5(this.#sessionsDir, `${id}.json`), contents);
       this.#written.set(id, contents);
     }
     for (const id of this.#written.keys()) {
       if (files.has(id)) continue;
-      rmSync(join4(this.#sessionsDir, `${id}.json`), { force: true });
+      rmSync(join5(this.#sessionsDir, `${id}.json`), { force: true });
       this.#written.delete(id);
     }
   }
   /** 1 when the file is missing or damaged: migrate then starts past the highest id it finds. */
   #readNextId() {
     try {
-      return JSON.parse(readFileSync3(this.#idsFile, "utf8")).next_id ?? 1;
+      return JSON.parse(readFileSync4(this.#idsFile, "utf8")).next_id ?? 1;
     } catch {
       return 1;
     }
@@ -2298,11 +2343,11 @@ var Revision = class {
   /** Resolves when the value moves past `known`, or after timeoutMs: a long poll's wait. */
   async waitPast(known, timeoutMs) {
     if (this.#value !== known) return;
-    await new Promise((resolve2) => {
+    await new Promise((resolve3) => {
       const wake = () => {
         clearTimeout(timer);
         this.#waiting.delete(wake);
-        resolve2();
+        resolve3();
       };
       const timer = setTimeout(wake, timeoutMs);
       this.#waiting.add(wake);
@@ -2920,9 +2965,9 @@ function replyOf(parts) {
 
 // src/server/http.ts
 import { randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
-import { statSync } from "node:fs";
+import { statSync as statSync2 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { extname, join as join5, resolve, sep } from "node:path";
+import { extname, join as join6, resolve as resolve2, sep } from "node:path";
 
 // src/server/windows.ts
 var WINDOW_SEEN_MS = 2 * 60 * 1e3;
@@ -3196,7 +3241,8 @@ function routes({
   token,
   openFolder,
   startSession,
-  processes
+  processes,
+  isTrusted
 }) {
   const windows = new OpenWindows();
   const statusOf = (sessionId2) => host.sendStatus(sessionId2) ?? delivery.status(sessionId2);
@@ -3235,8 +3281,15 @@ function routes({
   const recordedFolder = (sessionId2) => {
     const cwd = store.session(sessionId2)?.cwd;
     if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
-    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HttpError(404, `${cwd} no longer exists`);
+    if (!statSync2(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HttpError(404, `${cwd} no longer exists`);
     return cwd;
+  };
+  const requireTrust = (folder) => {
+    if (isTrusted(folder)) return;
+    throw new HttpError(
+      409,
+      `Claude Code doesn't trust ${folder} yet. Run claude there once and accept its trust prompt, then try again. sidenote chat can't show that prompt, and without it the folder's hooks and MCP servers would run unasked.`
+    );
   };
   return [
     {
@@ -3279,9 +3332,10 @@ function routes({
       needsToken: true,
       handle: ({ body }) => {
         const input = parseRegisterSession(body);
-        if (!statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
+        if (!statSync2(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
           throw new HttpError(400, "cwd is not a folder");
         }
+        requireTrust(input.cwd);
         const id = input.session_id ?? randomUUID2();
         if (!store.session(id)?.cwd) store.touchSession(id, "", input.cwd);
         return ok({ session_id: id }, 201);
@@ -3293,7 +3347,9 @@ function routes({
       needsToken: true,
       handle: ({ body }) => {
         const { session_id, resume } = parseStartConversation(body);
-        const id = host.open(recordedFolder(session_id), session_id, resume);
+        const folder = recordedFolder(session_id);
+        requireTrust(folder);
+        const id = host.open(folder, session_id, resume);
         return ok({ session_id: id }, 201);
       }
     },
@@ -3487,7 +3543,7 @@ function routes({
       needsToken: true,
       handle: ({ body }) => {
         const folder = recordedFolder(parseSessionRequest(body).session_id);
-        if (statSync(join5(folder, "Contents", "Info.plist"), { throwIfNoEntry: false })) {
+        if (statSync2(join6(folder, "Contents", "Info.plist"), { throwIfNoEntry: false })) {
           throw new HttpError(409, `${folder} is an app, not a folder`);
         }
         openFolder(folder);
@@ -3607,7 +3663,7 @@ function routes({
   ];
 }
 function createApp(options) {
-  const webDir = resolve(options.webDir);
+  const webDir = resolve2(options.webDir);
   const tokenBytes = Buffer.from(options.token);
   const table = routes(options);
   const tokenValid = (request) => {
@@ -3635,7 +3691,7 @@ function createApp(options) {
     if (url.pathname.startsWith("/api/")) return send(response, await serveApi(request, url));
     if (request.method !== "GET") throw new HttpError(405);
     if (url.pathname === "/" || FOLDER_PATH.test((request.url ?? "").split("?")[0])) {
-      return sendFile(response, resolve(webDir, "index.html"));
+      return sendFile(response, resolve2(webDir, "index.html"));
     }
     if (url.pathname.startsWith("/static/")) return sendFile(response, staticPath(webDir, url.pathname));
     throw new HttpError(404);
@@ -3662,7 +3718,7 @@ function staticPath(webDir, pathname) {
   } catch {
     throw new HttpError(404);
   }
-  const file = resolve(webDir, relative);
+  const file = resolve2(webDir, relative);
   if (relative.includes("\0") || !file.startsWith(webDir + sep)) throw new HttpError(404);
   return file;
 }
@@ -3779,11 +3835,11 @@ var LaunchCodes = class {
 };
 
 // src/server/lock.ts
-import { closeSync, openSync, readFileSync as readFileSync4, rmSync as rmSync2, statSync as statSync2, writeSync } from "node:fs";
+import { closeSync, openSync, readFileSync as readFileSync5, rmSync as rmSync2, statSync as statSync3, writeSync } from "node:fs";
 var STARTUP_GRACE_MS = 3e4;
 function readLock(lockFile) {
   try {
-    const [pid = "", started = ""] = readFileSync4(lockFile, "utf8").split("\n");
+    const [pid = "", started = ""] = readFileSync5(lockFile, "utf8").split("\n");
     return { pid: Number.parseInt(pid, 10), started };
   } catch {
     return null;
@@ -3803,7 +3859,7 @@ function isHeld(lockFile) {
   if (!lock) return false;
   if (!Number.isNaN(lock.pid)) return serverLockOwner(lockFile) !== null;
   try {
-    return Date.now() - statSync2(lockFile).mtimeMs < STARTUP_GRACE_MS;
+    return Date.now() - statSync3(lockFile).mtimeMs < STARTUP_GRACE_MS;
   } catch {
     return false;
   }
@@ -3863,7 +3919,7 @@ var ServerWatch = class {
 };
 
 // src/server/main.ts
-var WEB_DIR = join6(dirname2(fileURLToPath(import.meta.url)), "web");
+var WEB_DIR = join7(dirname3(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
   return new Promise((resolvePort, reject) => {
     server.once("error", reject);
@@ -3877,7 +3933,7 @@ function listenOn(server, port) {
 async function listen(server) {
   let preferred = 0;
   try {
-    preferred = Number.parseInt(readFileSync5(paths.portFile(), "utf8"), 10) || 0;
+    preferred = Number.parseInt(readFileSync6(paths.portFile(), "utf8"), 10) || 0;
   } catch {
   }
   try {
@@ -3889,7 +3945,7 @@ async function listen(server) {
 }
 function registeredPid() {
   try {
-    return JSON.parse(readFileSync5(paths.serverFile(), "utf8")).pid;
+    return JSON.parse(readFileSync6(paths.serverFile(), "utf8")).pid;
   } catch {
     return null;
   }
@@ -3925,6 +3981,7 @@ async function main() {
       onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
       processes: new SessionProcesses({ pidInUse, isSameProcess: isSameClaude }, store.revision),
+      isTrusted: (folder) => isTrustedFolder(folder),
       startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
     })
   );

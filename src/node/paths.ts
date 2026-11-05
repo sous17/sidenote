@@ -14,6 +14,8 @@ export const paths = {
   enabledFlag: (): string => join(stateDir(), "enabled"),
   transcriptsDir: (): string => join(homedir(), ".claude", "projects"),
   claudeSettings: (): string => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
+  /** Claude Code's own state, which records the folders the user trusted. */
+  claudeConfig: (): string => join(process.env["CLAUDE_CONFIG_DIR"] ?? homedir(), ".claude.json"),
   managedClaudeSettings: (): string =>
     process.platform === "darwin"
       ? "/Library/Application Support/ClaudeCode/managed-settings.json"

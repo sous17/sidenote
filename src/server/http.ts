@@ -105,6 +105,8 @@ export interface AppOptions {
   startSession: ((session: NewSession) => Promise<void>) | null;
   /** The Claude process behind each session, so the page can end it. */
   processes: SessionProcesses;
+  /** Whether the user trusted a folder in Claude Code, which `claude -p` never asks about. */
+  isTrusted: (folder: string) => boolean;
 }
 
 class HttpError extends Error {
@@ -143,6 +145,7 @@ function routes({
   openFolder,
   startSession,
   processes,
+  isTrusted,
 }: AppOptions): Route[] {
   const windows = new OpenWindows();
   const statusOf = (sessionId: string): SendStatus => host.sendStatus(sessionId) ?? delivery.status(sessionId);
@@ -187,6 +190,15 @@ function routes({
     if (!cwd) throw new HttpError(404, "sidenote doesn't know this session's folder");
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HttpError(404, `${cwd} no longer exists`);
     return cwd;
+  };
+
+  const requireTrust = (folder: string): void => {
+    if (isTrusted(folder)) return;
+    throw new HttpError(
+      409,
+      `Claude Code doesn't trust ${folder} yet. Run claude there once and accept its trust prompt, then try again. ` +
+        "sidenote chat can't show that prompt, and without it the folder's hooks and MCP servers would run unasked.",
+    );
   };
 
   return [
@@ -234,6 +246,7 @@ function routes({
         if (!statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
           throw new HttpError(400, "cwd is not a folder");
         }
+        requireTrust(input.cwd);
         const id = input.session_id ?? randomUUID();
         // A session keeps its folder: registering never moves one sidenote already knows.
         if (!store.session(id)?.cwd) store.touchSession(id, "", input.cwd);
@@ -246,7 +259,9 @@ function routes({
       needsToken: true,
       handle: ({ body }) => {
         const { session_id, resume } = parseStartConversation(body);
-        const id = host.open(recordedFolder(session_id), session_id, resume);
+        const folder = recordedFolder(session_id);
+        requireTrust(folder);
+        const id = host.open(folder, session_id, resume);
         return ok({ session_id: id } satisfies StartConversationResult, 201);
       },
     },

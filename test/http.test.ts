@@ -70,6 +70,7 @@ before(async () => {
         openedFolders.push(path);
       },
       processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+      isTrusted: () => true,
       startSession: async (session) => {
         if (nextStartFails) throw new Error(nextStartFails);
         startedSessions.push(session);
@@ -385,6 +386,7 @@ describe("starting a session", () => {
         openFolder: () => {},
         startSession: null,
         processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+        isTrusted: () => true,
       }),
     );
     await new Promise<void>((resolve) => bare.listen(0, "127.0.0.1", resolve));

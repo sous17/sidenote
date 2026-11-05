@@ -716,6 +716,11 @@ claude plugin install sidenote@sidenote</code></pre>
           Claude's reply streams in above it, with its tool calls on one line. <kbd>Esc</kbd> interrupts Claude.
         </p>
         <p class="text">
+          It only runs in a folder you trusted in Claude Code. If it refuses, run <code>claude</code> in the folder once
+          and accept the trust prompt. Claude Code doesn't save that answer for your home folder, so start from a
+          project folder instead.
+        </p>
+        <p class="text">
           Sessions start in Claude Code's auto mode, as they do at the terminal, so routine commands run without asking.
           When Claude does ask to use a tool, <kbd>y</kbd> allows it, <kbd>a</kbd> always allows it and
           <kbd>n</kbd> denies it. To be asked about everything, set <code>permissions.defaultMode</code> to
@@ -1109,6 +1114,11 @@ claude plugin update sidenote@sidenote</code></pre>
             messages to Claude and answer its permission prompts, under the same token and checks. A session only starts
             in a folder that exists. Tools run under Claude Code's own permission mode: auto mode's checks decide what
             runs unasked, and anything Claude Code would ask about waits for your answer.
+          </li>
+          <li>
+            <strong>Trusted folders only.</strong> <code>sidenote chat</code> runs <code>claude -p</code>, which never
+            shows Claude Code's trust prompt and still runs a repository's hooks and MCP servers. So it refuses a folder
+            you haven't trusted in Claude Code, and anything it can't read counts as not trusted.
           </li>
           <li>
             <strong>A token for every call.</strong> A random 256-bit token, created on each start, is stored in

@@ -30,6 +30,8 @@ var init_paths = __esm({
       enabledFlag: () => join(stateDir(), "enabled"),
       transcriptsDir: () => join(homedir(), ".claude", "projects"),
       claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
+      /** Claude Code's own state, which records the folders the user trusted. */
+      claudeConfig: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? homedir(), ".claude.json"),
       managedClaudeSettings: () => process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : "/etc/claude-code/managed-settings.json"
     };
   }
@@ -205,9 +207,12 @@ var init_client = __esm({
     SERVER_SCRIPT = join2(dirname(fileURLToPath(import.meta.url)), "server.js");
     ApiError = class extends Error {
       status;
-      constructor(status, message) {
+      /** What the server said, for showing to the user as it is. */
+      detail;
+      constructor(status, message, detail = "") {
         super(message);
         this.status = status;
+        this.detail = detail;
       }
     };
     SidenoteClient = class _SidenoteClient {
@@ -277,7 +282,8 @@ var init_client = __esm({
           const detail = text ? JSON.parse(text).error : void 0;
           throw new ApiError(
             response.status,
-            `${method} ${path} failed with ${response.status}${detail ? `: ${detail}` : ""}`
+            `${method} ${path} failed with ${response.status}${detail ? `: ${detail}` : ""}`,
+            detail
           );
         }
         return text ? JSON.parse(text) : null;
@@ -4970,7 +4976,15 @@ async function runChat(args) {
   if (requested === false) return;
   const { client } = await SidenoteClient.ensure();
   const api = new ClientApi(client, { startServer: true });
-  const sessionId = await api.startConversation(process.cwd(), requested);
+  let sessionId;
+  try {
+    sessionId = await api.startConversation(process.cwd(), requested);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 409) throw error;
+    console.error(error.detail);
+    process.exitCode = 1;
+    return;
+  }
   const { app, running } = startScreen(
     (terminal) => new App({
       api,

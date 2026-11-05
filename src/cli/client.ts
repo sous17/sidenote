@@ -24,9 +24,12 @@ const SERVER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "server.js")
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** What the server said, for showing to the user as it is. */
+  readonly detail: string;
+  constructor(status: number, message: string, detail = "") {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -109,6 +112,7 @@ export class SidenoteClient {
       throw new ApiError(
         response.status,
         `${method} ${path} failed with ${response.status}${detail ? `: ${detail}` : ""}`,
+        detail,
       );
     }
     return (text ? JSON.parse(text) : null) as T;

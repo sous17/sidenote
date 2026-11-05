@@ -40,6 +40,8 @@ Anyone who can call the API can put text in front of the user's agent, so:
   never `innerHTML`.
 - Keep the content security policy free of inline and remote scripts, and keep the server bound
   to `127.0.0.1` with its `Host` check.
+- Never start `claude -p` in a folder the user hasn't trusted in Claude Code: it shows no trust prompt
+  and still runs a repository's hooks and MCP servers (`src/node/trust.ts`).
 - Anything that starts or stops a process takes a session id, never a path or a pid from the
   request. Starting uses the folder recorded for the session; stopping uses the Claude process the
   session's hooks reported, and checks its start time first, so a reused pid is never signalled
