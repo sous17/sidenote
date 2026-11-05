@@ -434,6 +434,22 @@ test("a resumed session gets a waiter straight away, and the hook's config says 
   assert.equal(onResume?.asyncRewake, true);
 });
 
+test("a new session joins its folder's open window, and opens one only if there is none", async () => {
+  await run(["hook-prompt"], hookInput({ session_id: "unwindowed", cwd: "/w/no-window", prompt: "Hi" }));
+  await run(["hook-stop"], hookInput({ session_id: "unwindowed", cwd: "/w/no-window", last_assistant_message: "Hi." }));
+  assert.equal((await lastOpened()).searchParams.get("s"), "unwindowed", "the first prompt doesn't lose the window");
+
+  await api<StateSnapshot>("GET", "/api/state?v=-1&s=unwindowed&f=no-window");
+  await run(["hook-prompt"], hookInput({ session_id: "joining", cwd: "/w/no-window", prompt: "Hi" }));
+  await run(["hook-stop"], hookInput({ session_id: "joining", cwd: "/w/no-window", last_assistant_message: "Hi." }));
+  const state = await api<StateSnapshot>("GET", "/api/state?v=-1&s=unwindowed&f=no-window");
+  assert.ok(state.sessions.some((row) => row.id === "joining"));
+
+  // Anything opened for "joining" would be the next line, ahead of this one.
+  await run(["open", "unwindowed"]);
+  assert.equal((await lastOpened()).searchParams.get("s"), "unwindowed", "no tab opened for the joining session");
+});
+
 test("restart replaces the server, keeps the replies and opens the window", async () => {
   const before = server();
   const result = await run(["restart", SESSION]);

@@ -5334,7 +5334,9 @@ async function hookStop(input) {
     ...reportedProcess()
   };
   const result = await client.post("/api/responses", reply);
-  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
+  if (started || result.new_session && !result.window_open) {
+    openBrowser(await client.windowUrl(sessionId, reply.cwd));
+  }
 }
 async function hookClear(input) {
   if (input.reason !== "clear" || !input.session_id) return;
@@ -5352,6 +5354,7 @@ async function hookPrompt(input) {
   const { client } = await SidenoteClient.ensure();
   const claim = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
+  if (input.cwd) claim.cwd = input.cwd;
   const { comments, prompt } = await client.post("/api/claim", claim);
   if (!comments.length && prompt === void 0) return;
   const additionalContext = prompt === void 0 ? formatNotesForClaude(comments) : formatPromptForClaude(prompt, comments, { withTerminalPrompt: true });

@@ -1,6 +1,6 @@
 // The session list on the left: one row per session that ran in this window's folder. In a wide
-// window it is docked beside the feed; otherwise, and while a thread is open, it folds away and the
-// button in the top bar opens it over the feed.
+// window it is docked beside the feed, and beside a thread too, until the user folds it; otherwise
+// it folds away and the button in the top bar opens it over the feed.
 import type { FolderSession, SessionState } from "../shared/types.ts";
 import { sessionLabel } from "../shared/model.ts";
 import { formatTime } from "../shared/text.ts";
@@ -18,6 +18,11 @@ const STATUS_TEXT: Readonly<Record<SessionState, string>> = {
   busy: "Claude is working",
   offline: "Not listening",
 };
+
+/** What a session's row and the top bar call its state. */
+export function sessionStateText(session: FolderSession): string {
+  return session.process === "ended" ? "Ended" : STATUS_TEXT[session.status];
+}
 
 // The selected session survives a reload of this browser tab, per folder. Storage can be blocked;
 // the window then opens on the folder's latest session.
@@ -59,7 +64,6 @@ export class SessionPanel {
   readonly #panel: HTMLElement;
   readonly #list: HTMLElement;
   readonly #toggle: HTMLButtonElement;
-  readonly #app: HTMLElement;
   readonly #actions: SessionActions;
   /** Whether the user wants the panel docked when the window has room; folding it is remembered. */
   #wantsDocked = readWantsDocked();
@@ -69,17 +73,10 @@ export class SessionPanel {
   #sessions: readonly FolderSession[] = [];
   #selectedId = "";
 
-  constructor(options: {
-    panel: HTMLElement;
-    list: HTMLElement;
-    toggle: HTMLButtonElement;
-    app: HTMLElement;
-    actions: SessionActions;
-  }) {
+  constructor(options: { panel: HTMLElement; list: HTMLElement; toggle: HTMLButtonElement; actions: SessionActions }) {
     this.#panel = options.panel;
     this.#list = options.list;
     this.#toggle = options.toggle;
-    this.#app = options.app;
     this.#actions = options.actions;
 
     this.#toggle.addEventListener("click", () => {
@@ -108,8 +105,6 @@ export class SessionPanel {
       { capture: true },
     );
     window.addEventListener("resize", () => this.#apply());
-    // The thread pane takes the room the panel would dock in.
-    new MutationObserver(() => this.#apply()).observe(this.#app, { attributeFilter: ["class"] });
     this.#apply();
   }
 
@@ -132,10 +127,9 @@ export class SessionPanel {
     main.type = "button";
     main.title = `Session ${session.id}`;
     const text = el("span", "session-row-text");
-    const state = session.process === "ended" ? "Ended" : STATUS_TEXT[session.status];
     text.append(
       el("span", "session-row-label", sessionLabel(session)),
-      el("span", "session-row-meta", `${state} · ${lastActive(session.last_active)}`),
+      el("span", "session-row-meta", `${sessionStateText(session)} · ${lastActive(session.last_active)}`),
     );
     main.append(el("span", "status-dot"), text);
     if (session.pending_notes) main.append(el("span", "note-count", String(session.pending_notes)));
@@ -274,7 +268,7 @@ export class SessionPanel {
   }
 
   #canDock(): boolean {
-    return window.innerWidth >= DOCK_MIN_WIDTH && !this.#app.classList.contains("split");
+    return window.innerWidth >= DOCK_MIN_WIDTH;
   }
 
   #close(): void {

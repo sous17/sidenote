@@ -260,6 +260,8 @@ export interface NewResponseResult {
   response: StoredResponse;
   /** True for a session's first reply, so the hook opens that session's window. */
   new_session: boolean;
+  /** A window on the session's folder is open: the session joins its list, so no new tab. */
+  window_open: boolean;
 }
 
 export type NewNoteRequest =
@@ -279,6 +281,8 @@ export interface ClaimRequest {
   session_id: string;
   /** What the user typed in the terminal, so the page can show it. */
   prompt?: string;
+  /** Where the session runs, so its row shows from its first prompt. */
+  cwd?: string;
   claude_process?: ClaudeProcess;
 }
 
