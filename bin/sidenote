@@ -1,0 +1,52 @@
+#!/bin/sh
+# Runs sidenote with Node.js. Hooks don't always get the interactive shell's PATH (nvm, for
+# example, only sets it up in interactive shells), so look in the usual places too.
+# Set SIDENOTE_NODE to a node binary to skip the search.
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+find_node() {
+  if [ -n "$SIDENOTE_NODE" ] && [ -x "$SIDENOTE_NODE" ]; then
+    echo "$SIDENOTE_NODE"
+    return 0
+  fi
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+  for candidate in \
+    /opt/homebrew/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node \
+    "$HOME/.volta/bin/node" \
+    "$HOME/.local/share/mise/shims/node" \
+    "$HOME/.asdf/shims/node"; do
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  # nvm and fnm: the newest installed version.
+  newest=$(ls -d "$HOME"/.nvm/versions/node/v*/bin/node "$HOME"/.local/share/fnm/node-versions/v*/installation/bin/node 2>/dev/null \
+    | sort -t v -k 2 -V | tail -n 1)
+  if [ -n "$newest" ] && [ -x "$newest" ]; then
+    echo "$newest"
+    return 0
+  fi
+  return 1
+}
+
+if ! node=$(find_node); then
+  case "$1" in
+    hook-*)
+      # A hook must never break the Claude session.
+      mkdir -p "$HOME/.sidenote"
+      echo "$(date) sidenote: Node.js not found; set SIDENOTE_NODE" >> "$HOME/.sidenote/server.log"
+      exit 0
+      ;;
+  esac
+  echo "sidenote needs Node.js 20 or newer, and couldn't find it. Install Node, or set SIDENOTE_NODE to its path." >&2
+  exit 1
+fi
+
+exec "$node" "$root/dist/cli.js" "$@"

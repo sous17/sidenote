@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Lines of a reply, with a bracket marking them up and pointing into the margin. -->
+  <style>
+    .text { stroke: #2b2d6e; }
+    @media (prefers-color-scheme: dark) { .text { stroke: #c3c4ff; } }
+  </style>
+  <path class="text" d="M4 9h13M4 16h13M4 23h9" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+  <path d="M21.5 8h3v16h-3M24.5 16h3.5" stroke="#f5b83d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

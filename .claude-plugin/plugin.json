@@ -1,0 +1,18 @@
+{
+  "name": "sidenote",
+  "displayName": "sidenote",
+  "version": "1.0.0",
+  "description": "Leave inline notes on Claude's replies in a browser window, and send them back to Claude without typing in the terminal.",
+  "author": {
+    "name": "Sourajit Saha"
+  },
+  "license": "MIT",
+  "keywords": [
+    "review",
+    "comments",
+    "browser",
+    "notes"
+  ],
+  "homepage": "https://github.com/sous17/sidenote",
+  "repository": "https://github.com/sous17/sidenote"
+}
