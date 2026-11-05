@@ -29,6 +29,7 @@ export interface TuiApi {
   /** The session's state, or null when nothing changed since knownVersion; wait holds out for a change. */
   state(knownVersion: number, sessionId: string, wait?: boolean): Promise<StateSnapshot | null>;
   addNote(note: NewNoteRequest): Promise<void>;
+  editNote(id: number, body: string): Promise<void>;
   deleteNote(id: number): Promise<void>;
   send(sessionId: string): Promise<void>;
 }
@@ -90,6 +91,8 @@ interface Editing {
   draftKey: string;
   title: string;
   scroll: number;
+  /** Set when rewriting an unsent note instead of writing a new one. */
+  edit: { id: number; body: string } | null;
   /** In chat with a margin, the note is written in a box beside these rows of this target. */
   anchor: { key: string; offset: number; label: string } | null;
 }
@@ -337,6 +340,9 @@ export class App {
         if (target.kind === "block" && target.code) this.#lines = [target.start, target.start];
         else this.#message = { text: "Line notes are for code and diffs; n notes the whole block", style: MUTED };
         return;
+      case "e":
+        if (target?.kind === "note") this.#startEdit(target.rootId!);
+        return;
       case "x":
         if (target?.kind === "note") await this.#deleteNote(target.rootId!, confirming);
         return;
@@ -410,6 +416,12 @@ export class App {
       case "n":
       case "enter":
         return this.#startReply(this.#threadRoot!);
+      case "e": {
+        const pending = this.#model?.thread(this.#threadRoot!).findLast((note) => note.delivered_at === null);
+        if (pending) this.#startEdit(pending.id);
+        else this.#message = { text: "Nothing unsent in this thread to edit", style: MUTED };
+        return;
+      }
       case "x": {
         const pending = this.#model?.thread(this.#threadRoot!).findLast((note) => note.delivered_at === null);
         if (pending) await this.#deleteNote(pending.id, confirming);
@@ -637,13 +649,32 @@ export class App {
     this.#openEditor({ parent_id: rootId }, `t:${rootId}`, "Reply in this thread");
   }
 
-  #openEditor(request: NoteRequest, draftKey: string, title: string): void {
+  /** Opens the editor on an unsent note's text; saving rewrites it in place. */
+  #startEdit(noteId: number): void {
+    const note = this.#model?.note(noteId);
+    if (!note) return;
+    if (note.delivered_at !== null) {
+      this.#message = { text: "Only notes that haven't been sent can be edited", style: MUTED };
+      return;
+    }
+    if (this.#model!.isQueued(note)) {
+      this.#message = { text: "This note is already being sent", style: MUTED };
+      return;
+    }
+    const title = note.parent_id === null ? "Edit your note" : "Edit your follow-up";
+    this.#openEditor({ parent_id: note.parent_id ?? note.id }, `e:${note.id}`, title, note.body);
+    this.#editor!.edit = { id: note.id, body: note.body };
+    this.#editor!.text.end();
+  }
+
+  #openEditor(request: NoteRequest, draftKey: string, title: string, text = ""): void {
     this.#editor = {
-      text: new NoteText(this.#drafts.get(draftKey) ?? ""),
+      text: new NoteText(this.#drafts.get(draftKey) ?? text),
       request,
       draftKey,
       title,
       scroll: 0,
+      edit: null,
       anchor: null,
     };
   }
@@ -652,7 +683,7 @@ export class App {
     const editing = this.#editor;
     this.#editor = null;
     if (!editing) return;
-    if (editing.text.isBlank) {
+    if (editing.text.isBlank || editing.text.text === editing.edit?.body) {
       this.#drafts.delete(editing.draftKey);
     } else {
       this.#drafts.set(editing.draftKey, editing.text.text);
@@ -667,7 +698,8 @@ export class App {
       this.#message = { text: "Write something first, or press Esc", style: MUTED };
       return;
     }
-    await this.#api.addNote({ ...editing.request, body: editing.text.text } as NewNoteRequest);
+    if (editing.edit) await this.#api.editNote(editing.edit.id, editing.text.text);
+    else await this.#api.addNote({ ...editing.request, body: editing.text.text } as NewNoteRequest);
     this.#drafts.delete(editing.draftKey);
     this.#editor = null;
     if (sendNow) {
@@ -1258,16 +1290,16 @@ export class App {
       parts.push("j/k pick lines", "n note on these lines", "esc cancel");
     } else if (this.#split() && this.#half === "thread") {
       parts.push("tab conversation", "j/k scroll", "r reply", "]/[ next/prev thread", "f show in conversation");
-      parts.push("x delete unsent", "esc close");
+      parts.push("e edit", "x delete", "esc close");
     } else if (this.#view === "thread" && !this.#split()) {
-      parts.push("j/k scroll", "r reply", "x delete unsent", "f show in feed", "esc back");
+      parts.push("j/k scroll", "r reply", "e edit", "x delete", "f show in feed", "esc back");
     } else {
       const target = this.#selectedTarget();
       parts.push("j/k move");
       if (target?.kind === "note" || target?.kind === "answer") parts.push("⏎ open thread", "n reply");
       else if (target?.file !== undefined) parts.push("⏎ fold", "n note");
       else if (target) parts.push("n note");
-      if (target?.kind === "note") parts.push("x delete");
+      if (target?.kind === "note") parts.push("e edit", "x delete");
       if (target?.code) parts.push("v pick lines");
       parts.push("N note on reply");
       if (this.#chat) parts.push("]/[ next/prev note");
