@@ -78,6 +78,18 @@ export function isSameProcess(recorded: ClaudeProcess): boolean {
   return processInfo(recorded.pid)?.started === recorded.started;
 }
 
+/**
+ * Whether the recorded process still runs and is Claude. What's recorded came through the API, so
+ * this is what stands between a report and signalling some other process of the user's.
+ */
+export function isSameClaude(
+  recorded: ClaudeProcess,
+  info: (pid: number) => ProcessInfo | null = processInfo,
+): boolean {
+  const found = info(recorded.pid);
+  return found?.started === recorded.started && isClaude(found);
+}
+
 /** Whether a pid is in use at all: cheap enough to ask on every poll, unlike isSameProcess on macOS. */
 export function pidInUse(pid: number): boolean {
   try {

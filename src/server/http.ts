@@ -11,7 +11,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
-import { extname, resolve, sep } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import type { NewSession } from "../node/terminal.ts";
 import { folderName } from "../shared/folders.ts";
 import { OpenWindows } from "./windows.ts";
@@ -443,7 +443,12 @@ function routes({
       path: "/api/open-folder",
       needsToken: true,
       handle: ({ body }) => {
-        openFolder(recordedFolder(parseSessionRequest(body).session_id));
+        const folder = recordedFolder(parseSessionRequest(body).session_id);
+        // macOS opens an app's folder by running the app.
+        if (statSync(join(folder, "Contents", "Info.plist"), { throwIfNoEntry: false })) {
+          throw new HttpError(409, `${folder} is an app, not a folder`);
+        }
+        openFolder(folder);
         return empty(204);
       },
     },

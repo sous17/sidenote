@@ -2,7 +2,7 @@
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync5, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname as dirname2, join as join5 } from "node:path";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/node/open.ts
@@ -57,8 +57,13 @@ function psInfo(pid) {
   if (!ppid) return null;
   return { ppid: Number(ppid), started: ps("lstart"), name: ps("comm"), args: ps("args") };
 }
-function isSameProcess(recorded) {
-  return processInfo(recorded.pid)?.started === recorded.started;
+function isClaude(info) {
+  const base = (path) => path.split("/").pop() ?? "";
+  return base(info.name) === "claude" || base(info.args.split(" ")[0] ?? "") === "claude" || /@anthropic-ai\/claude-code\/cli\.js/.test(info.args);
+}
+function isSameClaude(recorded, info = processInfo) {
+  const found = info(recorded.pid);
+  return found?.started === recorded.started && isClaude(found);
 }
 function pidInUse(pid) {
   try {
@@ -2917,7 +2922,7 @@ function replyOf(parts) {
 import { randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { extname, resolve, sep } from "node:path";
+import { extname, join as join5, resolve, sep } from "node:path";
 
 // src/server/windows.ts
 var WINDOW_SEEN_MS = 2 * 60 * 1e3;
@@ -2957,6 +2962,7 @@ var REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 var DECISIONS = /* @__PURE__ */ new Set(["allow", "deny", "always"]);
 var WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 var LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+var CONTROL_CHARS = /[\x00-\x09\x0b-\x1f\x7f]/;
 function asObject(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new BadRequest("expected a JSON object");
@@ -2992,6 +2998,19 @@ function nonEmpty(value, key) {
   if (!value.trim()) throw new BadRequest(`${key} must not be empty`);
   return value;
 }
+function folderPath(value, key) {
+  if (!isAbsolute(value) || CONTROL_CHARS.test(value)) throw new BadRequest(`${key} must be an absolute path`);
+  return value;
+}
+function optionalFolder(body, key) {
+  const value = optionalString(body, key, LIMITS.cwd) ?? "";
+  return value && folderPath(value, key);
+}
+function terminalText(value, key) {
+  const text2 = value.replace(/\r\n?/g, "\n").replace(/\t/g, "  ");
+  if (CONTROL_CHARS.test(text2)) throw new BadRequest(`${key} has control characters`);
+  return text2;
+}
 function parseNewResponse(input) {
   const body = asObject(input);
   const createdAt = body["created_at"];
@@ -3001,7 +3020,7 @@ function parseNewResponse(input) {
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
-    cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
+    cwd: optionalFolder(body, "cwd"),
     text: string(body, "text", LIMITS.replyText),
     created_at: createdAt,
     claude_process: optionalProcess(body)
@@ -3029,7 +3048,7 @@ function parseTouchSession(input) {
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
-    cwd: optionalString(body, "cwd", LIMITS.cwd) ?? ""
+    cwd: optionalFolder(body, "cwd")
   };
 }
 function parseClaim(input) {
@@ -3037,7 +3056,7 @@ function parseClaim(input) {
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
   const claim = prompt === void 0 ? { session_id } : { session_id, prompt };
-  const cwd = optionalString(body, "cwd", LIMITS.cwd);
+  const cwd = optionalFolder(body, "cwd");
   if (cwd) claim.cwd = cwd;
   const claudeProcess = optionalProcess(body);
   if (claudeProcess) claim.claude_process = claudeProcess;
@@ -3081,8 +3100,7 @@ function parseRedeem(input) {
 }
 function parseRegisterSession(input) {
   const body = asObject(input);
-  const cwd = string(body, "cwd", LIMITS.cwd);
-  if (!isAbsolute(cwd) || cwd.includes("\0")) throw new BadRequest("cwd must be an absolute path");
+  const cwd = folderPath(string(body, "cwd", LIMITS.cwd), "cwd");
   const id = optionalString(body, "session_id", 256);
   return id === void 0 ? { cwd } : { cwd, session_id: sessionId(id) };
 }
@@ -3136,8 +3154,8 @@ function parseStartSession(input) {
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
-    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim(),
-    name: (optionalString(body, "name", LIMITS.sessionName) ?? "").replace(/\s+/g, " ").trim()
+    prompt: terminalText(optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "", "prompt").trim(),
+    name: terminalText((optionalString(body, "name", LIMITS.sessionName) ?? "").replace(/\s+/g, " "), "name").trim()
   };
 }
 
@@ -3468,7 +3486,11 @@ function routes({
       path: "/api/open-folder",
       needsToken: true,
       handle: ({ body }) => {
-        openFolder(recordedFolder(parseSessionRequest(body).session_id));
+        const folder = recordedFolder(parseSessionRequest(body).session_id);
+        if (statSync(join5(folder, "Contents", "Info.plist"), { throwIfNoEntry: false })) {
+          throw new HttpError(409, `${folder} is an app, not a folder`);
+        }
+        openFolder(folder);
         return empty(204);
       }
     },
@@ -3841,7 +3863,7 @@ var ServerWatch = class {
 };
 
 // src/server/main.ts
-var WEB_DIR = join5(dirname2(fileURLToPath(import.meta.url)), "web");
+var WEB_DIR = join6(dirname2(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
   return new Promise((resolvePort, reject) => {
     server.once("error", reject);
@@ -3902,7 +3924,7 @@ async function main() {
       webDir: WEB_DIR,
       onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
-      processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+      processes: new SessionProcesses({ pidInUse, isSameProcess: isSameClaude }, store.revision),
       startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
     })
   );

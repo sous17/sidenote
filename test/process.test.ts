@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { test } from "node:test";
-import { findClaude, isSameProcess, pidInUse, processInfo, type ProcessInfo } from "../src/node/process.ts";
+import {
+  findClaude,
+  isSameClaude,
+  isSameProcess,
+  pidInUse,
+  processInfo,
+  type ProcessInfo,
+} from "../src/node/process.ts";
 
 /** A made-up process tree: node under a shell under Claude under a terminal. */
 const tree = new Map<number, ProcessInfo>([
@@ -33,6 +40,14 @@ test("Claude run by node from an npm install counts too, and nothing else does",
     null,
     "a hook run outside Claude reports nothing",
   );
+});
+
+test("a reported process only counts as Claude's while it is Claude, under the same start time", () => {
+  const info = (pid: number) => tree.get(pid) ?? null;
+  assert.equal(isSameClaude({ pid: 20, started: "t20" }, info), true);
+  assert.equal(isSameClaude({ pid: 20, started: "t21" }, info), false, "a reused pid");
+  assert.equal(isSameClaude({ pid: 30, started: "t30" }, info), false, "a real process, but not Claude");
+  assert.equal(isSameClaude({ pid: 99, started: "t99" }, info), false, "no such process");
 });
 
 test("this system's process table reads the running test, and tells a reused pid from the original", async () => {
