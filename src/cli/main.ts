@@ -8,6 +8,7 @@ import { paths } from "../node/paths.ts";
 import { folderName } from "../shared/folders.ts";
 import type { NewResponseRequest, SessionListResult, StateSnapshot } from "../shared/types.ts";
 import { SidenoteClient, openBrowser, serverPid } from "./client.ts";
+import { commandInstalled, installCommand, refreshLauncher } from "./command.ts";
 import {
   hookActivity,
   hookClear,
@@ -40,6 +41,7 @@ const USAGE = `sidenote: leave inline notes on Claude Code replies in your brows
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
+  sidenote install-command     put sidenote on your PATH, so it runs from any terminal
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-clear          SessionEnd hook: forget the session on /clear
@@ -186,7 +188,9 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c) => c.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
-    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
+    const short = commandInstalled();
+    console.log(`terminal: ${short ? "sidenote" : shellQuote(LAUNCHER)} tui ${session.id}`);
+    if (!short) console.log("tip: /sidenote:terminal installs a short sidenote command");
   },
 
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
@@ -223,6 +227,12 @@ const commands: Record<string, () => Promise<void>> = {
     console.log(`Imported ${imported} earlier replies of this session.`);
   },
 
+  "install-command": async () => {
+    const { ok, message } = installCommand(LAUNCHER);
+    console.log(message);
+    if (!ok) process.exitCode = 1;
+  },
+
   async tui() {
     // Loaded only for this command, so the hooks don't pay for the terminal UI.
     const { runTui } = await import("../tui/main.ts");
@@ -234,7 +244,11 @@ const commands: Record<string, () => Promise<void>> = {
     await runChat(process.argv.slice(3));
   },
 
-  "hook-session": () => runHook(hookSession),
+  "hook-session": () => {
+    // Before runHook, which skips everything while sidenote is off: chat doesn't need it on.
+    refreshLauncher(LAUNCHER);
+    return runHook(hookSession);
+  },
   "hook-stop": () => runHook(hookStop),
   "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),

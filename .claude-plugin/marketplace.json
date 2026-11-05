@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "sidenote",
-      "source": "./",
+      "source": { "source": "github", "repo": "sous17/sidenote", "ref": "release" },
       "description": "Leave inline notes on Claude's replies in a browser window, and send them back to Claude."
     }
   ]

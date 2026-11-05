@@ -12,15 +12,32 @@ gets its own answer in its own thread.
 
 ## Install
 
-You need Claude Code, Node.js 22 or newer, and macOS or Linux.
+You need Claude Code, Node.js 22 or newer, and macOS or Linux. In a Claude Code session:
+
+```text
+/plugin install sidenote --marketplace sous17/sidenote
+```
+
+From your shell, that's `claude plugin install sidenote --marketplace sous17/sidenote`. On a Claude
+Code older than 2.1.292, run these instead:
 
 ```sh
 claude plugin marketplace add sous17/sidenote
 claude plugin install sidenote@sidenote
 ```
 
-Restart Claude Code, then run `/sidenote:on` in a session. Your browser opens, and every reply Claude
-finishes shows up there.
+To get new versions by themselves, run `/plugin`, open the **Marketplaces** tab, select `sidenote` and
+choose **Enable auto-update**. Claude Code leaves that off for marketplaces like this one.
+
+## Quick start
+
+1. Run `/sidenote:on` in a session. Your browser opens, and every reply Claude finishes shows up there.
+2. Select text in a reply and click **Add sidenote**, or hover a paragraph and click **+**.
+3. Write your note and click **Send now**. Claude answers without you typing in the terminal.
+4. Click the note to read its answer in its own thread, and reply there to keep going.
+
+Prefer the terminal? Run `/sidenote:terminal` once, then `sidenote chat` in a folder you've trusted in
+Claude Code, or `sidenote tui` beside a running session. Both are previews.
 
 **[Read the documentation](https://sous17.github.io/sidenote/)** to learn how it works.
 
