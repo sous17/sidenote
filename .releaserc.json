@@ -1,0 +1,12 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/exec", { "prepareCmd": "node scripts/publish-plugin.ts ${nextRelease.version}" }],
+    [
+      "@semantic-release/github",
+      { "successCommentCondition": false, "failCommentCondition": false, "releasedLabels": false }
+    ]
+  ]
+}
