@@ -20,6 +20,9 @@ export class ThreadPane {
   readonly #timeline: HTMLElement;
   readonly #composer: HTMLFormElement;
   readonly #text: HTMLTextAreaElement;
+  readonly #editingBar: HTMLElement;
+  /** The pending note the reply box is rewriting, instead of writing a new reply. */
+  #editing: { id: number; body: string } | null = null;
   /** One card for the pane's life: the timeline is rebuilt often, and it keeps its open state. */
   readonly #live: LiveCard;
 
@@ -48,8 +51,10 @@ export class ThreadPane {
     this.#timeline = options.timeline;
     this.#composer = options.composer;
     this.#text = options.composerText;
+    this.#editingBar = this.#composer.querySelector<HTMLElement>(".composer-editing")!;
     this.#live = new LiveCard(options.model);
 
+    this.#editingBar.querySelector("button")!.addEventListener("click", () => this.#stopEditing());
     options.close.addEventListener("click", () => this.close());
     this.#sending.track({
       send: this.#composer.querySelector<HTMLButtonElement>("button[value=send]")!,
@@ -57,7 +62,9 @@ export class ThreadPane {
     });
     submitOnModEnter(this.#text, this.#composer);
     this.#text.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") this.#text.blur();
+      if (event.key !== "Escape") return;
+      if (this.#editing) this.#stopEditing();
+      else this.#text.blur();
     });
     this.#composer.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -69,6 +76,32 @@ export class ThreadPane {
     return this.#model.openThreadId !== null;
   }
 
+  /** Text in the reply box that closing would lose: a note opened for editing and left as it was isn't. */
+  get #unsaved(): boolean {
+    return this.#text.value.trim() !== "" && this.#text.value !== this.#editing?.body;
+  }
+
+  /** Opens a pending note's thread, with its text in the reply box to rewrite. */
+  edit(noteId: number): void {
+    const note = this.#model.note(noteId);
+    if (!note) return;
+    this.open(noteId);
+    if (this.#model.openThreadId !== (note.parent_id ?? note.id) || this.#unsaved) {
+      this.#text.focus();
+      return;
+    }
+    this.#editing = { id: note.id, body: note.body };
+    this.#editingBar.hidden = false;
+    this.#text.value = note.body;
+    this.#text.focus();
+  }
+
+  #stopEditing(): void {
+    this.#editing = null;
+    this.#editingBar.hidden = true;
+    this.#text.value = "";
+  }
+
   /** Opens the thread a note belongs to. */
   open(noteId: number): void {
     const note = this.#model.note(noteId);
@@ -76,11 +109,11 @@ export class ThreadPane {
     const rootId = note.parent_id ?? note.id;
     if (rootId !== this.#model.openThreadId) {
       // Don't throw away a half-written reply in another thread.
-      if (this.isOpen && this.#text.value.trim()) {
+      if (this.isOpen && this.#unsaved) {
         this.#text.focus();
         return;
       }
-      this.#text.value = "";
+      this.#stopEditing();
     }
     this.#model.openThreadId = rootId;
     this.#app.classList.add("split");
@@ -99,13 +132,13 @@ export class ThreadPane {
 
   /** Closes the pane, unless a reply is half-written and force is false. */
   close(force = false): void {
-    if (!force && this.#text.value.trim()) {
+    if (!force && this.#unsaved) {
       this.#text.focus();
       return;
     }
     const previous = this.#model.openThreadId;
     this.#model.openThreadId = null;
-    this.#text.value = "";
+    this.#stopEditing();
     this.#app.classList.remove("split");
     history.replaceState(null, "", `${location.pathname}${location.search}`);
     this.#feed.markSelected();
@@ -161,8 +194,9 @@ export class ThreadPane {
     const buttons = this.#composer.querySelectorAll<HTMLButtonElement>("button[type=submit]");
     for (const submit of buttons) submit.disabled = true;
     try {
-      await this.#sending.save({ parent_id: rootId, body: this.#text.value }, sendNow);
-      this.#text.value = "";
+      if (this.#editing) await this.#sending.edit(this.#editing.id, this.#text.value, sendNow);
+      else await this.#sending.save({ parent_id: rootId, body: this.#text.value }, sendNow);
+      this.#stopEditing();
     } finally {
       for (const submit of buttons) submit.disabled = false;
       this.#sending.render();
@@ -183,6 +217,9 @@ export class ThreadPane {
       el("b", "", note.parent_id === null ? "Your note" : "Your follow-up"),
       tag(delivered ? "delivered" : "pending", status),
     );
+    if (!delivered && !this.#model.isQueued(note)) {
+      head.append(button("link-button edit", "Edit", () => this.edit(note.id)));
+    }
     if (!delivered) head.append(button("link-button", "Delete", () => this.#deleteNote(note.id)));
     element.append(head, el("div", "entry-body", note.body));
     return element;

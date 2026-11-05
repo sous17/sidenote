@@ -134,6 +134,7 @@ async function start(): Promise<void> {
     handlers: {
       openThread: (noteId) => thread.open(noteId),
       startNote: (card, blockIndex, quote) => editor.start(card, blockIndex, quote),
+      editNote: (noteId) => thread.edit(noteId),
       deleteNote,
     },
     app: byId("app"),

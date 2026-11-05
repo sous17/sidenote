@@ -2445,6 +2445,19 @@ var Store = class {
     this.#changed();
     return true;
   }
+  /** Rewrites an unsent note in place, keeping its anchor, id and follow-ups. */
+  editPendingNote(noteId, body) {
+    const note = this.#data.comments.find((c2) => c2.id === noteId);
+    if (!note || note.delivered_at !== null) return false;
+    note.body = body;
+    this.#changed();
+    return true;
+  }
+  /** The session a note belongs to, or null if there is no such note. */
+  noteSession(noteId) {
+    const note = this.#data.comments.find((c2) => c2.id === noteId);
+    return (note && this.#sessionOfResponse().get(note.response_id)) ?? null;
+  }
   /**
    * Records a message the user sent. A message from the page waits until claimMessages hands it
    * to Claude; one typed in the terminal has already reached Claude.
@@ -3007,6 +3020,9 @@ function parseNewNote(input) {
     body: text2
   };
 }
+function parseEditNote(input) {
+  return { body: nonEmpty(string(asObject(input), "body", LIMITS.noteBody), "body").trim() };
+}
 function parseTouchSession(input) {
   const body = asObject(input);
   return {
@@ -3336,6 +3352,20 @@ function routes({
       }
     },
     {
+      method: "PATCH",
+      path: /^\/api\/comments\/(\d{1,15})$/,
+      needsToken: true,
+      handle: ({ body, param }) => {
+        const { body: text2 } = parseEditNote(body);
+        const noteId = Number(param);
+        const sessionId2 = store.noteSession(noteId);
+        if (sessionId2 === null) throw new HttpError(404, "unknown note");
+        if (statusOf(sessionId2).send_requested) throw new HttpError(409, "this note is already being sent");
+        if (!store.editPendingNote(noteId, text2)) throw new HttpError(409, "this note was already sent");
+        return empty(204);
+      }
+    },
+    {
       method: "DELETE",
       path: /^\/api\/comments\/(\d{1,15})$/,
       needsToken: true,
@@ -3554,7 +3584,7 @@ function createApp(options) {
     if (!route) throw new HttpError(404);
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
     if (route.needsToken) options.onActivity?.();
-    const body = request.method === "POST" ? await readJson(request) : void 0;
+    const body = request.method === "POST" || request.method === "PATCH" ? await readJson(request) : void 0;
     return route.handle({ body, query: url.searchParams, param });
   };
   const handle = async (request, response) => {

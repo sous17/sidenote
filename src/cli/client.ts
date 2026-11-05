@@ -70,6 +70,10 @@ export class SidenoteClient {
     return this.#request<T>("POST", path, body);
   }
 
+  patch<T>(path: string, body: object): Promise<T> {
+    return this.#request<T>("PATCH", path, body);
+  }
+
   delete<T>(path: string): Promise<T> {
     return this.#request<T>("DELETE", path);
   }

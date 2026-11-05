@@ -236,6 +236,21 @@ export class Store {
     return true;
   }
 
+  /** Rewrites an unsent note in place, keeping its anchor, id and follow-ups. */
+  editPendingNote(noteId: number, body: string): boolean {
+    const note = this.#data.comments.find((c) => c.id === noteId);
+    if (!note || note.delivered_at !== null) return false;
+    note.body = body;
+    this.#changed();
+    return true;
+  }
+
+  /** The session a note belongs to, or null if there is no such note. */
+  noteSession(noteId: number): string | null {
+    const note = this.#data.comments.find((c) => c.id === noteId);
+    return (note && this.#sessionOfResponse().get(note.response_id)) ?? null;
+  }
+
   /**
    * Records a message the user sent. A message from the page waits until claimMessages hands it
    * to Claude; one typed in the terminal has already reached Claude.

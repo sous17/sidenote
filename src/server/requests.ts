@@ -9,6 +9,7 @@ import {
   type ClaimRequest,
   type ClaudeProcess,
   type ConversationMessageRequest,
+  type EditNoteRequest,
   type PermissionAnswerRequest,
   type ProgressRequest,
   type PromptRequest,
@@ -127,6 +128,10 @@ export function parseNewNote(input: unknown): ParsedNote {
     quote: string(body, "quote", LIMITS.quote),
     body: text,
   };
+}
+
+export function parseEditNote(input: unknown): EditNoteRequest {
+  return { body: nonEmpty(string(asObject(input), "body", LIMITS.noteBody), "body").trim() };
 }
 
 export function parseTouchSession(input: unknown): Required<TouchSessionRequest> {

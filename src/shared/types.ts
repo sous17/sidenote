@@ -209,6 +209,11 @@ export interface ProgressRequest {
   delta: string;
 }
 
+/** The new text of a note that hasn't been sent. */
+export interface EditNoteRequest {
+  body: string;
+}
+
 /** Records the folder a session runs in. Starting it then takes only the session's id. */
 export interface RegisterSessionRequest {
   cwd: string;

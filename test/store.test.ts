@@ -189,6 +189,25 @@ describe("notes", () => {
     assert.equal(store.addNote({ kind: "root", responseId: 999, blockIndex: 0, quote: "", body: "x" }), null);
   });
 
+  test("editing an unsent note keeps its place in the thread, and a sent note can't be edited", () => {
+    const { store } = fixture();
+    const response = reply(store, "Hi.");
+    const root = noteOn(store, response.id, "Tpyo");
+    const followUp = store.addNote({ kind: "follow-up", parentId: root.id, body: "More" })!;
+    const stored = (id: number) => store.sessionContent(SESSION).comments.find((note) => note.id === id);
+
+    assert.equal(store.noteSession(followUp.id), SESSION);
+    assert.equal(store.noteSession(9999), null);
+    assert.equal(store.editPendingNote(root.id, "Typo"), true);
+    assert.deepEqual(stored(root.id), { ...root, body: "Typo" }, "only the text changes");
+    assert.equal(stored(followUp.id)?.parent_id, root.id);
+
+    store.claimPending(SESSION);
+    assert.equal(store.editPendingNote(root.id, "Too late"), false);
+    assert.equal(stored(root.id)?.body, "Typo");
+    assert.equal(store.editPendingNote(9999, "x"), false);
+  });
+
   test("deleting an unsent note removes its follow-ups, but not once anything was sent", () => {
     const { store } = fixture();
     const first = reply(store, "Para one.");

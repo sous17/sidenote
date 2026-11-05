@@ -172,6 +172,20 @@ test("the terminal starts its session again when the server restarted", async ()
   assert.equal(view?.live?.prompt, "Still there?");
 });
 
+test("the terminal rewrites an unsent note through the API", async () => {
+  const api = new ClientApi(new SidenoteClient({ port, token: TOKEN, pid: process.pid }));
+  const { response } = store.addResponse({
+    sessionId: "edited-note",
+    cwd: folder,
+    text: "Hi.",
+    sessionName: "",
+    createdAt: undefined,
+  });
+  const note = noteOn(store, response.id, "tpyo");
+  await api.editNote(note.id, "typo");
+  assert.equal(store.sessionContent("edited-note").comments[0]?.body, "typo");
+});
+
 describe("sessions sidenote runs in a folder window", () => {
   const running = new FakeAgent();
 

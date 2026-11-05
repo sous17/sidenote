@@ -243,6 +243,9 @@ var init_client = __esm({
       post(path, body) {
         return this.#request("POST", path, body);
       }
+      patch(path, body) {
+        return this.#request("PATCH", path, body);
+      }
       delete(path) {
         return this.#request("DELETE", path);
       }
@@ -354,6 +357,9 @@ var init_api = __esm({
       }
       async addNote(note) {
         await this.#call((client) => client.post("/api/comments", note));
+      }
+      async editNote(id, body) {
+        await this.#call((client) => client.patch(`/api/comments/${id}`, { body }));
       }
       async deleteNote(id) {
         await this.#call((client) => client.delete(`/api/comments/${id}`));
@@ -3753,6 +3759,9 @@ var init_app = __esm({
             if (target.kind === "block" && target.code) this.#lines = [target.start, target.start];
             else this.#message = { text: "Line notes are for code and diffs; n notes the whole block", style: MUTED6 };
             return;
+          case "e":
+            if (target?.kind === "note") this.#startEdit(target.rootId);
+            return;
           case "x":
             if (target?.kind === "note") await this.#deleteNote(target.rootId, confirming);
             return;
@@ -3821,6 +3830,12 @@ var init_app = __esm({
           case "n":
           case "enter":
             return this.#startReply(this.#threadRoot);
+          case "e": {
+            const pending = this.#model?.thread(this.#threadRoot).findLast((note) => note.delivered_at === null);
+            if (pending) this.#startEdit(pending.id);
+            else this.#message = { text: "Nothing unsent in this thread to edit", style: MUTED6 };
+            return;
+          }
           case "x": {
             const pending = this.#model?.thread(this.#threadRoot).findLast((note) => note.delivered_at === null);
             if (pending) await this.#deleteNote(pending.id, confirming);
@@ -4022,13 +4037,31 @@ var init_app = __esm({
       #startReply(rootId) {
         this.#openEditor({ parent_id: rootId }, `t:${rootId}`, "Reply in this thread");
       }
-      #openEditor(request, draftKey, title) {
+      /** Opens the editor on an unsent note's text; saving rewrites it in place. */
+      #startEdit(noteId) {
+        const note = this.#model?.note(noteId);
+        if (!note) return;
+        if (note.delivered_at !== null) {
+          this.#message = { text: "Only notes that haven't been sent can be edited", style: MUTED6 };
+          return;
+        }
+        if (this.#model.isQueued(note)) {
+          this.#message = { text: "This note is already being sent", style: MUTED6 };
+          return;
+        }
+        const title = note.parent_id === null ? "Edit your note" : "Edit your follow-up";
+        this.#openEditor({ parent_id: note.parent_id ?? note.id }, `e:${note.id}`, title, note.body);
+        this.#editor.edit = { id: note.id, body: note.body };
+        this.#editor.text.end();
+      }
+      #openEditor(request, draftKey, title, text = "") {
         this.#editor = {
-          text: new NoteText(this.#drafts.get(draftKey) ?? ""),
+          text: new NoteText(this.#drafts.get(draftKey) ?? text),
           request,
           draftKey,
           title,
           scroll: 0,
+          edit: null,
           anchor: null
         };
       }
@@ -4036,7 +4069,7 @@ var init_app = __esm({
         const editing = this.#editor;
         this.#editor = null;
         if (!editing) return;
-        if (editing.text.isBlank) {
+        if (editing.text.isBlank || editing.text.text === editing.edit?.body) {
           this.#drafts.delete(editing.draftKey);
         } else {
           this.#drafts.set(editing.draftKey, editing.text.text);
@@ -4050,7 +4083,8 @@ var init_app = __esm({
           this.#message = { text: "Write something first, or press Esc", style: MUTED6 };
           return;
         }
-        await this.#api.addNote({ ...editing.request, body: editing.text.text });
+        if (editing.edit) await this.#api.editNote(editing.edit.id, editing.text.text);
+        else await this.#api.addNote({ ...editing.request, body: editing.text.text });
         this.#drafts.delete(editing.draftKey);
         this.#editor = null;
         if (sendNow) {
@@ -4545,16 +4579,16 @@ var init_app = __esm({
           parts.push("j/k pick lines", "n note on these lines", "esc cancel");
         } else if (this.#split() && this.#half === "thread") {
           parts.push("tab conversation", "j/k scroll", "r reply", "]/[ next/prev thread", "f show in conversation");
-          parts.push("x delete unsent", "esc close");
+          parts.push("e edit", "x delete", "esc close");
         } else if (this.#view === "thread" && !this.#split()) {
-          parts.push("j/k scroll", "r reply", "x delete unsent", "f show in feed", "esc back");
+          parts.push("j/k scroll", "r reply", "e edit", "x delete", "f show in feed", "esc back");
         } else {
           const target = this.#selectedTarget();
           parts.push("j/k move");
           if (target?.kind === "note" || target?.kind === "answer") parts.push("\u23CE open thread", "n reply");
           else if (target?.file !== void 0) parts.push("\u23CE fold", "n note");
           else if (target) parts.push("n note");
-          if (target?.kind === "note") parts.push("x delete");
+          if (target?.kind === "note") parts.push("e edit", "x delete");
           if (target?.code) parts.push("v pick lines");
           parts.push("N note on reply");
           if (this.#chat) parts.push("]/[ next/prev note");

@@ -489,6 +489,45 @@ describe("renaming, ending and removing sessions", () => {
   });
 });
 
+describe("editing a note", () => {
+  const noteIn = async (session: string): Promise<Note> => {
+    const { response } = await json<NewResponseResult>(
+      call("POST", "/api/responses", { session_id: session, cwd: "/elsewhere/edits", text: "Hi." }),
+    );
+    return json<Note>(
+      call("POST", "/api/comments", { response_id: response.id, block_index: 0, quote: "", body: "a" }),
+    );
+  };
+  const bodyOf = async (session: string, id: number): Promise<string | undefined> =>
+    (await json<StateSnapshot>(call("GET", `/api/state?v=-1&s=${session}`))).comments.find((n) => n.id === id)?.body;
+
+  test("rewrites a pending note, through the same checks as any body", async () => {
+    const note = await noteIn("edit-pending");
+    assert.equal((await call("PATCH", `/api/comments/${note.id}`, { body: " better " })).status, 204);
+    assert.equal(await bodyOf("edit-pending", note.id), "better");
+    assert.equal((await call("PATCH", `/api/comments/${note.id}`, { body: "  " })).status, 400);
+    assert.equal((await call("PATCH", `/api/comments/${note.id}`, [])).status, 400);
+    assert.equal((await call("PATCH", `/api/comments/${note.id}`, { body: "x".repeat(20_001) })).status, 400);
+    assert.equal((await call("PATCH", "/api/comments/999999", { body: "x" })).status, 404);
+  });
+
+  test("refuses a note that was sent", async () => {
+    const note = await noteIn("edit-sent");
+    await call("POST", "/api/claim", { session_id: "edit-sent" });
+    assert.equal((await call("PATCH", `/api/comments/${note.id}`, { body: "late" })).status, 409);
+    assert.equal(await bodyOf("edit-sent", note.id), "a");
+  });
+
+  test("refuses a note Send now is about to deliver", async () => {
+    const note = await noteIn("edit-sending");
+    const waiter = "ab".repeat(8);
+    await call("POST", "/api/waiters", { session_id: "edit-sending", waiter_id: waiter });
+    await call("POST", "/api/send", { session_ids: ["edit-sending"] });
+    assert.equal((await call("PATCH", `/api/comments/${note.id}`, { body: "late" })).status, 409);
+    assert.equal(await bodyOf("edit-sending", note.id), "a");
+  });
+});
+
 // Last: these add sessions to the store the tests above share.
 describe("open windows", () => {
   const firstReply = (sessionId: string, cwd: string) =>

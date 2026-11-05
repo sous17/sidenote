@@ -45,6 +45,7 @@ export interface Card {
 export interface FeedHandlers {
   openThread(noteId: number): void;
   startNote(card: Card, blockIndex: number, quote: string): void;
+  editNote(noteId: number): void;
   deleteNote(noteId: number): void;
 }
 
@@ -392,6 +393,14 @@ export class Feed {
     const replies = new Set(entries.filter(isAnswered).map((note) => note.answered_by)).size + followUps.length;
     if (replies) footer.append(el("span", "replies", plural(replies, "reply", "replies")));
     if (root.delivered_at === null) {
+      if (!this.#model.isQueued(root)) {
+        footer.append(
+          button("link-button edit", "Edit", (event) => {
+            event.stopPropagation();
+            this.#handlers.editNote(root.id);
+          }),
+        );
+      }
       footer.append(
         button("link-button", "Delete", (event) => {
           event.stopPropagation();
