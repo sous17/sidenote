@@ -935,6 +935,12 @@ li.block:hover:has(li.block:hover) {
 .mnote-footer .link-button:hover {
   color: var(--danger);
 }
+.mnote-footer .link-button.edit + .link-button {
+  margin-left: 0;
+}
+.mnote-footer .link-button.edit:hover {
+  color: var(--accent);
+}
 
 @container feed (min-width: 1000px) {
   .feed-inner {
@@ -1108,6 +1114,12 @@ li.block:hover:has(li.block:hover) {
 .entry.pending .entry-head .link-button:hover {
   color: var(--danger);
 }
+.entry-head .link-button.edit + .link-button {
+  margin-left: 0;
+}
+.entry.pending .entry-head .link-button.edit:hover {
+  color: var(--accent);
+}
 .entry-body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1133,6 +1145,16 @@ li.block:hover:has(li.block:hover) {
   font-style: italic;
 }
 
+.composer-editing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+}
+.composer-editing[hidden] {
+  display: none;
+}
 .composer {
   display: flex;
   flex-direction: column;

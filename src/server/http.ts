@@ -43,6 +43,7 @@ import {
   parseProgress,
   parseClaim,
   parseConversationMessage,
+  parseEditNote,
   parseNewNote,
   parseNewResponse,
   parseRename,
@@ -121,7 +122,7 @@ interface Reply {
 }
 
 interface Route {
-  method: "GET" | "POST" | "DELETE";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   /** A path, or a pattern whose first group is passed on as the route parameter. */
   path: string | RegExp;
   /** false only for the launch code exchange, which is how a page gets the token. */
@@ -315,6 +316,21 @@ function routes({
         const note = store.addNote(parseNewNote(body));
         if (!note) throw new HttpError(404, "unknown reply or thread");
         return ok(note, 201);
+      },
+    },
+    {
+      method: "PATCH",
+      path: /^\/api\/comments\/(\d{1,15})$/,
+      needsToken: true,
+      handle: ({ body, param }) => {
+        const { body: text } = parseEditNote(body);
+        const noteId = Number(param);
+        const sessionId = store.noteSession(noteId);
+        if (sessionId === null) throw new HttpError(404, "unknown note");
+        // Send now is waiting for its moment, and Claude must read what the user saw go.
+        if (statusOf(sessionId).send_requested) throw new HttpError(409, "this note is already being sent");
+        if (!store.editPendingNote(noteId, text)) throw new HttpError(409, "this note was already sent");
+        return empty(204);
       },
     },
     {
@@ -546,7 +562,7 @@ export function createApp(options: AppOptions): RequestListener {
     if (route.needsToken && !tokenValid(request)) throw new HttpError(403);
     // Only a real client counts: a stale tab, refused above, mustn't keep the server running.
     if (route.needsToken) options.onActivity?.();
-    const body = request.method === "POST" ? await readJson(request) : undefined;
+    const body = request.method === "POST" || request.method === "PATCH" ? await readJson(request) : undefined;
     return route.handle({ body, query: url.searchParams, param });
   };
 

@@ -34,6 +34,7 @@ class FakeApi implements TuiApi {
   sessionList: SessionSummary[] = [];
   readonly added: NewNoteRequest[] = [];
   readonly deleted: number[] = [];
+  readonly edited: Array<[number, string]> = [];
   sends = 0;
   #nextId = 100;
 
@@ -81,6 +82,11 @@ class FakeApi implements TuiApi {
         }),
       ],
     });
+  }
+
+  async editNote(id: number, body: string): Promise<void> {
+    this.edited.push([id, body]);
+    this.change({ comments: this.snapshot.comments.map((n) => (n.id === id ? { ...n, body } : n)) });
   }
 
   async deleteNote(id: number): Promise<void> {
@@ -290,13 +296,50 @@ test("a note opens its thread in place of the feed, and Esc goes back", async ()
   assert.ok(terminal.has("▌ it runs on both routes"));
   assert.ok(terminal.has("Your note · Sent"));
   assert.ok(terminal.has("Both routes need it."));
-  assert.match(terminal.text.at(-1)!, /r reply · x delete unsent · f show in feed · esc back/);
+  assert.match(terminal.text.at(-1)!, /r reply · e edit · x delete · f show in feed · esc back/);
   await press(app, "rand?\r");
   assert.deepEqual(api.added.at(-1), { parent_id: 7, body: "and?" });
   assert.ok(terminal.has("Your follow-up · Pending"));
   await press(app, "\x1b");
   assert.ok(terminal.has("── "), "back in the feed");
   assert.equal(terminal.selected[0], "  ┃ ❝ it runs on both routes", "on the note whose thread was open");
+});
+
+test("e rewrites an unsent note in place, and leaving it unchanged keeps no draft", async () => {
+  const api = new FakeApi([reply(2, REPLY_TWO)], [note({ id: 7, block_index: 0, body: "tpyo" })]);
+  const { app, terminal } = await start(api);
+  await press(app, "j");
+  assert.match(terminal.text.at(-1)!, /e edit · x delete/);
+  await press(app, "e");
+  assert.ok(terminal.has("Edit your note"));
+  await press(app, "\x1b");
+  assert.ok(!terminal.has("Draft kept"), "nothing was changed");
+
+  await press(app, "e");
+  await press(app, "\x7f\x7f\x7f");
+  await press(app, "ypo");
+  await press(app, "\r");
+  assert.deepEqual(api.edited, [[7, "typo"]]);
+  assert.deepEqual(api.added, [], "no new note");
+  assert.ok(terminal.has("typo"));
+});
+
+test("e in a thread rewrites its latest unsent note, and a sent note stays as it is", async () => {
+  const root = note({ id: 7, block_index: 0, body: "sent", delivered_at: 1 });
+  const followUp = note({ id: 8, block_index: 0, body: "tpyo", parent_id: 7 });
+  const api = new FakeApi([reply(2, REPLY_TWO)], [root, followUp]);
+  const { app, terminal } = await start(api);
+  await press(app, "j");
+  await press(app, "e");
+  assert.ok(terminal.has("Only notes that haven't been sent can be edited"));
+
+  await press(app, "\r");
+  await press(app, "e");
+  assert.ok(terminal.has("Edit your follow-up"));
+  await press(app, "\x7f\x7f\x7f");
+  await press(app, "ypo");
+  await press(app, "\r");
+  assert.deepEqual(api.edited, [[8, "typo"]]);
 });
 
 test("an unsent note is deleted only after a second x", async () => {

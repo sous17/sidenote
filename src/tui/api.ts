@@ -97,6 +97,10 @@ export class ClientApi implements TuiApi, ChatApi {
     await this.#call((client) => client.post("/api/comments", note));
   }
 
+  async editNote(id: number, body: string): Promise<void> {
+    await this.#call((client) => client.patch(`/api/comments/${id}`, { body }));
+  }
+
   async deleteNote(id: number): Promise<void> {
     await this.#call((client) => client.delete(`/api/comments/${id}`));
   }

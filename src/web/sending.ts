@@ -60,6 +60,13 @@ export class Sending {
     await this.#refresh();
   }
 
+  /** Saves a pending note's new text; with sendNow, also asks Claude to answer right away. */
+  async edit(noteId: number, body: string, sendNow: boolean): Promise<void> {
+    await this.#api.editNote(noteId, body);
+    if (sendNow) await this.#api.send(this.#model.sessionId);
+    await this.#refresh();
+  }
+
   render(): void {
     const pending = this.#model.pendingCount();
     const { status, send_requested: queued } = this.#model.sendStatus();
