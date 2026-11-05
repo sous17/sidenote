@@ -91,3 +91,22 @@ test("the background is asked for on starting, and again after $EDITOR", () => {
   assert.equal(asked(), 2);
   screen.stop();
 });
+
+test("a sequence split across reads reaches the app whole, and a lone Esc after a moment", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const screen = new Screen(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+  const names: string[] = [];
+  screen.start(
+    (keys) => names.push(...keys.map((key) => key.name)),
+    () => {},
+  );
+  input.emit("data", "\x1b");
+  input.emit("data", "[<64;10;5M");
+  assert.deepEqual(names, ["wheelup"], "not an Esc, which would interrupt the turn");
+  input.emit("data", "\x1b");
+  assert.deepEqual(names, ["wheelup"]);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(names, ["wheelup", "escape"]);
+  screen.stop();
+});

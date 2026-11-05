@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NoteText } from "../src/tui/editor.ts";
-import { parseKeys } from "../src/tui/keys.ts";
+import { KeyReader, parseKeys } from "../src/tui/keys.ts";
 
 const names = (data: string): string[] =>
   parseKeys(data).map((key) => `${key.ctrl ? "C-" : ""}${key.alt ? "M-" : ""}${key.shift ? "S-" : ""}${key.name}`);
@@ -84,4 +84,46 @@ test("the terminal's answer about its background is read, and never typed", () =
   assert.equal(light("\x1b]11;nonsense\x07"), undefined);
   assert.deepEqual(names("a\x1b]11;rgb:ffff/ffff/ffff\x1b\\b"), ["a", "background", "b"]);
   assert.equal(parseKeys("\x1b]11;rgb:ffff/ffff/ffff\x07")[0]!.text, "");
+});
+
+test("a paste split across reads stays one paste", () => {
+  const reader = new KeyReader();
+  assert.deepEqual(reader.read("\x1b[200~line one\rline"), []);
+  assert.equal(reader.waitMs, 1000);
+  const keys = reader.read(" two\rline three\x1b[201~z");
+  assert.deepEqual(
+    keys.map((key) => key.name),
+    ["paste", "z"],
+  );
+  assert.equal(keys[0]!.text, "line one\nline two\nline three");
+  assert.equal(reader.waitMs, null);
+});
+
+test("sequences split at any point give the same keys as whole ones", () => {
+  for (const whole of [
+    "\x1b[200~a\rb\x1b[201~",
+    "\x1b[<64;10;5M",
+    "\x1b[A",
+    "\x1b[1;5C",
+    "\x1b]11;rgb:ff/ff/ff\x1b\\",
+  ]) {
+    for (let cut = 1; cut < whole.length; cut++) {
+      const reader = new KeyReader();
+      const keys = [...reader.read(whole.slice(0, cut)), ...reader.read(whole.slice(cut))];
+      assert.deepEqual(keys, parseKeys(whole), JSON.stringify([whole, cut]));
+    }
+  }
+});
+
+test("Esc on its own comes out once the wait is over, and an endless paste keeps its text", () => {
+  const reader = new KeyReader();
+  assert.deepEqual(reader.read("\x1b"), []);
+  assert.equal(reader.waitMs, 50);
+  assert.deepEqual(
+    reader.flush().map((key) => key.name),
+    ["escape"],
+  );
+  assert.equal(reader.waitMs, null);
+  reader.read("\x1b[200~kept");
+  assert.equal(reader.flush()[0]!.text, "kept");
 });

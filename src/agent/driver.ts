@@ -30,6 +30,8 @@ export type AgentEvent =
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; id: string; failed: boolean }
   | { type: "permission"; request: PermissionRequest }
+  /** The agent no longer needs the answer to this request. */
+  | { type: "permission_cancelled"; request_id: string }
   /** Context the conversation uses so far, and the model's limit, in tokens; null if unknown. */
   | { type: "usage"; context_tokens: number | null; context_window: number | null }
   | { type: "turn_end"; end: TurnEnd }

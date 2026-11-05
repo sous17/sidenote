@@ -29,7 +29,8 @@ var init_paths = __esm({
       logFile: () => join(stateDir(), "server.log"),
       enabledFlag: () => join(stateDir(), "enabled"),
       transcriptsDir: () => join(homedir(), ".claude", "projects"),
-      claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json")
+      claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
+      managedClaudeSettings: () => process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : "/etc/claude-code/managed-settings.json"
     };
   }
 });
@@ -302,9 +303,13 @@ var init_api = __esm({
       /** Starts a session sidenote runs in cwd, or continues sessionId; resolves with its id. */
       async startConversation(cwd, sessionId) {
         this.#chatCwd = cwd;
-        const request = sessionId ? { cwd, session_id: sessionId } : { cwd };
-        const result = await this.#call((client) => client.post("/api/conversations", request));
-        return result.session_id;
+        const folder = sessionId ? { cwd, session_id: sessionId } : { cwd };
+        const { session_id } = await this.#call(
+          (client) => client.post("/api/sessions/register", folder)
+        );
+        const request = { session_id, resume: sessionId !== void 0 };
+        await this.#call((client) => client.post("/api/conversations", request));
+        return session_id;
       }
       async conversation(knownVersion, sessionId, wait) {
         const path = (version2) => `/api/conversation?v=${version2}&s=${encodeURIComponent(sessionId)}${wait ? "&wait=1" : ""}`;
@@ -3663,8 +3668,8 @@ var init_app = __esm({
         try {
           if (key2.ctrl && key2.name === "c") return this.#terminal.quit();
           if (this.#editor) await this.#editorKey(this.#editor, key2);
-          else if (await this.#permissionKey(key2)) return;
           else if (this.#lines) this.#linesKey(this.#lines, key2);
+          else if (await this.#permissionKey(key2)) return;
           else if (this.#chat && this.#view === "feed" && this.#focus === "prompt") await this.#promptKey(key2);
           else if (this.#view === "thread" && !(this.#split() && this.#half === "conversation")) {
             await this.#threadKey(key2, confirming);
@@ -3860,10 +3865,14 @@ var init_app = __esm({
         const edited = await this.#editText(this.#prompt, key2, this.#promptWidth());
         if (edited) this.#prompt = edited;
       }
-      /** y, a or n answer a permission prompt, unless a note is being written. */
+      /** A message is being typed, so letters are text, even if a permission prompt just came in. */
+      get #typing() {
+        return this.#chat !== null && this.#view === "feed" && this.#focus === "prompt" && !this.#prompt.isBlank;
+      }
+      /** y, a or n answer a permission prompt, unless a note or message is being written. */
       async #permissionKey(key2) {
         const permission = this.#conversation?.permission;
-        if (!this.#chat || !permission || this.#view !== "feed" || key2.ctrl || key2.alt) return false;
+        if (!this.#chat || !permission || this.#view !== "feed" || key2.ctrl || key2.alt || this.#typing) return false;
         const decision = { y: "allow", a: "always", n: "deny" }[key2.name];
         if (!decision) return false;
         await this.#chat.answer(this.#model.sessionId, permission.request_id, decision);
@@ -4520,7 +4529,9 @@ var init_app = __esm({
         }
         const parts = [];
         if (this.#conversation?.permission && this.#view === "feed" && !this.#lines) {
-          return [{ text: "Claude is waiting: y allow \xB7 a always allow \xB7 n deny", style: { tone: "accent", bold: true } }];
+          const keys = "y allow \xB7 a always allow \xB7 n deny";
+          const text = this.#typing ? `Claude is waiting: tab, then ${keys}` : `Claude is waiting: ${keys}`;
+          return [{ text, style: { tone: "accent", bold: true } }];
         }
         if (this.#chat && this.#view === "feed" && this.#focus === "prompt" && !this.#lines) {
           parts.push("\u23CE send", "\u2325\u23CE new line");
@@ -4612,9 +4623,16 @@ function key(name, fields = {}) {
   return { name, text: "", ctrl: false, alt: false, shift: false, ...fields };
 }
 function parseKeys(data) {
+  return scan(data, true).keys;
+}
+function unfinished(tail) {
+  return tail.startsWith(PASTE_START) ? !tail.includes(PASTE_END) : UNFINISHED.test(tail);
+}
+function scan(data, final) {
   const keys = [];
   let i = 0;
   while (i < data.length) {
+    if (!final && data[i] === "\x1B" && unfinished(data.slice(i))) return { keys, rest: data.slice(i) };
     if (data.startsWith(PASTE_START, i)) {
       const end = data.indexOf(PASTE_END, i + PASTE_START.length);
       const text = data.slice(i + PASTE_START.length, end < 0 ? void 0 : end);
@@ -4657,7 +4675,7 @@ function parseKeys(data) {
     keys.push(single(char));
     i += char.length;
   }
-  return keys;
+  return { keys, rest: "" };
 }
 function single(char) {
   const code2 = char.codePointAt(0);
@@ -4694,7 +4712,7 @@ function fromCsi(params, final) {
   if (final === "Z") return key("tab", { ...mods, shift: true });
   return key(CSI_LETTERS.get(final) ?? "unknown", mods);
 }
-var PASTE_START, PASTE_END, CSI, MOUSE, WHEEL, BACKGROUND, COLOR_REPORT, CSI_LETTERS, CSI_TILDES, CSI_U_CODES;
+var PASTE_START, PASTE_END, CSI, MOUSE, WHEEL, BACKGROUND, UNFINISHED, ESCAPE_WAIT_MS, PASTE_WAIT_MS, COLOR_REPORT, CSI_LETTERS, CSI_TILDES, CSI_U_CODES, KeyReader;
 var init_keys = __esm({
   "src/tui/keys.ts"() {
     "use strict";
@@ -4704,6 +4722,9 @@ var init_keys = __esm({
     MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
     WHEEL = 64;
     BACKGROUND = /^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)/;
+    UNFINISHED = /^\x1b(?:[[O][0-9;<]*|\][^\x07\x1b]*\x1b?)?$/;
+    ESCAPE_WAIT_MS = 50;
+    PASTE_WAIT_MS = 1e3;
     COLOR_REPORT = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i;
     CSI_LETTERS = /* @__PURE__ */ new Map([
       ["A", "up"],
@@ -4730,6 +4751,25 @@ var init_keys = __esm({
       [27, "escape"],
       [127, "backspace"]
     ]);
+    KeyReader = class {
+      #rest = "";
+      read(data) {
+        const { keys, rest } = scan(this.#rest + data, false);
+        this.#rest = rest;
+        return keys;
+      }
+      /** How long to wait for the rest of an unfinished sequence before flush; null if there is none. */
+      get waitMs() {
+        if (!this.#rest) return null;
+        return this.#rest.startsWith(PASTE_START) ? PASTE_WAIT_MS : ESCAPE_WAIT_MS;
+      }
+      /** The rest never came: what was held is all there is. */
+      flush() {
+        const keys = parseKeys(this.#rest);
+        this.#rest = "";
+        return keys;
+      }
+    };
   }
 });
 
@@ -4752,6 +4792,8 @@ var init_screen = __esm({
       #previous = [];
       #active = false;
       #onData = null;
+      #reader = new KeyReader();
+      #flushTimer;
       constructor(input, output) {
         this.#input = input;
         this.#output = output;
@@ -4760,7 +4802,7 @@ var init_screen = __esm({
         return { columns: this.#output.columns || 80, rows: this.#output.rows || 24 };
       }
       start(onKeys, onResize) {
-        this.#onData = (data) => onKeys(parseKeys(data));
+        this.#onData = (data) => this.#read(data, onKeys);
         this.#input.setEncoding("utf8");
         this.#input.on("data", this.#onData);
         this.#output.on("resize", () => {
@@ -4774,6 +4816,8 @@ var init_screen = __esm({
       stop() {
         if (!this.#active) return;
         this.#active = false;
+        clearTimeout(this.#flushTimer);
+        this.#reader = new KeyReader();
         this.#output.write(LEAVE);
         this.#input.setRawMode(false);
         this.#input.pause();
@@ -4799,6 +4843,15 @@ var init_screen = __esm({
           this.#input.resume();
           this.#enter();
         }
+      }
+      #read(data, onKeys) {
+        clearTimeout(this.#flushTimer);
+        const keys = this.#reader.read(data);
+        if (keys.length) onKeys(keys);
+        const wait = this.#reader.waitMs;
+        if (wait === null) return;
+        this.#flushTimer = setTimeout(() => onKeys(this.#reader.flush()), wait);
+        this.#flushTimer.unref();
       }
       #enter() {
         this.#input.setRawMode(true);

@@ -17,6 +17,7 @@ import {
   type EpochSeconds,
   type NewResponseRequest,
   type RedeemRequest,
+  type RegisterSessionRequest,
   type RenameSessionRequest,
   type SendRequest,
   type SessionRequest,
@@ -188,12 +189,19 @@ export function parseRedeem(input: unknown): RedeemRequest {
   return { code: matching(asObject(input), "code", LAUNCH_CODE_PATTERN) };
 }
 
-export function parseStartConversation(input: unknown): StartConversationRequest {
+export function parseRegisterSession(input: unknown): RegisterSessionRequest {
   const body = asObject(input);
   const cwd = string(body, "cwd", LIMITS.cwd);
   if (!isAbsolute(cwd) || cwd.includes("\0")) throw new BadRequest("cwd must be an absolute path");
   const id = optionalString(body, "session_id", 256);
   return id === undefined ? { cwd } : { cwd, session_id: sessionId(id) };
+}
+
+export function parseStartConversation(input: unknown): Required<StartConversationRequest> {
+  const body = asObject(input);
+  const resume = body["resume"] ?? false;
+  if (typeof resume !== "boolean") throw new BadRequest("resume must be true or false");
+  return { session_id: matching(body, "session_id", SESSION_ID_PATTERN), resume };
 }
 
 export function parseConversationMessage(input: unknown): ConversationMessageRequest {

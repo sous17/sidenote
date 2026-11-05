@@ -531,6 +531,27 @@ test("chat: y, a and n answer a permission prompt, even from the prompt line", a
   assert.equal(terminal.text.at(-2), "you › y", "with no prompt waiting, y is just a letter");
 });
 
+test("chat: a permission prompt never takes letters from a message being typed", async () => {
+  const api = new FakeApi([reply(1, REPLY_ONE)]);
+  const { app, chat, terminal } = await startChat(api);
+  chat.change({ state: "working", live: { prompt: "Edit it", notes_sent: 0, started_at: 0, parts: [] } });
+  await app.refreshConversation();
+  await press(app, "f");
+  chat.change({
+    state: "waiting",
+    permission: { request_id: "p1", tool: "Bash", summary: "rm", detail: "rm -rf build" },
+  });
+  await app.refreshConversation();
+  await press(app, "a");
+  await press(app, "n");
+  assert.deepEqual(chat.answers, [], "nothing was answered");
+  assert.equal(terminal.text.at(-2), "you › fan", "the letters are in the message");
+  assert.equal(terminal.text.at(-1), "Claude is waiting: tab, then y allow · a always allow · n deny");
+  await press(app, "\t");
+  await press(app, "n");
+  assert.deepEqual(chat.answers, ["p1:deny"], "from the conversation, the keys answer");
+});
+
 test("chat: stored turns show who spoke, the tool calls between the text, and how they ended", async () => {
   const api = new FakeApi([
     reply(1, "Looked.\n\nChanged it.", {

@@ -2,7 +2,7 @@
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync5, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join as join4 } from "node:path";
+import { dirname as dirname2, join as join5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/node/open.ts
@@ -26,7 +26,8 @@ var paths = {
   logFile: () => join(stateDir(), "server.log"),
   enabledFlag: () => join(stateDir(), "enabled"),
   transcriptsDir: () => join(homedir(), ".claude", "projects"),
-  claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json")
+  claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
+  managedClaudeSettings: () => process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : "/etc/claude-code/managed-settings.json"
 };
 
 // src/node/process.ts
@@ -142,26 +143,41 @@ function onPath(name) {
 
 // src/agent/claude.ts
 import { spawn as spawn3 } from "node:child_process";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
+import { dirname, join as join3 } from "node:path";
 import { createInterface } from "node:readline";
 var HEADLESS_ENV = "SIDENOTE_HEADLESS";
 var CLOSE_GRACE_MS = 3e3;
 var STDERR_TAIL_CHARS = 2e3;
 var STARTING_MODES = /* @__PURE__ */ new Set(["auto", "acceptEdits", "dontAsk", "plan"]);
-function startingMode(settingsFile) {
+function startingMode(settingsFile, overriding = []) {
+  if (overriding.some((file) => chosenMode(file) !== void 0)) return null;
+  const chosen = chosenMode(settingsFile);
+  if (chosen === void 0) return "auto";
+  return typeof chosen === "string" && STARTING_MODES.has(chosen) ? chosen : null;
+}
+function chosenMode(settingsFile) {
   let contents;
   try {
     contents = readFileSync2(settingsFile, "utf8");
   } catch (error) {
-    return error.code === "ENOENT" ? "auto" : null;
+    return error.code === "ENOENT" ? void 0 : null;
   }
   try {
-    const settings = JSON.parse(contents);
-    const chosen = settings.permissions?.defaultMode;
-    if (chosen === void 0) return "auto";
-    return typeof chosen === "string" && STARTING_MODES.has(chosen) ? chosen : null;
+    return JSON.parse(contents).permissions?.defaultMode;
   } catch {
     return null;
+  }
+}
+function overridingSettings(cwd) {
+  const inFolder = (folder, file) => join3(folder, ".claude", file);
+  const files = [paths.managedClaudeSettings(), inFolder(cwd, "settings.local.json"), inFolder(cwd, "settings.json")];
+  for (let folder = cwd; ; folder = dirname(folder)) {
+    if (existsSync(join3(folder, ".git"))) {
+      files.push(inFolder(folder, "settings.local.json"));
+      return files;
+    }
+    if (folder === dirname(folder)) return files;
   }
 }
 function claudeArgs(options) {
@@ -191,7 +207,7 @@ var ClaudeAgent = class {
     this.#settingsFile = options.settingsFile ?? paths.claudeSettings();
   }
   start(options, onEvent) {
-    const permissionMode = startingMode(this.#settingsFile);
+    const permissionMode = startingMode(this.#settingsFile, overridingSettings(options.cwd));
     const args = claudeArgs({ ...options, instructions: this.#instructions, permissionMode });
     const child = spawn3(this.#command, args, {
       cwd: options.cwd,
@@ -285,6 +301,7 @@ var ClaudeStream = class {
       return [];
     }
     if (!isObject(message)) return [];
+    if (message["type"] === "control_cancel_request") return this.#controlCancel(message);
     if ("parent_tool_use_id" in message && message["parent_tool_use_id"] !== null) return [];
     switch (message["type"]) {
       case "system":
@@ -363,6 +380,12 @@ var ClaudeStream = class {
         }
       }
     ];
+  }
+  /** Claude Code took a request back, so its prompt must not wait for an answer any more. */
+  #controlCancel(message) {
+    const requestId = text(message["request_id"]);
+    this.#suggestions.delete(requestId);
+    return [{ type: "permission_cancelled", request_id: requestId }];
   }
   #result(message) {
     const interrupted = this.interrupting;
@@ -2103,8 +2126,8 @@ function folderName(cwd) {
 }
 
 // src/server/persistence.ts
-import { existsSync, mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join as join4 } from "node:path";
 function emptyStore() {
   return { sessions: /* @__PURE__ */ new Map(), responses: [], comments: [], messages: [], nextId: 1 };
 }
@@ -2152,13 +2175,13 @@ var StoreFiles = class {
   #written = /* @__PURE__ */ new Map();
   #writtenNextId = 0;
   constructor(dir) {
-    this.#sessionsDir = join3(dir, "sessions");
-    this.#idsFile = join3(dir, "ids.json");
-    this.#legacyFile = join3(dir, "store.json");
+    this.#sessionsDir = join4(dir, "sessions");
+    this.#idsFile = join4(dir, "ids.json");
+    this.#legacyFile = join4(dir, "store.json");
   }
   load() {
     mkdirSync(this.#sessionsDir, { recursive: true, mode: 448 });
-    if (existsSync(this.#legacyFile)) {
+    if (existsSync2(this.#legacyFile)) {
       const data = migrate(JSON.parse(readFileSync3(this.#legacyFile, "utf8")));
       this.save(data);
       renameSync(this.#legacyFile, `${this.#legacyFile}.migrated`);
@@ -2174,7 +2197,7 @@ var StoreFiles = class {
     for (const entry of readdirSync(this.#sessionsDir)) {
       const id = entry.endsWith(".json") ? entry.slice(0, -".json".length) : "";
       if (!SESSION_ID_PATTERN.test(id)) continue;
-      const contents = readFileSync3(join3(this.#sessionsDir, entry), "utf8");
+      const contents = readFileSync3(join4(this.#sessionsDir, entry), "utf8");
       const file = parseSessionFile(contents);
       if (!file) {
         console.error(`skipping ${entry}: it isn't a session file`);
@@ -2200,12 +2223,12 @@ var StoreFiles = class {
     const files = sessionFiles(data);
     for (const [id, contents] of files) {
       if (this.#written.get(id) === contents) continue;
-      writeAtomically(join3(this.#sessionsDir, `${id}.json`), contents);
+      writeAtomically(join4(this.#sessionsDir, `${id}.json`), contents);
       this.#written.set(id, contents);
     }
     for (const id of this.#written.keys()) {
       if (files.has(id)) continue;
-      rmSync(join3(this.#sessionsDir, `${id}.json`), { force: true });
+      rmSync(join4(this.#sessionsDir, `${id}.json`), { force: true });
       this.#written.delete(id);
     }
   }
@@ -2376,7 +2399,7 @@ var Store = class {
     }
     const newSession = !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
-    if (reply.createdAt === void 0) this.#takeAnswers(response);
+    if (reply.createdAt === void 0 && !reply.turn?.ended) this.#takeAnswers(response);
     this.#data.responses.push(response);
     this.#data.responses.sort((a3, b) => a3.created_at - b.created_at);
     this.#prune();
@@ -2453,6 +2476,13 @@ var Store = class {
     }
     if (claimed.length) this.#changed();
     return claimed;
+  }
+  /** Makes claimed notes pending again, when the turn they went with ended before reading them. */
+  returnNotes(noteIds) {
+    const ids = new Set(noteIds);
+    const notes = this.#data.comments.filter((note) => ids.has(note.id));
+    for (const note of notes) note.delivered_at = null;
+    if (notes.length) this.#changed();
   }
   // ---- Internals -------------------------------------------------------------------------
   #waitingMessages(sessionId2) {
@@ -2583,7 +2613,7 @@ var SessionHost = class {
    * Starts hosting a session: a new one in cwd, or an earlier one to continue. Nothing runs until
    * the first message. Returns the session's id.
    */
-  open(cwd, sessionId2) {
+  open(cwd, sessionId2, resume = sessionId2 !== void 0) {
     const existing = sessionId2 === void 0 ? void 0 : this.#sessions.get(sessionId2);
     if (existing) return existing.id;
     const id = sessionId2 ?? randomUUID();
@@ -2592,13 +2622,14 @@ var SessionHost = class {
       id,
       cwd: folder,
       driver: null,
-      known: sessionId2 !== void 0,
+      known: resume,
       state: "idle",
       model: "",
       live: null,
       streaming: false,
       queued: [],
-      permission: null,
+      permissions: [],
+      claimed: [],
       context: { used: null, limit: null },
       error: ""
     });
@@ -2613,6 +2644,7 @@ var SessionHost = class {
     const session = this.#sessions.get(sessionId2);
     if (!session) return null;
     const { used, limit } = session.context;
+    const permission = session.permissions[0];
     return {
       version: this.revision.value,
       session_id: session.id,
@@ -2621,12 +2653,12 @@ var SessionHost = class {
       state: session.state,
       live: session.live && { ...session.live, parts: session.live.parts.map((part) => ({ ...part })) },
       queued: [...session.queued],
-      permission: session.permission && {
-        request_id: session.permission.request_id,
-        tool: session.permission.tool_name,
-        summary: toolSummary(session.permission.tool_name, session.permission.input, session.cwd),
-        detail: toolDetail(session.permission.tool_name, session.permission.input, session.cwd)
-      },
+      permission: permission ? {
+        request_id: permission.request_id,
+        tool: permission.tool_name,
+        summary: toolSummary(permission.tool_name, permission.input, session.cwd),
+        detail: toolDetail(permission.tool_name, permission.input, session.cwd)
+      } : null,
       context: used !== null && limit ? { used, limit } : null,
       error: session.error
     };
@@ -2680,7 +2712,7 @@ var SessionHost = class {
     session.queued = [];
     if (session.driver && (session.state === "working" || session.state === "waiting")) {
       session.driver.interrupt();
-      session.permission = null;
+      session.permissions = [];
     }
     this.#changed();
     return dropped;
@@ -2688,11 +2720,11 @@ var SessionHost = class {
   /** Answers the permission prompt the session is waiting on. False if it no longer waits on it. */
   answer(sessionId2, requestId, decision) {
     const session = this.#get(sessionId2);
-    const request = session.permission;
+    const request = session.permissions[0];
     if (!request || request.request_id !== requestId || !session.driver) return false;
     session.driver.answer(request, decision);
-    session.permission = null;
-    session.state = "working";
+    session.permissions.shift();
+    if (!session.permissions.length) session.state = "working";
     this.#changed();
     return true;
   }
@@ -2734,6 +2766,7 @@ ${formatNotesForClaude(notes)}` : formatNotesForClaude(notes, { sendNow: true })
       session.known = true;
     }
     session.live = { prompt: text2, notes_sent: notes.length, started_at: this.#clock.now(), parts: [] };
+    session.claimed = notes.map((note) => note.id);
     this.#store.revision.bump();
     session.streaming = false;
     session.state = "working";
@@ -2778,8 +2811,12 @@ ${formatNotesForClaude(notes)}` : formatNotesForClaude(notes, { sendNow: true })
         break;
       }
       case "permission":
-        session.permission = event.request;
+        session.permissions.push(event.request);
         session.state = "waiting";
+        break;
+      case "permission_cancelled":
+        session.permissions = session.permissions.filter((request) => request.request_id !== event.request_id);
+        if (!session.permissions.length && session.state === "waiting") session.state = "working";
         break;
       case "usage":
         if (event.context_tokens !== null) session.context.used = event.context_tokens;
@@ -2803,11 +2840,15 @@ ${formatNotesForClaude(notes)}` : formatNotesForClaude(notes, { sendNow: true })
     const turn = session.live;
     session.live = null;
     session.streaming = false;
-    session.permission = null;
+    session.permissions = [];
     session.state = "idle";
     if (end.outcome === "error") session.error = end.error;
+    const claimed = session.claimed;
+    session.claimed = [];
     if (turn) {
       const { text: text2, steps } = replyOf(turn.parts);
+      const unread = end.outcome !== "done" && !turn.parts.length;
+      if (unread) this.#store.returnNotes(claimed);
       this.#store.addResponse({
         sessionId: session.id,
         cwd: session.cwd,
@@ -2816,7 +2857,7 @@ ${formatNotesForClaude(notes)}` : formatNotesForClaude(notes, { sendNow: true })
         createdAt: void 0,
         turn: {
           prompt: turn.prompt,
-          notesSent: turn.notes_sent,
+          notesSent: unread ? 0 : turn.notes_sent,
           steps,
           ...end.outcome === "done" ? {} : { ended: end.outcome },
           ...end.outcome === "error" ? { error: end.error } : {}
@@ -2984,12 +3025,18 @@ function parseSend(input) {
 function parseRedeem(input) {
   return { code: matching(asObject(input), "code", LAUNCH_CODE_PATTERN) };
 }
-function parseStartConversation(input) {
+function parseRegisterSession(input) {
   const body = asObject(input);
   const cwd = string(body, "cwd", LIMITS.cwd);
   if (!isAbsolute(cwd) || cwd.includes("\0")) throw new BadRequest("cwd must be an absolute path");
   const id = optionalString(body, "session_id", 256);
   return id === void 0 ? { cwd } : { cwd, session_id: sessionId(id) };
+}
+function parseStartConversation(input) {
+  const body = asObject(input);
+  const resume = body["resume"] ?? false;
+  if (typeof resume !== "boolean") throw new BadRequest("resume must be true or false");
+  return { session_id: matching(body, "session_id", SESSION_ID_PATTERN), resume };
 }
 function parseConversationMessage(input) {
   const body = asObject(input);
@@ -3153,14 +3200,26 @@ function routes({
     },
     {
       method: "POST",
-      path: "/api/conversations",
+      path: "/api/sessions/register",
       needsToken: true,
       handle: ({ body }) => {
-        const input = parseStartConversation(body);
+        const input = parseRegisterSession(body);
         if (!statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
           throw new HttpError(400, "cwd is not a folder");
         }
-        return ok({ session_id: host.open(input.cwd, input.session_id) }, 201);
+        const id = input.session_id ?? randomUUID2();
+        if (!store.session(id)?.cwd) store.touchSession(id, "", input.cwd);
+        return ok({ session_id: id }, 201);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/conversations",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, resume } = parseStartConversation(body);
+        const id = host.open(recordedFolder(session_id), session_id, resume);
+        return ok({ session_id: id }, 201);
       }
     },
     {
@@ -3681,7 +3740,7 @@ var ServerWatch = class {
 };
 
 // src/server/main.ts
-var WEB_DIR = join4(dirname(fileURLToPath(import.meta.url)), "web");
+var WEB_DIR = join5(dirname2(fileURLToPath(import.meta.url)), "web");
 function listenOn(server, port) {
   return new Promise((resolvePort, reject) => {
     server.once("error", reject);

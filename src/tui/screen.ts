@@ -1,7 +1,7 @@
 // The terminal itself: raw input, the alternate screen, and drawing frames. Only rows that
 // changed are redrawn, inside a synchronized update where the terminal supports one, so typing
 // doesn't flicker. Autowrap is off, so a row can never spill onto the next.
-import { parseKeys, type Key } from "./keys.ts";
+import { KeyReader, type Key } from "./keys.ts";
 
 // Mouse reports, for the wheel. Terminals otherwise turn the wheel into arrow keys here or send
 // nothing, which can't scroll from the prompt line. Selecting text then needs Option or Shift.
@@ -21,6 +21,8 @@ export class Screen {
   #previous: string[] = [];
   #active = false;
   #onData: ((data: string) => void) | null = null;
+  #reader = new KeyReader();
+  #flushTimer: NodeJS.Timeout | undefined;
 
   constructor(input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
     this.#input = input;
@@ -32,7 +34,7 @@ export class Screen {
   }
 
   start(onKeys: (keys: Key[]) => void, onResize: () => void): void {
-    this.#onData = (data) => onKeys(parseKeys(data));
+    this.#onData = (data) => this.#read(data, onKeys);
     this.#input.setEncoding("utf8");
     this.#input.on("data", this.#onData);
     this.#output.on("resize", () => {
@@ -47,6 +49,8 @@ export class Screen {
   stop(): void {
     if (!this.#active) return;
     this.#active = false;
+    clearTimeout(this.#flushTimer);
+    this.#reader = new KeyReader();
     this.#output.write(LEAVE);
     this.#input.setRawMode(false);
     this.#input.pause();
@@ -76,6 +80,16 @@ export class Screen {
       this.#input.resume();
       this.#enter();
     }
+  }
+
+  #read(data: string, onKeys: (keys: Key[]) => void): void {
+    clearTimeout(this.#flushTimer);
+    const keys = this.#reader.read(data);
+    if (keys.length) onKeys(keys);
+    const wait = this.#reader.waitMs;
+    if (wait === null) return;
+    this.#flushTimer = setTimeout(() => onKeys(this.#reader.flush()), wait);
+    this.#flushTimer.unref();
   }
 
   #enter(): void {

@@ -7,6 +7,7 @@ import type {
   ConversationView,
   NewNoteRequest,
   PermissionAnswerRequest,
+  RegisterSessionRequest,
   SessionListResult,
   SessionSummary,
   StartConversationRequest,
@@ -34,9 +35,14 @@ export class ClientApi implements TuiApi, ChatApi {
   /** Starts a session sidenote runs in cwd, or continues sessionId; resolves with its id. */
   async startConversation(cwd: string, sessionId?: string): Promise<string> {
     this.#chatCwd = cwd;
-    const request: StartConversationRequest = sessionId ? { cwd, session_id: sessionId } : { cwd };
-    const result = await this.#call((client) => client.post<StartConversationResult>("/api/conversations", request));
-    return result.session_id;
+    // The folder is recorded first: what starts a process takes a session id, never a path.
+    const folder: RegisterSessionRequest = sessionId ? { cwd, session_id: sessionId } : { cwd };
+    const { session_id } = await this.#call((client) =>
+      client.post<StartConversationResult>("/api/sessions/register", folder),
+    );
+    const request: StartConversationRequest = { session_id, resume: sessionId !== undefined };
+    await this.#call((client) => client.post<StartConversationResult>("/api/conversations", request));
+    return session_id;
   }
 
   async conversation(knownVersion: number, sessionId: string, wait: boolean): Promise<ConversationView | null> {

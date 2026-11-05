@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { Delivery } from "../src/server/delivery.ts";
 import { SessionHost } from "../src/server/host.ts";
@@ -63,9 +63,11 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<{ 
 }
 
 async function start(): Promise<string> {
-  const started = await call<StartConversationResult>("POST", "/api/conversations", { cwd: folder });
-  assert.equal(started.status, 201);
-  return started.body.session_id;
+  const registered = await call<StartConversationResult>("POST", "/api/sessions/register", { cwd: folder });
+  assert.equal(registered.status, 201);
+  const id = registered.body.session_id;
+  assert.equal((await call("POST", "/api/conversations", { session_id: id })).status, 201);
+  return id;
 }
 
 test("starts a session in a folder, and refuses anything that isn't one", async () => {
@@ -74,10 +76,27 @@ test("starts a session in a folder, and refuses anything that isn't one", async 
   assert.equal(view.status, 200);
   assert.equal(view.body.state, "idle");
   assert.equal(view.body.agent, "Fake Agent");
-  assert.equal((await call("POST", "/api/conversations", { cwd: "relative/path" })).status, 400);
-  assert.equal((await call("POST", "/api/conversations", { cwd: `${folder}/missing` })).status, 400);
-  assert.equal((await call("POST", "/api/conversations", { cwd: folder, session_id: "../x" })).status, 400);
+  assert.equal((await call("POST", "/api/sessions/register", { cwd: "relative/path" })).status, 400);
+  assert.equal((await call("POST", "/api/sessions/register", { cwd: `${folder}/missing` })).status, 400);
+  assert.equal((await call("POST", "/api/sessions/register", { cwd: folder, session_id: "../x" })).status, 400);
   assert.equal((await call("GET", "/api/conversation?s=never-started")).status, 404);
+});
+
+test("starting a session takes its id, never a path", async () => {
+  const refused = await call("POST", "/api/conversations", { cwd: folder });
+  assert.equal(refused.status, 400, "a folder alone starts nothing");
+  const unknown = await call("POST", "/api/conversations", { session_id: "never-registered", cwd: folder });
+  assert.equal(unknown.status, 404, "a folder beside an unknown id isn't recorded either");
+  assert.equal(store.session("never-registered"), undefined);
+  assert.equal((await call("POST", "/api/conversations", { session_id: "a", resume: "yes" })).status, 400);
+});
+
+test("registering never moves a session sidenote knows to another folder", async () => {
+  const id = await start();
+  const other = mkdtempSync(join(tmpdir(), "sidenote-other-"));
+  const again = await call("POST", "/api/sessions/register", { cwd: other, session_id: id });
+  assert.equal(again.status, 201);
+  assert.equal(store.session(id)?.cwd, folder);
 });
 
 test("a long poll answers as soon as the turn changes", async () => {

@@ -8,7 +8,8 @@
 // - An `interrupt` control request ends the turn; the process stays up for the next message.
 // - Sessions start in auto mode where the user's settings don't choose one: see startingMode.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { paths } from "../node/paths.ts";
 import type {
@@ -37,21 +38,46 @@ const STARTING_MODES: ReadonlySet<string> = new Set(["auto", "acceptEdits", "don
  *
  * bypassPermissions is left out on purpose: sidenote doesn't turn checks off on the user's behalf.
  * Settings that can't be read keep it asking too, as they may hold a choice we can't see.
+ *
+ * The flag outranks every settings file, so a mode set above the user's settings (overriding) means
+ * no flag at all. It is never copied into the flag: Claude Code refuses auto from a project's files,
+ * and a repository must not get it through sidenote.
  */
-export function startingMode(settingsFile: string): string | null {
+export function startingMode(settingsFile: string, overriding: readonly string[] = []): string | null {
+  if (overriding.some((file) => chosenMode(file) !== undefined)) return null;
+  const chosen = chosenMode(settingsFile);
+  if (chosen === undefined) return "auto";
+  return typeof chosen === "string" && STARTING_MODES.has(chosen) ? chosen : null;
+}
+
+/** The file's defaultMode: undefined if it chooses none, null if it can't be read. */
+function chosenMode(settingsFile: string): unknown {
   let contents: string;
   try {
     contents = readFileSync(settingsFile, "utf8");
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "auto" : null;
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
   }
   try {
-    const settings = JSON.parse(contents) as { permissions?: { defaultMode?: unknown } };
-    const chosen = settings.permissions?.defaultMode;
-    if (chosen === undefined) return "auto";
-    return typeof chosen === "string" && STARTING_MODES.has(chosen) ? chosen : null;
+    return (JSON.parse(contents) as { permissions?: { defaultMode?: unknown } }).permissions?.defaultMode;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The settings files that outrank the user's in cwd. Claude Code reads the shared file from cwd,
+ * and the local one from cwd and from the repository's root.
+ */
+export function overridingSettings(cwd: string): string[] {
+  const inFolder = (folder: string, file: string): string => join(folder, ".claude", file);
+  const files = [paths.managedClaudeSettings(), inFolder(cwd, "settings.local.json"), inFolder(cwd, "settings.json")];
+  for (let folder = cwd; ; folder = dirname(folder)) {
+    if (existsSync(join(folder, ".git"))) {
+      files.push(inFolder(folder, "settings.local.json"));
+      return files;
+    }
+    if (folder === dirname(folder)) return files;
   }
 }
 
@@ -88,7 +114,7 @@ export class ClaudeAgent implements Agent {
 
   start(options: StartOptions, onEvent: (event: AgentEvent) => void): AgentDriver {
     // Read for each session, so a changed setting applies without restarting the server.
-    const permissionMode = startingMode(this.#settingsFile);
+    const permissionMode = startingMode(this.#settingsFile, overridingSettings(options.cwd));
     const args = claudeArgs({ ...options, instructions: this.#instructions, permissionMode });
     const child = spawn(this.#command, args, {
       cwd: options.cwd,
@@ -204,6 +230,7 @@ export class ClaudeStream {
       return [];
     }
     if (!isObject(message)) return [];
+    if (message["type"] === "control_cancel_request") return this.#controlCancel(message);
     if ("parent_tool_use_id" in message && message["parent_tool_use_id"] !== null) return [];
     switch (message["type"]) {
       case "system":
@@ -293,6 +320,13 @@ export class ClaudeStream {
         },
       },
     ];
+  }
+
+  /** Claude Code took a request back, so its prompt must not wait for an answer any more. */
+  #controlCancel(message: Json): AgentEvent[] {
+    const requestId = text(message["request_id"]);
+    this.#suggestions.delete(requestId);
+    return [{ type: "permission_cancelled", request_id: requestId }];
   }
 
   #result(message: Json): AgentEvent[] {

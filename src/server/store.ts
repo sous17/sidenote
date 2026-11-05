@@ -184,7 +184,8 @@ export class Store {
     const newSession = !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
     // Backfilled replies are history: they never answer notes.
-    if (reply.createdAt === undefined) this.#takeAnswers(response);
+    // A turn that didn't finish answered nothing: its notes stay open for the next reply.
+    if (reply.createdAt === undefined && !reply.turn?.ended) this.#takeAnswers(response);
     this.#data.responses.push(response);
     this.#data.responses.sort((a, b) => a.created_at - b.created_at);
     this.#prune();
@@ -266,6 +267,14 @@ export class Store {
     }
     if (claimed.length) this.#changed();
     return claimed;
+  }
+
+  /** Makes claimed notes pending again, when the turn they went with ended before reading them. */
+  returnNotes(noteIds: readonly number[]): void {
+    const ids = new Set(noteIds);
+    const notes = this.#data.comments.filter((note) => ids.has(note.id));
+    for (const note of notes) note.delivered_at = null;
+    if (notes.length) this.#changed();
   }
 
   // ---- Internals -------------------------------------------------------------------------

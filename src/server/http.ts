@@ -48,6 +48,7 @@ import {
   parseRename,
   parsePrompt,
   parseRedeem,
+  parseRegisterSession,
   parsePermissionAnswer,
   parseSend,
   parseStartConversation,
@@ -221,14 +222,27 @@ function routes({
     },
     {
       method: "POST",
-      path: "/api/conversations",
+      path: "/api/sessions/register",
       needsToken: true,
       handle: ({ body }) => {
-        const input = parseStartConversation(body);
+        const input = parseRegisterSession(body);
         if (!statSync(input.cwd, { throwIfNoEntry: false })?.isDirectory()) {
           throw new HttpError(400, "cwd is not a folder");
         }
-        return ok({ session_id: host.open(input.cwd, input.session_id) } satisfies StartConversationResult, 201);
+        const id = input.session_id ?? randomUUID();
+        // A session keeps its folder: registering never moves one sidenote already knows.
+        if (!store.session(id)?.cwd) store.touchSession(id, "", input.cwd);
+        return ok({ session_id: id } satisfies StartConversationResult, 201);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/conversations",
+      needsToken: true,
+      handle: ({ body }) => {
+        const { session_id, resume } = parseStartConversation(body);
+        const id = host.open(recordedFolder(session_id), session_id, resume);
+        return ok({ session_id: id } satisfies StartConversationResult, 201);
       },
     },
     {

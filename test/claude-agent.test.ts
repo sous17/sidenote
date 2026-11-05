@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ClaudeAgent, ClaudeStream, claudeArgs, startingMode } from "../src/agent/claude.ts";
+import { ClaudeAgent, ClaudeStream, claudeArgs, overridingSettings, startingMode } from "../src/agent/claude.ts";
 import type { AgentDriver, AgentEvent } from "../src/agent/driver.ts";
 import { paths } from "../src/node/paths.ts";
 
@@ -140,6 +140,51 @@ test("sessions start in auto mode, as at the terminal, unless the user's setting
   assert.equal(modeFor("{ not json"), null, "a choice we can't read still keeps it asking");
   assert.equal(modeFor("null"), null);
   assert.equal(startingMode(dir), null, "unreadable, not missing");
+});
+
+test("a mode set above the user's settings means no flag, so Claude Code applies its own rules", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sidenote-settings-"));
+  const user = join(dir, "user.json");
+  const project = join(dir, "project.json");
+  const withMode = (defaultMode: unknown): string => JSON.stringify({ permissions: { defaultMode } });
+  writeFileSync(user, withMode("acceptEdits"));
+
+  assert.equal(startingMode(user, [join(dir, "missing.json")]), "acceptEdits");
+  writeFileSync(project, "{}");
+  assert.equal(startingMode(user, [project]), "acceptEdits", "a project file that chooses nothing");
+  for (const mode of ["plan", "default", "auto", "bypassPermissions"]) {
+    writeFileSync(project, withMode(mode));
+    assert.equal(startingMode(user, [project]), null, `${mode} never reaches the flag from a project`);
+  }
+  writeFileSync(project, "{ not json");
+  assert.equal(startingMode(user, [project]), null, "a choice we can't read still keeps it asking");
+});
+
+test("a folder's project settings are found, with the local file at the repository's root", () => {
+  const root = mkdtempSync(join(tmpdir(), "sidenote-repo-"));
+  const folder = join(root, "packages", "shop");
+  mkdirSync(folder, { recursive: true });
+  mkdirSync(join(root, ".git"));
+  const files = overridingSettings(folder);
+  assert.ok(files.includes(join(folder, ".claude", "settings.json")));
+  assert.ok(files.includes(join(folder, ".claude", "settings.local.json")));
+  assert.ok(files.includes(join(root, ".claude", "settings.local.json")));
+  assert.ok(!files.includes(join(root, ".claude", "settings.json")), "the shared file is read from cwd only");
+});
+
+test("a cancelled control request becomes an event, and drops its suggestions", () => {
+  const stream = new ClaudeStream();
+  stream.read(
+    JSON.stringify({
+      type: "control_request",
+      request_id: "r1",
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: {}, permission_suggestions: [{ type: "x" }] },
+    }),
+  );
+  assert.deepEqual(stream.read(JSON.stringify({ type: "control_cancel_request", request_id: "r1" })), [
+    { type: "permission_cancelled", request_id: "r1" },
+  ]);
+  assert.deepEqual(stream.takeSuggestions("r1"), []);
 });
 
 test("the mode goes to Claude Code as a flag, and no mode passes none", () => {

@@ -44,7 +44,10 @@ interface Hosted {
   streaming: boolean;
   /** "" stands for a Send now: only the pending notes. */
   queued: string[];
-  permission: PermissionRequest | null;
+  /** Parallel tool calls can each ask at once. The first is shown; each needs its own answer. */
+  permissions: PermissionRequest[];
+  /** The notes that went with the turn in progress. */
+  claimed: number[];
   context: { used: number | null; limit: number | null };
   error: string;
 }
@@ -66,7 +69,7 @@ export class SessionHost {
    * Starts hosting a session: a new one in cwd, or an earlier one to continue. Nothing runs until
    * the first message. Returns the session's id.
    */
-  open(cwd: string, sessionId?: string): string {
+  open(cwd: string, sessionId?: string, resume = sessionId !== undefined): string {
     const existing = sessionId === undefined ? undefined : this.#sessions.get(sessionId);
     if (existing) return existing.id;
     const id = sessionId ?? randomUUID();
@@ -75,13 +78,14 @@ export class SessionHost {
       id,
       cwd: folder,
       driver: null,
-      known: sessionId !== undefined,
+      known: resume,
       state: "idle",
       model: "",
       live: null,
       streaming: false,
       queued: [],
-      permission: null,
+      permissions: [],
+      claimed: [],
       context: { used: null, limit: null },
       error: "",
     });
@@ -98,6 +102,7 @@ export class SessionHost {
     const session = this.#sessions.get(sessionId);
     if (!session) return null;
     const { used, limit } = session.context;
+    const permission = session.permissions[0];
     return {
       version: this.revision.value,
       session_id: session.id,
@@ -106,12 +111,14 @@ export class SessionHost {
       state: session.state,
       live: session.live && { ...session.live, parts: session.live.parts.map((part) => ({ ...part })) },
       queued: [...session.queued],
-      permission: session.permission && {
-        request_id: session.permission.request_id,
-        tool: session.permission.tool_name,
-        summary: toolSummary(session.permission.tool_name, session.permission.input, session.cwd),
-        detail: toolDetail(session.permission.tool_name, session.permission.input, session.cwd),
-      },
+      permission: permission
+        ? {
+            request_id: permission.request_id,
+            tool: permission.tool_name,
+            summary: toolSummary(permission.tool_name, permission.input, session.cwd),
+            detail: toolDetail(permission.tool_name, permission.input, session.cwd),
+          }
+        : null,
       context: used !== null && limit ? { used, limit } : null,
       error: session.error,
     };
@@ -169,7 +176,7 @@ export class SessionHost {
     session.queued = [];
     if (session.driver && (session.state === "working" || session.state === "waiting")) {
       session.driver.interrupt();
-      session.permission = null;
+      session.permissions = [];
     }
     this.#changed();
     return dropped;
@@ -178,11 +185,11 @@ export class SessionHost {
   /** Answers the permission prompt the session is waiting on. False if it no longer waits on it. */
   answer(sessionId: string, requestId: string, decision: PermissionAnswerRequest["decision"]): boolean {
     const session = this.#get(sessionId);
-    const request = session.permission;
+    const request = session.permissions[0];
     if (!request || request.request_id !== requestId || !session.driver) return false;
     session.driver.answer(request, decision);
-    session.permission = null;
-    session.state = "working";
+    session.permissions.shift();
+    if (!session.permissions.length) session.state = "working";
     this.#changed();
     return true;
   }
@@ -229,6 +236,7 @@ export class SessionHost {
       session.known = true;
     }
     session.live = { prompt: text, notes_sent: notes.length, started_at: this.#clock.now(), parts: [] };
+    session.claimed = notes.map((note) => note.id);
     // Pages poll the store's revision, and a turn starting changes nothing in the store.
     this.#store.revision.bump();
     session.streaming = false;
@@ -275,8 +283,12 @@ export class SessionHost {
         break;
       }
       case "permission":
-        session.permission = event.request;
+        session.permissions.push(event.request);
         session.state = "waiting";
+        break;
+      case "permission_cancelled":
+        session.permissions = session.permissions.filter((request) => request.request_id !== event.request_id);
+        if (!session.permissions.length && session.state === "waiting") session.state = "working";
         break;
       case "usage":
         if (event.context_tokens !== null) session.context.used = event.context_tokens;
@@ -301,11 +313,16 @@ export class SessionHost {
     const turn = session.live;
     session.live = null;
     session.streaming = false;
-    session.permission = null;
+    session.permissions = [];
     session.state = "idle";
     if (end.outcome === "error") session.error = end.error;
+    const claimed = session.claimed;
+    session.claimed = [];
     if (turn) {
       const { text, steps } = replyOf(turn.parts);
+      // A turn that ended before the agent did anything never dealt with its notes: they go again.
+      const unread = end.outcome !== "done" && !turn.parts.length;
+      if (unread) this.#store.returnNotes(claimed);
       this.#store.addResponse({
         sessionId: session.id,
         cwd: session.cwd,
@@ -314,7 +331,7 @@ export class SessionHost {
         createdAt: undefined,
         turn: {
           prompt: turn.prompt,
-          notesSent: turn.notes_sent,
+          notesSent: unread ? 0 : turn.notes_sent,
           steps,
           ...(end.outcome === "done" ? {} : { ended: end.outcome }),
           ...(end.outcome === "error" ? { error: end.error } : {}),

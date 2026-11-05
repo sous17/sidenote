@@ -250,8 +250,8 @@ export class App {
     try {
       if (key.ctrl && key.name === "c") return this.#terminal.quit();
       if (this.#editor) await this.#editorKey(this.#editor, key);
-      else if (await this.#permissionKey(key)) return;
       else if (this.#lines) this.#linesKey(this.#lines, key);
+      else if (await this.#permissionKey(key)) return;
       else if (this.#chat && this.#view === "feed" && this.#focus === "prompt") await this.#promptKey(key);
       else if (this.#view === "thread" && !(this.#split() && this.#half === "conversation")) {
         await this.#threadKey(key, confirming);
@@ -459,10 +459,15 @@ export class App {
     if (edited) this.#prompt = edited;
   }
 
-  /** y, a or n answer a permission prompt, unless a note is being written. */
+  /** A message is being typed, so letters are text, even if a permission prompt just came in. */
+  get #typing(): boolean {
+    return this.#chat !== null && this.#view === "feed" && this.#focus === "prompt" && !this.#prompt.isBlank;
+  }
+
+  /** y, a or n answer a permission prompt, unless a note or message is being written. */
   async #permissionKey(key: Key): Promise<boolean> {
     const permission = this.#conversation?.permission;
-    if (!this.#chat || !permission || this.#view !== "feed" || key.ctrl || key.alt) return false;
+    if (!this.#chat || !permission || this.#view !== "feed" || key.ctrl || key.alt || this.#typing) return false;
     const decision = ({ y: "allow", a: "always", n: "deny" } as const)[key.name as "y" | "a" | "n"];
     if (!decision) return false;
     await this.#chat.answer(this.#model!.sessionId, permission.request_id, decision);
@@ -1237,7 +1242,9 @@ export class App {
     }
     const parts: string[] = [];
     if (this.#conversation?.permission && this.#view === "feed" && !this.#lines) {
-      return [{ text: "Claude is waiting: y allow · a always allow · n deny", style: { tone: "accent", bold: true } }];
+      const keys = "y allow · a always allow · n deny";
+      const text = this.#typing ? `Claude is waiting: tab, then ${keys}` : `Claude is waiting: ${keys}`;
+      return [{ text, style: { tone: "accent", bold: true } }];
     }
     if (this.#chat && this.#view === "feed" && this.#focus === "prompt" && !this.#lines) {
       parts.push("⏎ send", "⌥⏎ new line");

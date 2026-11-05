@@ -155,6 +155,76 @@ test("permission prompts wait for the user's answer", () => {
   assert.equal(host.answer(id, "perm-1", "allow"), false, "answered once");
 });
 
+test("permission prompts that arrive together are each answered, in order", () => {
+  const { agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Run both");
+  const ask = (request_id: string, command: string) =>
+    agent.emit({ type: "permission", request: { request_id, tool_name: "Bash", description: "", input: { command } } });
+  ask("perm-1", "npm test");
+  ask("perm-2", "npm run lint");
+  assert.equal(host.view(id)?.permission?.request_id, "perm-1", "the first isn't overwritten");
+  assert.equal(host.answer(id, "perm-2", "allow"), false, "one at a time");
+  assert.equal(host.answer(id, "perm-1", "allow"), true);
+  assert.equal(host.view(id)?.state, "waiting", "the second still needs an answer");
+  assert.equal(host.view(id)?.permission?.request_id, "perm-2");
+  assert.equal(host.answer(id, "perm-2", "deny"), true);
+  assert.equal(host.view(id)?.state, "working");
+  assert.deepEqual(agent.answers, [
+    ["perm-1", "allow"],
+    ["perm-2", "deny"],
+  ]);
+});
+
+test("a prompt the agent takes back stops waiting for an answer", () => {
+  const { agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Run it");
+  const request = { request_id: "perm-1", tool_name: "Bash", description: "", input: { command: "ls" } };
+  agent.emit({ type: "permission", request });
+  agent.emit({ type: "permission_cancelled", request_id: "perm-1" });
+  assert.equal(host.view(id)?.state, "working");
+  assert.equal(host.view(id)?.permission, null);
+  assert.equal(host.answer(id, "perm-1", "allow"), false);
+});
+
+test("a turn that fails before doing anything hands its notes back, to go with the next message", () => {
+  const { store, agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "First");
+  agent.reply("Para one.");
+  const [first] = store.sessionContent(id).responses;
+  const note = noteOn(store, first!.id, "Why?");
+  host.message(id, "Next");
+  agent.emit({ type: "turn_end", end: { outcome: "error", error: "Not logged in", cost_usd: null } });
+
+  const stored = () => store.sessionContent(id).comments.find((c) => c.id === note.id);
+  assert.equal(stored()?.delivered_at, null, "pending again");
+  assert.equal(stored()?.answered_by, null);
+  assert.equal(store.sessionContent(id).responses.at(-1)?.notes_sent, 0);
+
+  host.message(id, "Retry");
+  assert.match(agent.sent.at(-1)!, /Why\?/);
+  agent.reply("Because.");
+  assert.notEqual(stored()?.answered_by, null);
+});
+
+test("a turn cut short after it began keeps its notes sent, but doesn't count as their answer", () => {
+  const { store, agent, host } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "First");
+  agent.reply("Para one.");
+  const [first] = store.sessionContent(id).responses;
+  const note = noteOn(store, first!.id, "Why?");
+  host.message(id, "Next");
+  agent.emit({ type: "text_delta", text: "Part" });
+  host.interrupt(id);
+  agent.emit({ type: "turn_end", end: { outcome: "interrupted", error: "", cost_usd: null } });
+  const stored = store.sessionContent(id).comments.find((c) => c.id === note.id);
+  assert.notEqual(stored?.delivered_at, null);
+  assert.equal(stored?.answered_by, null);
+});
+
 test("when the agent process ends, the turn is kept and the next message starts it again", () => {
   const { store, agent, host } = setup();
   const id = host.open("/w/shop");

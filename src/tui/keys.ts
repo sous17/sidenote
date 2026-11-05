@@ -1,6 +1,9 @@
 // Reads keypresses from what a terminal sends in raw mode: plain characters, control keys,
 // Alt (ESC followed by the key), CSI sequences for arrows and the like, and mouse reports in SGR
 // form. Bracketed paste arrives as one event, so a pasted newline never sends a note.
+//
+// A read from the terminal can end anywhere, even inside a sequence, so KeyReader holds an
+// unfinished one until the rest arrives. Parsed alone, the tail of a paste would be keystrokes.
 
 export interface Key {
   /** The character typed, or a name: enter, tab, backspace, delete, escape, up, down, left,
@@ -27,6 +30,12 @@ const MOUSE = /^\x1b\[<(\d+);(\d+);\d+([Mm])/;
 const WHEEL = 64;
 /** The terminal's background color, as rgb:RRRR/GGGG/BBBB, ended by BEL or ST. */
 const BACKGROUND = /^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)/;
+/** The start of an escape sequence with its end still to come. Paste is checked on its own. */
+const UNFINISHED = /^\x1b(?:[[O][0-9;<]*|\][^\x07\x1b]*\x1b?)?$/;
+/** Esc on its own looks like the start of a sequence, so it waits this long for more. */
+const ESCAPE_WAIT_MS = 50;
+/** A paste comes in many reads; if its end never arrives, what came so far is kept. */
+const PASTE_WAIT_MS = 1000;
 const COLOR_REPORT = /^rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i;
 
 const CSI_LETTERS: ReadonlyMap<string, string> = new Map([
@@ -60,9 +69,43 @@ function key(name: string, fields: Partial<Key> = {}): Key {
 }
 
 export function parseKeys(data: string): Key[] {
+  return scan(data, true).keys;
+}
+
+/** Turns reads from the terminal into keys, across reads. */
+export class KeyReader {
+  #rest = "";
+
+  read(data: string): Key[] {
+    const { keys, rest } = scan(this.#rest + data, false);
+    this.#rest = rest;
+    return keys;
+  }
+
+  /** How long to wait for the rest of an unfinished sequence before flush; null if there is none. */
+  get waitMs(): number | null {
+    if (!this.#rest) return null;
+    return this.#rest.startsWith(PASTE_START) ? PASTE_WAIT_MS : ESCAPE_WAIT_MS;
+  }
+
+  /** The rest never came: what was held is all there is. */
+  flush(): Key[] {
+    const keys = parseKeys(this.#rest);
+    this.#rest = "";
+    return keys;
+  }
+}
+
+function unfinished(tail: string): boolean {
+  return tail.startsWith(PASTE_START) ? !tail.includes(PASTE_END) : UNFINISHED.test(tail);
+}
+
+/** The keys in data. Unless it is final, an unfinished sequence at its end comes back as rest. */
+function scan(data: string, final: boolean): { keys: Key[]; rest: string } {
   const keys: Key[] = [];
   let i = 0;
   while (i < data.length) {
+    if (!final && data[i] === "\x1b" && unfinished(data.slice(i))) return { keys, rest: data.slice(i) };
     if (data.startsWith(PASTE_START, i)) {
       const end = data.indexOf(PASTE_END, i + PASTE_START.length);
       const text = data.slice(i + PASTE_START.length, end < 0 ? undefined : end);
@@ -106,7 +149,7 @@ export function parseKeys(data: string): Key[] {
     keys.push(single(char));
     i += char.length;
   }
-  return keys;
+  return { keys, rest: "" };
 }
 
 function single(char: string): Key {

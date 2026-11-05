@@ -209,10 +209,17 @@ export interface ProgressRequest {
   delta: string;
 }
 
-export interface StartConversationRequest {
+/** Records the folder a session runs in. Starting it then takes only the session's id. */
+export interface RegisterSessionRequest {
   cwd: string;
-  /** An earlier session to continue; without one, a new session starts. */
+  /** A session sidenote may not know yet; without one, a new id is made. */
   session_id?: string;
+}
+
+export interface StartConversationRequest {
+  session_id: string;
+  /** Continue the agent's earlier conversation instead of starting a new one. */
+  resume?: boolean;
 }
 
 export interface StartConversationResult {
