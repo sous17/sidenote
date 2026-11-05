@@ -6,7 +6,7 @@
     <title>sidenote documentation</title>
     <meta
       name="description"
-      content="How to install and use sidenote: inline notes on Claude Code's replies, in a browser window."
+      content="How to install and use sidenote, a Claude Code plugin for leaving notes on Claude's replies in a browser window."
     />
     <style>
       /* Layout: the app's own shape. Contents on the left, the text in the middle, notes in the margin.
@@ -147,6 +147,18 @@
         gap: 14px;
         margin-left: auto;
         font-size: 14px;
+      }
+      .github {
+        display: flex;
+        padding: 4px;
+        color: var(--muted);
+      }
+      .github:hover {
+        color: var(--text);
+      }
+      .github svg {
+        width: 20px;
+        height: 20px;
       }
       .theme {
         display: flex;
@@ -436,7 +448,13 @@
       </a>
       <span class="topbar-label">Documentation</span>
       <div class="topbar-end">
-        <a href="https://github.com/sous17/sidenote">GitHub</a>
+        <a class="github" href="https://github.com/sous17/sidenote" aria-label="sidenote on GitHub" title="GitHub">
+          <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"
+            />
+          </svg>
+        </a>
         <div class="theme" role="group" aria-label="Theme">
           <button type="button" id="theme-light" data-choice="light">Light</button>
           <button type="button" id="theme-dark" data-choice="dark">Dark</button>
@@ -470,11 +488,12 @@
       </nav>
 
       <main>
-        <h1>Talk back to Claude Code, right where it said the thing</h1>
+        <h1>Reply to the exact sentence Claude wrote</h1>
         <p class="lede text">
-          Every reply Claude finishes appears in a browser window. Select the text you have a question about, write a
-          note beside it, and click <strong>Send now</strong>. Claude answers each note on its own, and each answer
-          lands in that note's thread.
+          sidenote is a Claude Code plugin that shows every reply Claude finishes in a browser window, so you can ask
+          about one part of it without going back to the terminal. Select the text you have a question about, write a
+          note beside it, and click <strong>Send now</strong>. Claude answers each note separately, and you'll find the
+          answer in that note's thread.
         </p>
         <figure>
           <img
@@ -487,27 +506,32 @@
 
         <h2 id="install">Install</h2>
         <p class="text">
-          You need Claude Code with plugin support and <code>asyncRewake</code> hooks (any recent version), Node.js 22
-          or newer, and macOS or Linux.
+          sidenote runs on macOS and Linux. It needs Node.js 22 or newer, and a recent Claude Code with plugin support
+          and <code>asyncRewake</code> hooks.
         </p>
         <div class="row">
           <div>
             <p>In a Claude Code session:</p>
             <pre><code>/plugin install sidenote --marketplace sous17/sidenote</code></pre>
             <p>
-              From your shell, that's <code>claude plugin install sidenote --marketplace sous17/sidenote</code>. On a
-              Claude Code older than 2.1.292, run these instead:
+              From your shell, that's <code>claude plugin install sidenote --marketplace sous17/sidenote</code>. The
+              session command needs Claude Code 2.1.275 or newer, and the shell one needs 2.1.292. If yours is older,
+              run these instead:
             </p>
             <pre><code>claude plugin marketplace add sous17/sidenote
 claude plugin install sidenote@sidenote</code></pre>
-            <p>Restart Claude Code, or run <code>/reload-plugins</code>, and turn sidenote on:</p>
+            <p>
+              If you installed from your shell, restart Claude Code or run <code>/reload-plugins</code>. Then turn
+              sidenote on:
+            </p>
             <pre><code>/sidenote:on</code></pre>
           </div>
         </div>
         <p class="text">
           Your browser opens the window for this session's folder, and from now on every reply Claude finishes shows up
-          there. Other sessions in the same folder join its session list from their first prompt, without opening
-          another tab. A session in a folder with no open window opens that folder's window with its first reply.
+          there. Other sessions in that folder show up in its session list as soon as you send their first prompt, and
+          they don't open another tab. If a folder has no window open, its window opens when a session there finishes
+          its first reply.
         </p>
         <h2 id="notes">Leave a note</h2>
         <div class="row">
@@ -516,12 +540,17 @@ claude plugin install sidenote@sidenote</code></pre>
             <ul>
               <li>Select text in a reply and click <strong>Add sidenote</strong>.</li>
               <li>Hover a paragraph and click <strong>+</strong>.</li>
-              <li>Click <strong>Note on whole reply</strong> next to a reply's time, to comment on all of it.</li>
+              <li>
+                To comment on all of a reply, hover it and click <strong>Note on whole reply</strong>, on the same line
+                as its time.
+              </li>
             </ul>
-            <p>Notes sit in the margin next to the text they are about.</p>
+            <p>Whichever you use, you write the note in the margin, and it stays there next to the text it's about.</p>
           </div>
           <aside class="note">
-            <strong>Narrow window?</strong>Notes move inline, under the text they belong to. This page does the same.
+            <strong>Not enough room?</strong>When the feed is narrower than 1000px, notes go under the text they're
+            about. That happens in a small window, and in most windows once a thread is open. The notes on this page
+            move the same way.
           </aside>
         </div>
 
@@ -536,10 +565,10 @@ claude plugin install sidenote@sidenote</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td><strong>Send now</strong></td>
+                <td><strong>Send now</strong> on a note</td>
                 <td>
-                  Wakes Claude to answer right away, with nothing typed in the terminal. If Claude is busy, the note
-                  goes as soon as it finishes.
+                  Wakes Claude to answer right away, so you don't have to type anything in the terminal. Any other
+                  pending notes in the session go with it. If Claude is busy, the notes go as soon as Claude finishes.
                 </td>
               </tr>
               <tr>
@@ -548,26 +577,29 @@ claude plugin install sidenote@sidenote</code></pre>
               </tr>
               <tr>
                 <td><strong>Send now</strong> in the top bar</td>
-                <td>Sends every pending note at once.</td>
+                <td>Sends every pending note in the session at once.</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p class="text">
-          The reply shows in the feed as a short "↳ Claude answered 1 note" row. The full answer is in the note's
-          thread, and the note in the margin shows a preview of it.
+          A reply that only answers notes shows in the feed as a short "↳ Claude answered 1 note" row, because the full
+          answer is in the note's thread. The note in the margin shows a preview of it.
         </p>
 
         <h2 id="threads">Threads</h2>
         <div class="row">
           <div>
             <p>
-              Click a note to open its thread beside the feed: your note, Claude's answer, and your follow-ups. Reply
-              there to keep going. Follow-ups are sent with the earlier notes, so Claude has the context.
+              Click a note to open its thread beside the feed. It holds your note and Claude's answer, and you can reply
+              there to keep going. Each follow-up goes to Claude with your first note and the text that note is on, so
+              Claude has the context.
             </p>
           </div>
           <aside class="note">
-            <strong>No duplicates</strong>Claude's answer appears only in the thread, never again in the feed.
+            <strong>No duplicates</strong>Claude's answer moves out of the feed into the thread, leaving a preview on
+            the margin note. If Claude doesn't mark the answer as being for that note, it stays in the reply and the
+            thread links to it.
           </aside>
         </div>
         <figure>
@@ -584,30 +616,37 @@ claude plugin install sidenote@sidenote</code></pre>
         <div class="row">
           <div>
             <p>
-              Type in the box at the bottom of the window and press <kbd>Enter</kbd>. Claude gets it as if you had typed
-              it in the terminal, with your pending notes alongside. While Claude is working, the message waits and goes
-              as soon as it finishes.
+              Type in the box at the bottom of the window and press <kbd>Enter</kbd>. Claude gets it as if you'd typed
+              it in the terminal, and your pending notes go with it. If Claude is working when you send it, the message
+              waits and goes out as soon as Claude finishes. If the session isn't listening, the box can't reach Claude.
+              Type once in the terminal, and after Claude's next reply you can write here.
             </p>
-            <p>Your messages show in the feed between Claude's replies, including prompts typed in the terminal.</p>
+            <p>
+              The feed shows your messages between Claude's replies, whether you typed them in the window or in the
+              terminal.
+            </p>
           </div>
           <aside class="note">
             <strong>Still in the terminal</strong>Permission prompts and plan approval wait in the terminal. Questions
-            Claude asks in its reply can be answered from the window.
+            usually don't, because sidenote asks Claude to write them in its reply, and you can answer those from the
+            window.
           </aside>
         </div>
 
         <h2 id="watching">Watch Claude work</h2>
         <p class="text">
           While you wait for a reply, a live card shows what Claude last wrote, with the current step beside the typing
-          dots, like <code>Editing src/app.ts</code> or <code>Running npm test</code>. It never shows the code itself.
-          Earlier messages from the turn fold open from the card, and it all goes when the reply lands.
+          dots, like <code>Editing src/app.ts</code> or <code>Running npm test</code>. For file edits, the step names
+          the file but not the change. A link on the card opens the turn's earlier messages, and the card disappears
+          when the reply arrives.
         </p>
 
         <h2 id="diffs">Code changes as diffs</h2>
         <p class="text">
-          When you ask Claude to see or change code, in a note or in the terminal, it explains each change and shows it
-          as a diff, with the edited words highlighted. Answers that touch several files fold each file open from its
-          header.
+          When Claude shows a code change, or you ask to see code, sidenote has it explain each change and show it as a
+          diff. That works from a note or the terminal, and the window highlights the edited words. If an answer touches
+          several files, each one folds under its header, and you click the header to open it. The first file starts
+          open.
         </p>
         <figure>
           <img
@@ -625,18 +664,19 @@ claude plugin install sidenote@sidenote</code></pre>
             <p>Each folder gets one window, at an address you can bookmark:</p>
             <pre><code>http://sidenote.localhost:&lt;port&gt;/&lt;folder&gt;</code></pre>
             <p>
-              The list on the left holds every Claude Code session that ran in that folder, with whether it is listening
-              and how many notes are pending. A session is named by the name you gave it in the window, then its
-              <code>/rename</code> name, then its first message. Notes always go back to the session they were written
-              on.
+              The list on the left shows the Claude Code sessions sidenote has seen in that folder, each with whether
+              it's listening and how many notes are pending. Each session shows the name you gave it in the window, or
+              else its <code>/rename</code> name, or else its first message. A note always goes back to the session it
+              was written on, however many are in the list.
             </p>
             <p>
-              The top right of the window says the same for the selected session: "Listening", "Claude is working", "Not
-              listening" or "Ended". It shows an error instead when the window can't reach sidenote.
+              The top right of the window shows the selected session's state in the same words: "Listening", "Claude is
+              working", "Not listening" or "Ended". It shows an error instead when the window can't reach sidenote.
             </p>
             <p>
-              In a narrow window the list folds away. The button left of the folder name brings it back. In a wide
-              window that button docks or folds the list, and opening a thread leaves it as you set it.
+              In a narrow window the list folds away, so the feed keeps room for notes in the margin, and the button
+              left of the folder name opens it over the feed. In a wide window that button docks or folds the list, and
+              opening a thread leaves it as you set it.
             </p>
           </div>
           <aside class="note">
@@ -646,99 +686,109 @@ claude plugin install sidenote@sidenote</code></pre>
           </aside>
         </div>
         <h3>Open the folder</h3>
-        <p class="text">
-          Click the folder name to open the folder on your computer, with whatever app your system opens folders with.
-        </p>
+        <p class="text">Click the folder name to open the folder in your system's file manager.</p>
         <h3>Theme</h3>
-        <p class="text">Light, dark or system, from the switch in the top right.</p>
+        <p class="text">Choose light, dark or system from the switch in the top right.</p>
         <div class="row">
           <div>
             <h3>Start a session from the window</h3>
             <p>
-              The <strong>+</strong> above the session list opens a terminal in the folder, running Claude with the
-              first prompt you type there, and selects the new session. Claude asks for permissions in that terminal.
-              After its first reply you can carry on from the window. A name you give it there also titles the terminal.
+              The <strong>+</strong> above the session list opens a form for a name and a first prompt, both optional.
+              <strong>Start</strong> opens a terminal in the folder running Claude, and selects the new session. Claude
+              asks for permissions in that terminal, and after its first reply you can carry on from the window. A name
+              you give it in the form also titles the terminal.
             </p>
           </div>
           <aside class="note">
             <strong>Terminal support</strong>Starting and resuming sessions need GNOME Terminal on Linux, or Terminal on
-            macOS. On macOS the first one asks you to let the app sidenote runs under control Terminal.
+            macOS. The first time on macOS, the system asks you to allow the app sidenote runs under to control
+            Terminal.
           </aside>
         </div>
         <h3>Name, end, resume and remove sessions</h3>
         <p class="text">
-          The <strong>⋯</strong> on a session's row shows its actions as icons on the right of the row. Hover one to see
-          its name. A running session has Edit and Pause; one that isn't running has Edit, Play and Delete.
+          The <strong>⋯</strong> on a session's row shows its actions as icons under the row, on the right. Hover one to
+          see what it does. A running session has Edit and Pause, and one that isn't running has Edit, Play and Delete.
+          Right after Play, until sidenote knows the process, Pause is greyed out and Delete shows beside it.
         </p>
         <ul class="text">
           <li><strong>Edit</strong> gives it a name only sidenote shows, for example a ticket number.</li>
           <li>
-            <strong>Pause</strong> ends a running session: its Claude process stops, even mid-turn. The session stays on
-            the list as "Ended", with its replies and notes, and unsent notes go with its next prompt once you resume
-            it.
+            <strong>Pause</strong> ends a running session, stopping its Claude process even mid-turn. The session stays
+            on the list as "Ended", with its replies and notes. Unsent notes go with its next prompt once you resume it.
           </li>
           <li>
             <strong>Play</strong> resumes a session that isn't running, in a new terminal, where Claude asks for
-            permissions. It says "Claude is working" for a moment, then listens without you typing anything, so you can
-            carry on from the window.
+            permissions. The session shows "Claude is working" for a moment, then "Listening", without you typing
+            anything, so you can carry on from the window.
           </li>
           <li>
-            <strong>Delete</strong> removes a session that isn't running, with its replies and notes in sidenote.
-            Claude's own transcript stays, so <code>claude --resume</code> can still bring the session back.
+            <strong>Delete</strong> removes a session that isn't running, along with the replies and notes sidenote kept
+            for it. Claude's own transcript stays, so <code>claude --resume</code> can still bring the session back.
           </li>
         </ul>
         <p class="text">
           Pause and Delete ask first, in a pop-up over the page. Cancel, Escape or a click outside it leaves the session
-          as it was. If the step fails, the error shows in the pop-up.
+          as it was. If the action fails, the pop-up stays open and shows the error.
         </p>
         <p class="text">
-          A session shows as ended once sidenote knows its process, which it learns from the session's next prompt or
-          reply. After a restart sidenote can't always tell, so Play first asks you to close any terminal still running
-          the session. A session left open keeps listening through a restart.
+          sidenote shows a session as ended once it knows the session's process, which it learns from the session's next
+          prompt or reply, or when a listening session reconnects. After sidenote restarts it can't always tell whether
+          a session is still open, so Play first asks you to close any terminal still running the session. A session
+          that was listening keeps listening, as long as sidenote is back within a minute.
         </p>
 
         <h2 id="terminal">In the terminal (preview)</h2>
         <p class="text">
           Both commands below are a work in progress. Run <code>/sidenote:terminal</code> once to put
-          <code>sidenote</code> on your <code>PATH</code>, in <code>~/.local/bin</code>. It keeps working through plugin
-          updates, and if that folder isn't on your <code>PATH</code> yet, it gives you the line to add. Until then,
-          <code>/sidenote:status</code> prints the full command on its <code>terminal:</code> line.
+          <code>sidenote</code> on your <code>PATH</code>, in <code>~/.local/bin</code>. The command keeps working
+          through plugin updates. If that folder isn't on your <code>PATH</code> yet,
+          <code>/sidenote:terminal</code> gives you the line to add. Until then, <code>/sidenote:status</code> prints
+          the full <code>sidenote tui</code> command on its <code>terminal:</code> line.
         </p>
         <p class="text">
           <code>sidenote tui</code> shows a session's replies, notes and threads in any terminal window, beside or
-          instead of the browser. Without a session id, it shows the latest session in the folder it started in.
+          instead of the browser. It needs sidenote turned on with <code>/sidenote:on</code>. Without a session id, it
+          shows the latest session in the folder it started in.
         </p>
         <p class="text">
-          <code>sidenote chat</code> makes sidenote the whole session: no Claude Code window beside it, and no
-          <code>/sidenote:on</code> needed. Run it in your project folder and type at the <code>you ›</code> line.
-          Claude's reply streams in above it, with its tool calls on one line. <kbd>Esc</kbd> interrupts Claude.
+          <code>sidenote chat</code> runs the whole session inside sidenote, so you don't need a Claude Code window
+          beside it, or <code>/sidenote:on</code>. Run it in your project folder and type at the
+          <code>you ›</code> line. Claude's reply streams in above it, with its tool calls in a compact row.
+          <kbd>Esc</kbd> interrupts Claude.
         </p>
         <p class="text">
-          It only runs in a folder you trusted in Claude Code. If it refuses, run <code>claude</code> in the folder once
-          and accept the trust prompt. Claude Code doesn't save that answer for your home folder, so start from a
-          project folder instead.
+          <code>sidenote chat</code> can't show Claude Code's trust prompt, so it only runs in a folder you trusted in
+          Claude Code. If it refuses, run <code>claude</code> in the folder once and accept the prompt. Claude Code
+          doesn't save that answer for your home folder, so start from a project folder instead.
         </p>
         <p class="text">
           Sessions start in Claude Code's auto mode, as they do at the terminal, so routine commands run without asking.
-          When Claude does ask to use a tool, <kbd>y</kbd> allows it, <kbd>a</kbd> always allows it and
-          <kbd>n</kbd> denies it. To be asked about everything, set <code>permissions.defaultMode</code> to
-          <code>"manual"</code> in <code>~/.claude/settings.json</code>. Any other mode you set there is used instead,
-          except <code>bypassPermissions</code>, which sidenote never turns on: it asks instead.
+          Where auto mode isn't available, Claude Code asks instead, and a mode set in a project's or managed settings
+          takes priority over all of this. When Claude does ask to use a tool, <kbd>y</kbd> allows it,
+          <kbd>a</kbd> allows it and applies the rule Claude Code suggests, and <kbd>n</kbd> denies it. If you've
+          started typing, press <kbd>Tab</kbd> first. To approve edits and commands yourself, set
+          <code>permissions.defaultMode</code> to <code>"manual"</code> in <code>~/.claude/settings.json</code>. Any
+          other mode you set there is used instead. sidenote never passes <code>bypassPermissions</code> itself, but
+          Claude Code reads your settings too, so if you set that mode there, tools run without asking. That only ever
+          applies in a folder you trusted, because <code>sidenote chat</code> starts nothing anywhere else.
         </p>
         <p class="text">
-          <kbd>Tab</kbd> moves between the prompt line and the conversation, where <kbd>n</kbd> notes a block,
-          <kbd>v</kbd> picks lines, and <kbd>]</kbd> and <kbd>[</kbd> go to the next or previous note. Notes ride along
-          with your next message, or go on their own with <kbd>S</kbd>. <kbd>Enter</kbd> on a note opens its thread in
-          the right half.
+          <kbd>Tab</kbd> moves between the prompt line and the conversation. In the conversation, <kbd>n</kbd> notes a
+          block, <kbd>v</kbd> picks lines in code or a diff, and <kbd>]</kbd> and <kbd>[</kbd> go to the next or
+          previous note. Notes go with your next message, or on their own when you press <kbd>S</kbd> there.
+          <kbd>Enter</kbd> on a note opens its thread in the right half, or across the whole terminal if it's under 120
+          columns wide. A reply you write in that right half goes at once, with any other pending notes.
         </p>
         <p class="text">
           The mouse wheel scrolls the pane under the pointer, and <kbd>PgUp</kbd> and <kbd>PgDn</kbd> scroll the
           conversation from the prompt line, so you can read back while typing. Scrolling up stops the view following
-          Claude, and reaching the bottom starts it again. To select text with the mouse, hold <kbd>Option</kbd>, or
-          <kbd>Shift</kbd> in most other terminals.
+          Claude, and reaching the bottom starts it again. If you moved with the keys in the conversation, press
+          <kbd>G</kbd> instead. To select text with the mouse, hold <kbd>Option</kbd>, or <kbd>Shift</kbd> in most other
+          terminals.
         </p>
         <p class="text">
-          The colors follow your terminal: sidenote asks it for its background and picks a light or dark scheme. If your
+          sidenote asks your terminal for its background color and picks a light or dark scheme to match. If your
           terminal doesn't answer, set <code>SIDENOTE_COLOR=light</code> or <code>SIDENOTE_COLOR=dark</code>.
         </p>
         <p class="text">
@@ -746,9 +796,11 @@ claude plugin install sidenote@sidenote</code></pre>
           beside the note, so you can see which note goes with which lines.
         </p>
         <p class="text">
-          Claude runs in the sidenote server, not in the window, so it keeps working if you close the window, and the
-          server stays up until the turn ends. <code>sidenote chat &lt;session id&gt;</code> picks a session up again.
-          These sessions also appear in their folder's window, where you can follow them and end them.
+          Claude runs in the sidenote server, not in your terminal, so it keeps working if you close the terminal, and
+          the server stays up until the turn ends. The exception is a permission prompt, which only
+          <code>sidenote chat</code> can answer. Claude waits there, and if nothing uses the server for 30 minutes, the
+          server stops and Claude with it. <code>sidenote chat &lt;session id&gt;</code> picks a session up again. These
+          sessions also appear in their folder's window, where you can follow them and end them.
         </p>
 
         <h2 id="commands">Commands</h2>
@@ -763,32 +815,43 @@ claude plugin install sidenote@sidenote</code></pre>
             <tbody>
               <tr>
                 <td><code>/sidenote:on</code></td>
-                <td>Turns sidenote on and opens its folder's window on this session.</td>
+                <td>Turns sidenote on and opens the window for this session's folder, showing this session.</td>
               </tr>
               <tr>
                 <td><code>/sidenote:off</code></td>
-                <td>Turns it off for all sessions. Pending notes are kept for next time.</td>
+                <td>
+                  Turns sidenote off for all Claude Code sessions and stops the server. Pending notes are kept for next
+                  time.
+                </td>
               </tr>
               <tr>
                 <td><code>/sidenote:restart</code></td>
                 <td>
-                  Restarts the server and opens the window on this session. Pending notes are kept, and sessions open in
-                  Claude Code keep listening.
+                  Restarts the server, for example after an update, and opens the window on this session. If sidenote
+                  was off, this turns it on. Pending notes are kept, and sessions open in Claude Code keep listening.
                 </td>
               </tr>
               <tr>
                 <td><code>/sidenote:open</code></td>
-                <td>Reopens the window on this session, for example after closing it.</td>
+                <td>
+                  Reopens the window on this session, if you closed it or its tab went stale. It doesn't turn sidenote
+                  on.
+                </td>
               </tr>
               <tr>
                 <td><code>/sidenote:status</code></td>
-                <td>Shows this session's window address, replies, pending notes, and Send now status.</td>
+                <td>
+                  Shows whether sidenote is on and where its server is, then this session's window address, how many
+                  replies and pending notes it has, whether Send now is ready, and the <code>terminal:</code> command
+                  for <code>sidenote tui</code>.
+                </td>
               </tr>
               <tr>
                 <td><code>/sidenote:terminal</code></td>
                 <td>
-                  Puts <code>sidenote</code> on your <code>PATH</code>, for <code>sidenote chat</code> and
-                  <code>sidenote tui</code>
+                  Installs <code>sidenote</code> in <code>~/.local/bin</code>, for <code>sidenote chat</code> and
+                  <code>sidenote tui</code>. If that folder isn't on your <code>PATH</code>, it gives you the line to
+                  add.
                 </td>
               </tr>
               <tr>
@@ -812,8 +875,8 @@ claude plugin install sidenote@sidenote</code></pre>
             <tbody>
               <tr>
                 <td><kbd>⌘</kbd> <kbd>↵</kbd> or <kbd>Ctrl</kbd> <kbd>↵</kbd></td>
-                <td>Note or thread reply</td>
-                <td>Send now</td>
+                <td>Note editor or thread reply</td>
+                <td>Send now, or Save if the session isn't listening</td>
               </tr>
               <tr>
                 <td><kbd>⌘</kbd> <kbd>↵</kbd> or <kbd>Ctrl</kbd> <kbd>↵</kbd></td>
@@ -833,7 +896,7 @@ claude plugin install sidenote@sidenote</code></pre>
               <tr>
                 <td><kbd>Esc</kbd></td>
                 <td>Note editor</td>
-                <td>Close the editor</td>
+                <td>Close the editor and discard the note</td>
               </tr>
               <tr>
                 <td><kbd>Esc</kbd></td>
@@ -842,8 +905,8 @@ claude plugin install sidenote@sidenote</code></pre>
               </tr>
               <tr>
                 <td><kbd>Esc</kbd></td>
-                <td>Anywhere else</td>
-                <td>Close the open thread</td>
+                <td>Outside a text field</td>
+                <td>Close the open thread, unless its reply box has unsaved text</td>
               </tr>
             </tbody>
           </table>
@@ -851,8 +914,8 @@ claude plugin install sidenote@sidenote</code></pre>
 
         <h2 id="data">Your data and limits</h2>
         <p class="text">
-          Everything stays on your machine, in <code>~/.sidenote/</code>, outside the plugin. Your notes survive updates
-          and reinstalls.
+          sidenote keeps everything on your machine, in <code>~/.sidenote/</code>. That folder is outside the plugin, so
+          your notes survive updates and reinstalls.
         </p>
         <div class="table text">
           <table>
@@ -873,11 +936,14 @@ claude plugin install sidenote@sidenote</code></pre>
               </tr>
               <tr>
                 <td><code>server.log</code></td>
-                <td>Problems from the hooks and the server. Look here first.</td>
+                <td>Problems from the hooks and the server, so look here first when something goes wrong.</td>
               </tr>
               <tr>
                 <td><code>launcher</code></td>
-                <td>Where the plugin is now, for the <code>sidenote</code> command, if you installed it.</td>
+                <td>
+                  The plugin's current location, which the <code>sidenote</code> command reads. It's only there if you
+                  installed the command.
+                </td>
               </tr>
               <tr>
                 <td><code>enabled</code></td>
@@ -885,7 +951,7 @@ claude plugin install sidenote@sidenote</code></pre>
               </tr>
               <tr>
                 <td><code>port</code></td>
-                <td>The last port, reused when free so bookmarks keep working.</td>
+                <td>The last port, reused when free so a window's address, and any bookmark of it, stays the same.</td>
               </tr>
             </tbody>
           </table>
@@ -894,19 +960,29 @@ claude plugin install sidenote@sidenote</code></pre>
           <div>
             <h3>How long things are kept</h3>
             <ul>
-              <li>Up to 100 replies per session.</li>
-              <li>A session is forgotten, with its replies and notes, after 7 days without a new reply.</li>
-              <li>Ending a session with the pause icon keeps it for those 7 days, so you can resume it.</li>
               <li>
-                <code>/clear</code> forgets the session it ends right away, so its window moves on to the folder's next
-                session.
+                Each session keeps its latest 100 replies and 100 messages. Older replies are dropped with their notes,
+                even notes you haven't sent.
+              </li>
+              <li>
+                A session is forgotten, with its replies, notes and messages, after 7 days without a new reply. Writing
+                a note doesn't reset the 7 days.
+              </li>
+              <li>
+                Ending a session with the pause icon doesn't change that, so you can resume it until the 7 days are up.
+              </li>
+              <li>
+                <code>/clear</code> forgets the session it ends right away, so its window moves on to the folder's
+                latest session. If the sidenote server isn't running at that moment, the session stays until the usual 7
+                days are up.
               </li>
             </ul>
           </div>
           <aside class="note">
-            <strong>Unsent work is safe from /clear</strong>A session with notes or messages that never reached Claude
-            is kept, and goes after the usual 7 days. If you resume a cleared session later, its window starts empty.
-            Claude's own transcript isn't touched.
+            <strong>/clear keeps unsent work</strong>If a session has notes or messages that never reached Claude,
+            <code>/clear</code> keeps it, and it's forgotten after the usual 7 days. Any other cleared session starts
+            with an empty window if you resume it later, because sidenote only forgets its own copy. Claude's transcript
+            isn't touched.
           </aside>
         </div>
         <h3>Size limits</h3>
@@ -928,7 +1004,7 @@ claude plugin install sidenote@sidenote</code></pre>
                 <td>600 characters</td>
               </tr>
               <tr>
-                <td class="wrap">A message from the window, with any message still waiting</td>
+                <td class="wrap">A message from the window, plus any message still waiting</td>
                 <td>8,000 characters</td>
               </tr>
               <tr>
@@ -936,15 +1012,16 @@ claude plugin install sidenote@sidenote</code></pre>
                 <td>8,000 characters</td>
               </tr>
               <tr>
-                <td class="wrap">Notes delivered to Claude at once</td>
+                <td class="wrap">Everything delivered to Claude with a batch of notes</td>
                 <td>9,500 characters</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p class="text">
-          Claude Code caps what a hook can hand to Claude, so a larger batch of notes is cut off at 9,500 characters,
-          and Claude is told the rest are in the window.
+          Claude Code caps what a hook can hand to Claude, so sidenote cuts a larger batch of notes off at 9,500
+          characters and tells Claude the rest are in the window. That count includes sidenote's instructions, the
+          quoted text and any message going with the notes.
         </p>
 
         <h2 id="update">Update and uninstall</h2>
@@ -955,26 +1032,30 @@ claude plugin install sidenote@sidenote</code></pre>
         </p>
         <pre class="text"><code>claude plugin marketplace update sidenote
 claude plugin update sidenote@sidenote</code></pre>
+        <p class="text">To uninstall:</p>
         <pre class="text"><code>claude plugin uninstall sidenote@sidenote</code></pre>
-        <p class="text">Uninstalling keeps your notes. Delete <code>~/.sidenote/</code> to remove them.</p>
+        <p class="text">
+          Your notes stay in <code>~/.sidenote/</code> after that, so delete the folder if you want them gone too.
+        </p>
 
         <h2 id="troubleshooting">Troubleshooting</h2>
         <div class="text">
           <div class="problem">
             <h3>Send now is greyed out</h3>
             <p>
-              The session isn't listening yet. That happens when sidenote was turned on, or the plugin installed, after
-              that session's last reply. Send any prompt in that session. Once Claude replies, the button turns on.
-              Saved notes still go with your next prompt. If the session was closed, resume it with the play icon on its
-              row.
+              The session isn't listening yet, so Send now is greyed out in the note editor and thread, and hidden in
+              the top bar. That happens when sidenote was turned on, or the plugin installed, after that session's last
+              reply, or when the server was down for more than a minute. Send any prompt in that session, and the button
+              turns on once Claude replies. Saved notes still go with your next prompt. If the session was closed,
+              resume it with the play icon on its row.
             </p>
           </div>
           <div class="problem">
             <h3>A resumed session stays on "Claude is working"</h3>
             <p>
-              Claude hasn't started. Look at the terminal that opened: it may be waiting for an answer, or show an
-              error. If Claude isn't running there, run <code>/sidenote:restart</code> in any session, then use the play
-              icon again.
+              sidenote shows this until Claude has started in the terminal that opened, so look there. It may be waiting
+              for an answer, or showing an error. If Claude isn't running there, the play icon won't come back by
+              itself, so run <code>/sidenote:restart</code> in any session and use it again.
             </p>
           </div>
           <div class="problem">
@@ -982,30 +1063,30 @@ claude plugin update sidenote@sidenote</code></pre>
             <p>
               Run <code>/sidenote:status</code> in that session. If it says <code>enabled: no</code>, run
               <code>/sidenote:on</code>. If the tab says "Stale tab" or "Not connected yet", run
-              <code>/sidenote:open</code> once. A restart of sidenote retires the browser's token, and the window that
-              opens hands it a new one, which every open sidenote tab picks up.
+              <code>/sidenote:open</code> once. When the server restarts, the browser's token stops working. The window
+              that opens gets a new one, and every sidenote tab open in that browser picks it up.
             </p>
           </div>
           <div class="problem">
             <h3>The list shows a session's first message, not its name</h3>
             <p>
-              Rename it from its <strong>⋯</strong>, or name it with <code>/rename</code> in Claude, which the list
-              picks up with Claude's next reply.
+              Rename it from its <strong>⋯</strong>, or use <code>/rename</code> in Claude. A name set with
+              <code>/rename</code> shows up after Claude's next reply.
             </p>
           </div>
           <div class="problem">
             <h3>The pause icon is greyed out</h3>
             <p>
-              sidenote knows a session's process only once one of its hooks ran since sidenote started. Send a prompt in
-              that session, or wait for its next reply.
+              sidenote doesn't know this session's process yet. It forgets processes when it restarts and learns each
+              one again from the session's next prompt or reply, so send a prompt there or wait for its next reply.
             </p>
           </div>
           <div class="problem">
             <h3>The server isn't running</h3>
             <p>
-              That's normal after a while. It stops by itself 30 minutes after the last Claude session or open window
-              was using it. Your next prompt starts it again, and so does <code>/sidenote:open</code>. A window left
-              open from before needs <code>/sidenote:open</code> too, because each start makes a new token.
+              That's normal after a while, because it stops by itself once no Claude session or open window has used it
+              for 30 minutes. Your next prompt starts it again, and so does <code>/sidenote:open</code>. A window that
+              was already open needs <code>/sidenote:open</code> too, because each server start makes a new token.
             </p>
           </div>
           <div class="problem">
@@ -1021,11 +1102,14 @@ claude plugin update sidenote@sidenote</code></pre>
 
         <h2 id="how">How it works</h2>
         <p class="text">
-          Seven hooks connect Claude Code to a small local server. This is what happens when you click
-          <strong>Send now</strong>:
+          Seven hook commands connect Claude Code to a small local server, and one of them, <code>hook-wait</code>, runs
+          on two events. This is what happens when you click <strong>Send now</strong>:
         </p>
         <ol class="text">
-          <li>A background hook has been waiting since Claude's last reply. It gets your notes from the server.</li>
+          <li>
+            A background hook has been polling the server since Claude's last reply, and its next poll picks up your
+            notes.
+          </li>
           <li>It prints them and exits with code 2, which wakes Claude.</li>
           <li>Claude answers each note under a line like <code>**↳ Re: note 12**</code>.</li>
           <li>The Stop hook posts the finished reply to the server.</li>
@@ -1048,58 +1132,65 @@ claude plugin update sidenote@sidenote</code></pre>
                 <td>Stop</td>
                 <td><code>hook-stop</code></td>
                 <td>
-                  Posts each finished reply, starting the server if needed, and opens the window the first time a
-                  session replies, unless its folder's window is already open.
+                  Posts each finished reply, starting the server if needed. Opens the window when it started the server,
+                  and the first time a session replies unless its folder's window is already open.
                 </td>
               </tr>
               <tr>
                 <td>Stop, background</td>
                 <td><code>hook-wait</code></td>
                 <td>
-                  Waits for Send now or a message from the window, then wakes Claude. Uses <code>asyncRewake</code>. If
-                  the server restarts, it rejoins the new one; it gives up after a minute, or when sidenote is turned
-                  off.
+                  Waits for Send now or a message from the window, then wakes Claude through <code>asyncRewake</code>.
+                  If the server restarts, it rejoins the new one, but it gives up if none appears within a minute or
+                  sidenote is turned off.
                 </td>
               </tr>
               <tr>
                 <td>SessionStart on resume, background</td>
                 <td><code>hook-wait</code></td>
-                <td>The same waiter, so a resumed session listens before it has replied.</td>
+                <td>
+                  The same waiter, so a resumed session listens before it has replied, as long as the server is running.
+                </td>
               </tr>
               <tr>
                 <td>PreToolUse, background</td>
                 <td><code>hook-activity</code></td>
                 <td>
-                  Reports each tool call in one line. The server keeps only the latest, in memory, until the turn ends.
+                  Reports each of Claude's own tool calls in one line, apart from TodoWrite, and skips subagents' calls.
+                  The server keeps only the latest, in memory, until the turn ends.
                 </td>
               </tr>
               <tr>
                 <td>MessageDisplay, background</td>
                 <td><code>hook-progress</code></td>
                 <td>
-                  Reports what Claude writes between tool calls, for the live card. Held in memory until the turn ends.
+                  Reports what Claude writes between tool calls, so the live card can show it. The server keeps this in
+                  memory until the turn ends.
                 </td>
               </tr>
               <tr>
                 <td>UserPromptSubmit</td>
                 <td><code>hook-prompt</code></td>
                 <td>
-                  Shows the prompt you typed in the window, lists a new session there, and attaches pending notes, with
+                  Shows your terminal prompt in the window, lists a new session there, and attaches pending notes, with
                   any waiting message.
                 </td>
               </tr>
               <tr>
                 <td>SessionEnd</td>
                 <td><code>hook-clear</code></td>
-                <td>Tells the server to forget the session. Runs for <code>/clear</code> only.</td>
+                <td>
+                  Tells the server to forget the session, unless it holds notes or messages Claude never got. Runs for
+                  <code>/clear</code> only.
+                </td>
               </tr>
               <tr>
                 <td>SessionStart</td>
                 <td><code>hook-session</code></td>
                 <td>
                   Asks Claude to show code changes as diffs and to ask questions in its reply rather than with the
-                  <code>AskUserQuestion</code> tool, so both reach the window. Applies to sessions started, resumed or
-                  cleared while sidenote is on.
+                  <code>AskUserQuestion</code> tool, so both reach the window. Applies to sessions started, resumed,
+                  cleared or compacted while sidenote is on.
                 </td>
               </tr>
             </tbody>
@@ -1107,15 +1198,19 @@ claude plugin update sidenote@sidenote</code></pre>
         </div>
 
         <p class="text">
-          <code>sidenote chat</code> doesn't use the hooks: the server runs Claude Code headless (<code>claude -p</code>
+          <code>sidenote chat</code> doesn't use the hooks. Instead, the server runs Claude Code headless (<code
+            >claude -p</code
+          >
           with stream-json input and output), one process per session. Claude Code's permission prompts come back to the
           server as requests, which wait until you answer. Each finished turn is stored like a reply the Stop hook would
-          have sent. The hooks see these sessions too, and stand aside.
+          have sent. Claude Code still fires the hooks for these sessions, but they find
+          <code>SIDENOTE_HEADLESS</code> in their environment and skip the session.
         </p>
 
         <h2 id="security">Security</h2>
         <p class="text">
-          Anyone who can call sidenote's API can put words in front of your Claude session, so the API is locked down.
+          Anyone who can call sidenote's API can put words in front of your Claude session, so the API has these
+          protections:
         </p>
         <ul class="text">
           <li>
@@ -1126,52 +1221,58 @@ claude plugin update sidenote@sidenote</code></pre>
           <li>
             <strong>Sessions sidenote runs.</strong> For <code>sidenote chat</code> sessions, the API can also send
             messages to Claude and answer its permission prompts, under the same token and checks. A session only starts
-            in a folder that exists. Tools run under Claude Code's own permission mode: auto mode's checks decide what
-            runs unasked, and anything Claude Code would ask about waits for your answer.
+            in a folder that exists. Tools run under Claude Code's own permission mode, which is auto unless your
+            settings choose another. In auto mode, its checks decide what runs unasked. Anything Claude Code would ask
+            about waits for your answer.
           </li>
           <li>
             <strong>Trusted folders only.</strong> <code>sidenote chat</code> runs <code>claude -p</code>, which never
-            shows Claude Code's trust prompt and still runs a repository's hooks and MCP servers. So it refuses a folder
-            you haven't trusted in Claude Code, and anything it can't read counts as not trusted.
+            shows Claude Code's trust prompt and still runs a repository's hooks and MCP servers. So it refuses any
+            folder you haven't trusted in Claude Code, and if it can't read Claude Code's record of trusted folders, the
+            folder counts as not trusted. It checks each time it starts Claude, not only when a session opens.
           </li>
           <li>
-            <strong>A token for every call.</strong> A random 256-bit token, created on each start, is stored in
-            <code>~/.sidenote/server.json</code>, readable only by you. It travels in a custom header, which other
-            websites can't send to the server: the server never approves a cross-origin request.
+            <strong>A token for the API.</strong> Every API call needs a random 256-bit token, except the one that
+            trades a launch code for it. The server makes a new token on each start and stores it in
+            <code>~/.sidenote/server.json</code>, readable only by you. It travels in a custom header. A browser won't
+            let another website send that header without a CORS preflight, and the server never approves one.
           </li>
           <li>
             <strong>No token in URLs.</strong> The CLI opens a window with a single-use launch code in the URL fragment,
-            which browsers never send over the network. The page trades the code for the token once, so browser history,
-            synced history and <code>ps</code> only ever see a spent code that expires within two minutes anyway. The
-            page keeps the token in local storage, which only pages from sidenote's own address can read, so a window's
-            address works when typed or bookmarked. The token stops working when the server restarts, since each start
-            makes a new one.
+            which browsers never send over the network. The page trades the code for the token once, and a code nobody
+            uses expires within two minutes. Browser history, synced history and <code>ps</code> only get the code,
+            never the token, and once the page has loaded that code is spent. The page keeps the token in local storage,
+            so a window's address works when typed or bookmarked, and only pages from sidenote's own address can read
+            it. The token stops working when the server restarts, since each start makes a new one.
           </li>
           <li>
             <strong>Validated input.</strong> Every request body is parsed against a fixed shape, with size limits,
-            before it reaches the store. Session ids must look like ids.
+            before it reaches the store, and session ids in a body must match a fixed pattern.
           </li>
           <li>
-            <strong>Recorded folders only.</strong> Open folder and the <strong>+</strong> name a session, not a path:
-            the server opens the folder it recorded for that session, or starts Claude there, and nothing else.
+            <strong>Folders come from the session.</strong> Open folder and the <strong>+</strong> send a session id,
+            not a path. The server opens the folder it recorded for that session, or starts Claude there, and never a
+            folder named in the request.
           </li>
           <li>
-            <strong>No shell for your prompt.</strong> A new session's first prompt reaches <code>claude</code> as one
-            argument after <code>--</code>, so it can't add options, and on Linux it never passes through a shell. On
-            macOS, Terminal runs the command through your shell, so AppleScript's <code>quoted form of</code> quotes the
-            folder and the prompt first.
+            <strong>Your prompt stays one argument.</strong> A new session's first prompt reaches <code>claude</code> as
+            one argument after <code>--</code>, so it can't add options, and on Linux it never passes through a shell.
+            On macOS, Terminal runs the command through your shell, so AppleScript's <code>quoted form of</code> quotes
+            the folder and the prompt first.
           </li>
           <li>
-            <strong>Only Claude's own processes.</strong> Ending a session stops the process the session's own hooks
-            reported as its Claude, and only while that pid still belongs to the process that started at the reported
-            time. A request never names a pid. Beyond talking to running sessions, the token can open the folders
-            sidenote knows, start sessions in them, and end the sessions it knows.
+            <strong>Only Claude's own processes.</strong> Ending a session sidenote runs closes the process it started.
+            For any other session, it stops the process the session's own hooks reported, and only while that pid is
+            still Claude and still the process that started at the reported time. The request to end a session names
+            only the session, never a pid. Anyone with the token can do what the window and the hooks do: read and
+            change sessions and notes, open a session's folder, and start, end, resume or remove sessions. That includes
+            recording a session's folder, because the hooks report it through the same API.
           </li>
           <li>
             <strong>Inert replies.</strong> Raw HTML in a reply is shown as text. The rendered markdown is sanitized
             with DOMPurify, which also strips forms, ids and classes that could imitate sidenote's own controls. The
-            page's content security policy allows no inline or remote scripts, and every response carries
-            <code>nosniff</code>, <code>no-referrer</code> and anti-framing headers.
+            page's content security policy allows no inline or remote scripts, and the page can't be framed. Every
+            response carries <code>nosniff</code> and <code>no-referrer</code> headers.
           </li>
           <li>
             <strong>Private files.</strong> <code>~/.sidenote</code> and everything in it are readable only by you.
@@ -1185,8 +1286,9 @@ claude plugin update sidenote@sidenote</code></pre>
 
         <h2 id="contributing">Contributing</h2>
         <p class="text">
-          Development needs Node 22.18 or newer: tests run the TypeScript directly with Node's type stripping, with no
-          compile step. The plugin itself runs on Node 22 or newer.
+          Development needs Node 22.18 or newer, because the tests and build scripts run the TypeScript directly with
+          Node's type stripping. The end-to-end tests also need <code>dist/</code>, which
+          <code>npm run check</code> builds first. The plugin itself runs on Node 22 or newer.
         </p>
         <pre class="text"><code>npm install
 npm run check      # formatting, types, build dist/, then the tests
@@ -1201,12 +1303,19 @@ npm run format     # apply Prettier</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td><code>src/shared/types.ts</code></td>
-                <td>The API contract, used by the server, the hooks and the page</td>
+                <td><code>src/shared/</code></td>
+                <td>
+                  <code>types.ts</code> is the API contract, used by the server, the hooks, the page and the terminal
+                  app, and the on-disk format of <code>~/.sidenote/sessions/</code>. The rest is common logic, such as
+                  block numbering and the session model
+                </td>
               </tr>
               <tr>
                 <td><code>src/server/</code></td>
-                <td>Request parsing, the store, Send now, launch codes, and the HTTP routes</td>
+                <td>
+                  Request parsing, the store and its files, Send now, launch codes, the HTTP routes, the one-server lock
+                  and idle stop, and the sessions sidenote runs itself
+                </td>
               </tr>
               <tr>
                 <td><code>src/cli/</code></td>
@@ -1214,11 +1323,27 @@ npm run format     # apply Prettier</code></pre>
               </tr>
               <tr>
                 <td><code>src/node/</code></td>
-                <td>Paths and clock, shared by the server and the CLI</td>
+                <td>
+                  Node helpers: paths, the clock, opening links and folders, finding the Claude process, starting a
+                  terminal, and checking folder trust
+                </td>
+              </tr>
+              <tr>
+                <td><code>src/agent/</code></td>
+                <td>
+                  Runs Claude Code headless for <code>sidenote chat</code>: the driver interface and its Claude adapter
+                </td>
+              </tr>
+              <tr>
+                <td><code>src/tui/</code></td>
+                <td>The terminal app: <code>sidenote tui</code> and <code>sidenote chat</code></td>
               </tr>
               <tr>
                 <td><code>src/web/</code></td>
-                <td>The page: feed, thread pane, note editor, and Send now controls</td>
+                <td>
+                  The page: session list, feed, thread pane, note editor, message box, live card, diff view, and Send
+                  now controls
+                </td>
               </tr>
               <tr>
                 <td><code>test/</code></td>
@@ -1230,7 +1355,11 @@ npm run format     # apply Prettier</code></pre>
               </tr>
               <tr>
                 <td><code>hooks/</code>, <code>skills/</code>, <code>.claude-plugin/</code></td>
-                <td>The plugin wiring</td>
+                <td>The hook list, the <code>/sidenote:*</code> skills, and the plugin and marketplace manifests</td>
+              </tr>
+              <tr>
+                <td><code>scripts/</code></td>
+                <td>The build, and the release steps that stage and publish the plugin</td>
               </tr>
               <tr>
                 <td><code>dist/</code></td>
@@ -1238,21 +1367,22 @@ npm run format     # apply Prettier</code></pre>
               </tr>
               <tr>
                 <td><code>docs/</code></td>
-                <td>This page, and the images in it and the README</td>
+                <td>This page, plus the images it and the README use</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p class="text">
           Commit messages and pull request titles follow
-          <a href="https://www.conventionalcommits.org/">Conventional Commits</a>. Each push to <code>main</code> runs
-          <a href="https://semantic-release.gitbook.io/">semantic-release</a>: a <code>fix:</code> or
-          <code>feat:</code> publishes a new version, with a GitHub Release and the built plugin on the
-          <code>release</code> branch, which is what users install.
+          <a href="https://www.conventionalcommits.org/">Conventional Commits</a>, because each push to
+          <code>main</code> runs <a href="https://semantic-release.gitbook.io/">semantic-release</a>, which reads them.
+          A <code>fix:</code> or <code>feat:</code> publishes a new version, with a GitHub Release and the built plugin
+          on the <code>release</code> branch. That branch is what users install.
         </p>
         <p class="text">
           To try a change, run <code>npm run build</code>, then start Claude Code with
-          <code>claude --plugin-dir .</code> from the repository folder.
+          <code>claude --plugin-dir .</code> from the repository folder. If a sidenote server is already running, run
+          <code>/sidenote:restart</code> so the new build takes over.
           <a href="https://github.com/sous17/sidenote/blob/main/AGENTS.md">AGENTS.md</a> has the project's rules.
         </p>
 
