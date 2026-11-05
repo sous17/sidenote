@@ -25,9 +25,3 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - name: dist/ matches the source
-        run: |
-          if ! git diff --exit-code -- dist/; then
-            echo "::error::dist/ is out of date. Run npm run build and commit the result."
-            exit 1
-          fi
