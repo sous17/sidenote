@@ -2678,6 +2678,9 @@ var Store = class {
 var MAX_QUEUED = 20;
 var HostError = class extends Error {
 };
+function untrustedFolderMessage(folder) {
+  return `Claude Code doesn't trust ${folder} yet. Run claude there once and accept its trust prompt, then try again. sidenote chat can't show that prompt, and without it the folder's hooks and MCP servers would run unasked.`;
+}
 var UnknownSession = class extends HostError {
 };
 var SessionHost = class {
@@ -2685,10 +2688,12 @@ var SessionHost = class {
   #store;
   #agent;
   #clock;
+  #isTrusted;
   #sessions = /* @__PURE__ */ new Map();
   constructor(options) {
     this.#store = options.store;
     this.#agent = options.agent;
+    this.#isTrusted = options.isTrusted;
     this.#clock = options.clock ?? systemClock;
   }
   /**
@@ -2833,6 +2838,7 @@ var SessionHost = class {
     return session;
   }
   #startTurn(session, text2) {
+    if (!session.driver && !this.#isTrusted(session.cwd)) throw new HostError(untrustedFolderMessage(session.cwd));
     const notes = this.#store.claimPending(session.id);
     if (!text2.trim() && !notes.length) return;
     const message = !notes.length ? text2 : text2.trim() ? `${text2}
@@ -3289,11 +3295,7 @@ function routes({
     return cwd;
   };
   const requireTrust = (folder) => {
-    if (isTrusted(folder)) return;
-    throw new HttpError(
-      409,
-      `Claude Code doesn't trust ${folder} yet. Run claude there once and accept its trust prompt, then try again. sidenote chat can't show that prompt, and without it the folder's hooks and MCP servers would run unasked.`
-    );
+    if (!isTrusted(folder)) throw new HttpError(409, untrustedFolderMessage(folder));
   };
   return [
     {
@@ -3955,6 +3957,8 @@ function registeredPid() {
   }
 }
 function removeServerFile() {
+  const owner = serverLockOwner(paths.lockFile());
+  if (owner !== null && owner !== process.pid) return;
   if (registeredPid() === process.pid) rmSync3(paths.serverFile(), { force: true });
 }
 async function main() {
@@ -3962,7 +3966,8 @@ async function main() {
   if (!acquireServerLock(paths.lockFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
   const store = new Store({ dir: paths.stateDir() });
-  const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
+  const isTrusted = (folder) => isTrustedFolder(folder);
+  const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }), isTrusted });
   const token = randomBytes2(32).toString("base64url");
   const allowedHosts = /* @__PURE__ */ new Set();
   let serverInfo = "";
@@ -3985,7 +3990,7 @@ async function main() {
       onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
       processes: new SessionProcesses({ pidInUse, isSameProcess: isSameClaude }, store.revision),
-      isTrusted: (folder) => isTrustedFolder(folder),
+      isTrusted,
       startSession: canStartSessions() ? (session) => startInTerminal(terminalCommand(process.platform, session)) : null
     })
   );
