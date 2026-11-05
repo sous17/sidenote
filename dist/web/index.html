@@ -44,6 +44,18 @@
         <button id="pending-summary" class="pending-summary" type="button" hidden></button>
         <button id="send-now" class="send-now" type="button" hidden>Send now</button>
         <span id="connection" class="connection" data-state="connecting">Connecting</span>
+        <button
+          id="chime-toggle"
+          class="chime-toggle"
+          type="button"
+          aria-pressed="false"
+          aria-label="Sound when Claude finishes"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 2a4 4 0 0 0-4 4c0 3.5-1.5 5-1.5 5h11S12 9.5 12 6a4 4 0 0 0-4-4zM6.7 13.5a1.4 1.4 0 0 0 2.6 0" />
+            <path class="chime-off" d="M2.5 2.5l11 11" />
+          </svg>
+        </button>
         <div class="theme-switch" role="group" aria-label="Theme">
           <button type="button" data-theme-choice="light" title="Light" aria-label="Light theme">
             <svg viewBox="0 0 16 16" aria-hidden="true">

@@ -626,6 +626,35 @@ body[data-panel="docked"] .app {
   stroke-linejoin: round;
 }
 
+.chime-toggle {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--sunken);
+  color: var(--muted);
+  cursor: pointer;
+}
+.chime-toggle:hover,
+.chime-toggle[aria-pressed="true"] {
+  color: var(--text);
+}
+.chime-toggle[aria-pressed="true"] .chime-off {
+  display: none;
+}
+.chime-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .connection {
   display: inline-flex;
   align-items: center;
