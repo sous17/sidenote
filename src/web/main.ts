@@ -182,6 +182,10 @@ async function start(): Promise<void> {
         await api.endSession(sessionId);
         await refresh();
       },
+      resume: async (sessionId) => {
+        await api.resumeSession(sessionId);
+        await refresh();
+      },
       remove: async (sessionId) => {
         await api.forgetSession(sessionId);
         await refresh();

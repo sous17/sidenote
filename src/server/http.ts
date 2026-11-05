@@ -457,18 +457,40 @@ function routes({
       needsToken: true,
       handle: ({ body }) => {
         const { session_id } = parseSessionRequest(body);
-        if (host.end(session_id)) {
-          store.forgetSession(session_id);
-          return empty(204);
+        // The session stays in its list, with its replies and notes, so it can be resumed.
+        if (!host.end(session_id)) {
+          if (processes.state(session_id) === "unknown") {
+            throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+          }
+          // Only the process the session's own hooks reported, and only while it is still that one.
+          const running = processes.running(session_id);
+          if (running) process.kill(running.pid, "SIGTERM");
         }
-        if (processes.state(session_id) === "unknown") {
-          throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+        processes.markEnded(session_id);
+        delivery.forgetSession(session_id);
+        return empty(204);
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/resume",
+      needsToken: true,
+      handle: async ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (!startSession) throw new HttpError(501, "resuming sessions needs GNOME Terminal on Linux, or macOS");
+        // Two Claudes on one session would write over each other's transcript.
+        if (host.owns(session_id) || processes.running(session_id) || statusOf(session_id).status !== "offline") {
+          throw new HttpError(409, "this session is still running");
         }
-        // Only the process the session's own hooks reported, and only while it is still that one.
-        const running = processes.running(session_id);
-        if (running) process.kill(running.pid, "SIGTERM");
+        const cwd = recordedFolder(session_id);
+        try {
+          await startSession({ cwd, sessionId: session_id, prompt: "", name: "", resume: true });
+        } catch (error) {
+          throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
+        }
+        // Busy until its waiter reports in, so a second click can't start a second Claude.
         processes.forget(session_id);
-        store.forgetSession(session_id);
+        delivery.markBusy(session_id);
         return empty(204);
       },
     },

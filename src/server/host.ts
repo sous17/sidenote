@@ -198,7 +198,7 @@ export class SessionHost {
   end(sessionId: string): boolean {
     const session = this.#sessions.get(sessionId);
     if (!session) return false;
-    // First, so the turn its process leaves unfinished isn't stored for a session that is gone.
+    // First, so the turn its process leaves unfinished isn't stored as if it had finished.
     this.#sessions.delete(sessionId);
     session.driver?.close();
     this.#changed();

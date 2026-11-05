@@ -9,6 +9,17 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sidenote hook-wait",
+            "asyncRewake": true,
+            "timeout": 86400
+          }
+        ]
       }
     ],
     "PreToolUse": [

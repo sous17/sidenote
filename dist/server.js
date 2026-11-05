@@ -76,9 +76,9 @@ import { delimiter, join as join2 } from "node:path";
 var STILL_STARTING_MS = 3e3;
 var MACOS_SCRIPT = [
   "on run argv",
-  'set theCommand to "cd " & quoted form of item 1 of argv & " && claude --session-id " & quoted form of item 2 of argv',
-  'if item 3 of argv is not "" then set theCommand to theCommand & " " & quoted form of ("--name=" & item 3 of argv)',
-  'if (count of argv) > 3 then set theCommand to theCommand & " -- " & quoted form of item 4 of argv',
+  'set theCommand to "cd " & quoted form of item 1 of argv & " && claude " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv',
+  'if item 4 of argv is not "" then set theCommand to theCommand & " " & quoted form of ("--name=" & item 4 of argv)',
+  'if (count of argv) > 4 then set theCommand to theCommand & " -- " & quoted form of item 5 of argv',
   'tell application "Terminal"',
   "activate",
   "do script theCommand",
@@ -87,14 +87,15 @@ var MACOS_SCRIPT = [
 ];
 function terminalCommand(platform, session) {
   const prompt = session.prompt ? [session.prompt] : [];
+  const sessionFlag = session.resume ? "--resume" : "--session-id";
   if (platform === "darwin") {
-    const args = [session.cwd, session.sessionId, session.name, ...prompt];
+    const args = [session.cwd, sessionFlag, session.sessionId, session.name, ...prompt];
     return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), ...args]];
   }
   if (platform === "linux") {
     const claude = [
       "claude",
-      "--session-id",
+      sessionFlag,
       session.sessionId,
       ...session.name ? [`--name=${session.name}`] : [],
       ...session.prompt ? ["--", session.prompt] : []
@@ -3445,17 +3446,36 @@ function routes({
       needsToken: true,
       handle: ({ body }) => {
         const { session_id } = parseSessionRequest(body);
-        if (host.end(session_id)) {
-          store.forgetSession(session_id);
-          return empty(204);
+        if (!host.end(session_id)) {
+          if (processes.state(session_id) === "unknown") {
+            throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+          }
+          const running = processes.running(session_id);
+          if (running) process.kill(running.pid, "SIGTERM");
         }
-        if (processes.state(session_id) === "unknown") {
-          throw new HttpError(409, "sidenote learns this session's process with its next prompt or reply");
+        processes.markEnded(session_id);
+        delivery.forgetSession(session_id);
+        return empty(204);
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/sessions/resume",
+      needsToken: true,
+      handle: async ({ body }) => {
+        const { session_id } = parseSessionRequest(body);
+        if (!startSession) throw new HttpError(501, "resuming sessions needs GNOME Terminal on Linux, or macOS");
+        if (host.owns(session_id) || processes.running(session_id) || statusOf(session_id).status !== "offline") {
+          throw new HttpError(409, "this session is still running");
         }
-        const running = processes.running(session_id);
-        if (running) process.kill(running.pid, "SIGTERM");
+        const cwd = recordedFolder(session_id);
+        try {
+          await startSession({ cwd, sessionId: session_id, prompt: "", name: "", resume: true });
+        } catch (error) {
+          throw new HttpError(502, `couldn't open a terminal: ${error instanceof Error ? error.message : error}`);
+        }
         processes.forget(session_id);
-        store.forgetSession(session_id);
+        delivery.markBusy(session_id);
         return empty(204);
       }
     },
@@ -3623,6 +3643,8 @@ function send(response, reply) {
 // src/server/processes.ts
 var SessionProcesses = class {
   #processes = /* @__PURE__ */ new Map();
+  /** Ended from the window. A reused pid, or a process still shutting down, must not read as running. */
+  #ended = /* @__PURE__ */ new Set();
   #probe;
   #revision;
   #signature = "";
@@ -3631,12 +3653,19 @@ var SessionProcesses = class {
     this.#revision = revision;
   }
   record(sessionId2, claudeProcess) {
-    if (claudeProcess) this.#processes.set(sessionId2, claudeProcess);
+    if (!claudeProcess) return;
+    this.#processes.set(sessionId2, claudeProcess);
+    this.#ended.delete(sessionId2);
+  }
+  markEnded(sessionId2) {
+    this.#ended.add(sessionId2);
   }
   forget(sessionId2) {
     this.#processes.delete(sessionId2);
+    this.#ended.delete(sessionId2);
   }
   state(sessionId2) {
+    if (this.#ended.has(sessionId2)) return "ended";
     const recorded = this.#processes.get(sessionId2);
     if (!recorded) return "unknown";
     return this.#probe.pidInUse(recorded.pid) ? "running" : "ended";

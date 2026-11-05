@@ -14,6 +14,8 @@ export interface NewSession {
   prompt: string;
   /** The session's name in Claude Code, which also titles the terminal; "" for none. */
   name: string;
+  /** Continues the earlier session with this id, instead of starting one. */
+  resume?: boolean;
 }
 
 export type TerminalCommand = readonly [command: string, args: readonly string[]];
@@ -22,9 +24,9 @@ export type TerminalCommand = readonly [command: string, args: readonly string[]
 // ever part of the script itself.
 const MACOS_SCRIPT = [
   "on run argv",
-  'set theCommand to "cd " & quoted form of item 1 of argv & " && claude --session-id " & quoted form of item 2 of argv',
-  'if item 3 of argv is not "" then set theCommand to theCommand & " " & quoted form of ("--name=" & item 3 of argv)',
-  'if (count of argv) > 3 then set theCommand to theCommand & " -- " & quoted form of item 4 of argv',
+  'set theCommand to "cd " & quoted form of item 1 of argv & " && claude " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv',
+  'if item 4 of argv is not "" then set theCommand to theCommand & " " & quoted form of ("--name=" & item 4 of argv)',
+  'if (count of argv) > 4 then set theCommand to theCommand & " -- " & quoted form of item 5 of argv',
   'tell application "Terminal"',
   "activate",
   "do script theCommand",
@@ -39,14 +41,15 @@ const MACOS_SCRIPT = [
  */
 export function terminalCommand(platform: NodeJS.Platform, session: NewSession): TerminalCommand | null {
   const prompt = session.prompt ? [session.prompt] : [];
+  const sessionFlag = session.resume ? "--resume" : "--session-id";
   if (platform === "darwin") {
-    const args = [session.cwd, session.sessionId, session.name, ...prompt];
+    const args = [session.cwd, sessionFlag, session.sessionId, session.name, ...prompt];
     return ["osascript", [...MACOS_SCRIPT.flatMap((line) => ["-e", line]), ...args]];
   }
   if (platform === "linux") {
     const claude = [
       "claude",
-      "--session-id",
+      sessionFlag,
       session.sessionId,
       ...(session.name ? [`--name=${session.name}`] : []),
       ...(session.prompt ? ["--", session.prompt] : []),

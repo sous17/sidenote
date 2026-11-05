@@ -386,13 +386,81 @@ body[data-panel="docked"] .app {
   background: var(--border);
   color: var(--text);
 }
+/* A question before a step that stops or deletes something, over the page. */
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.confirm-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+.confirm-body {
+  padding: 20px;
+}
+.confirm-body h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.confirm-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.confirm-body .confirm-error {
+  margin-top: 10px;
+  color: var(--danger);
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+.confirm-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.session-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.session-row-icon:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text);
+}
+.session-row-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .session-row-panel {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
-  padding: 0 10px 10px 27px;
+  justify-content: flex-end;
+  gap: 8px 6px;
+  padding: 0 4px 10px 27px;
 }
 .session-rename {
   display: flex;
@@ -1017,6 +1085,7 @@ li.block:hover:has(li.block:hover) {
 }
 .editor-actions .send-button,
 .session-row-panel .send-button,
+.confirm-actions .send-button,
 .send-now {
   padding: 4px 14px;
   border: none;
@@ -1333,7 +1402,8 @@ li.block:hover:has(li.block:hover) {
   opacity: 0.45;
   cursor: not-allowed;
 }
-.editor-actions .secondary-button {
+.editor-actions .secondary-button,
+.confirm-actions .secondary-button {
   padding: 3px 12px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -1341,7 +1411,8 @@ li.block:hover:has(li.block:hover) {
   color: var(--text);
   cursor: pointer;
 }
-.editor-actions .secondary-button:hover {
+.editor-actions .secondary-button:hover,
+.confirm-actions .secondary-button:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
