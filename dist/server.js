@@ -2312,12 +2312,15 @@ function migrate(file) {
       name: meta.name ?? "",
       label: meta.label ?? "",
       cwd: meta.cwd ?? "",
-      last_active: meta.last_active ?? 0
+      last_active: meta.last_active ?? 0,
+      ...meta.chat ? { chat: true } : {}
     });
   }
   for (const response of responses) {
     const meta = sessions.get(response.session_id) ?? { name: "", label: "", cwd: response.cwd, last_active: 0 };
     meta.last_active = Math.max(meta.last_active, response.created_at);
+    if (response.prompt !== void 0) meta.chat = true;
+    else delete meta.chat;
     sessions.set(response.session_id, meta);
   }
   const messages = (file.messages ?? []).filter((m2) => SESSION_ID_PATTERN.test(m2.session_id));
@@ -2383,7 +2386,7 @@ var Store = class {
   /** The sessions that ran in a folder, most recently active first, with what their rows show. */
   folderSessions(folder) {
     const pending = this.#pendingNotesPerSession();
-    return this.listSessions().filter((session) => folderName(session.cwd) === folder).map((session) => ({
+    return this.listSessions().filter((session) => !session.chat && folderName(session.cwd) === folder).map((session) => ({
       ...session,
       first_message: this.#firstMessage(session.id).replace(/\s+/g, " ").trim().slice(0, FIRST_MESSAGE_CHARS),
       pending_notes: pending.get(session.id) ?? 0
@@ -2429,6 +2432,13 @@ var Store = class {
     this.#upsertSession(sessionId2, { name: "", cwd, activeAt: this.#clock.now() });
     this.#changed();
   }
+  /** Marks a session sidenote chat runs, which folder windows leave out. */
+  markChat(sessionId2) {
+    const meta = this.#data.sessions.get(sessionId2);
+    if (!meta || meta.chat) return;
+    meta.chat = true;
+    this.#changed();
+  }
   /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
   renameSession(sessionId2, label) {
     const meta = this.#data.sessions.get(sessionId2);
@@ -2468,6 +2478,7 @@ var Store = class {
     }
     const newSession = this.#awaitingFirstReply.delete(reply.sessionId) || !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
+    if (!reply.turn) delete this.#data.sessions.get(reply.sessionId).chat;
     if (reply.createdAt === void 0 && !reply.turn?.ended) this.#takeAnswers(response);
     this.#data.responses.push(response);
     this.#data.responses.sort((a3, b) => a3.created_at - b.created_at);
@@ -2721,6 +2732,7 @@ var SessionHost = class {
       error: ""
     });
     this.#store.touchSession(id, "", folder);
+    this.#store.markChat(id);
     this.#changed();
     return id;
   }
@@ -3281,8 +3293,7 @@ function routes({
       sessions: store.folderSessions(windowFolder).map((row) => ({
         ...row,
         status: statusOf(row.id).status,
-        // A session sidenote runs has no hooks to report its process, and sidenote can end it itself.
-        process: host.owns(row.id) ? "running" : processes.state(row.id)
+        process: processes.state(row.id)
       })),
       can_start_sessions,
       ...store.sessionContent(session.id)
