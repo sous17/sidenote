@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Model, sessionLabel } from "../src/shared/model.ts";
+import { Model, sessionFinished, sessionLabel, type SessionActivity } from "../src/shared/model.ts";
 import type { Note, SessionState, StateSnapshot, StoredResponse, UserMessage } from "../src/shared/types.ts";
 
 function model(status: SessionState, messageAt: number | null, delivered: boolean, replyAt?: number): Model {
@@ -105,4 +105,24 @@ test("a session is called by its name in the window, its /rename name, its first
   assert.equal(sessionLabel({ ...name, name: "auth", first_message: "Fix login" }), "auth");
   assert.equal(sessionLabel({ ...name, first_message: "Fix login" }), "Fix login");
   assert.equal(sessionLabel(name), "Session 01234567");
+});
+
+test("a session finishes when Claude stops working in it", () => {
+  const row = (id: string, status: SessionActivity["status"], process: SessionActivity["process"] = "running") => ({
+    id,
+    status,
+    process,
+  });
+  const finished = (before: SessionActivity[], after: SessionActivity[]) => sessionFinished(before, after);
+
+  assert.equal(finished([row("a", "busy")], [row("a", "listening")]), true);
+  assert.equal(
+    finished([row("a", "listening"), row("b", "busy")], [row("a", "listening"), row("b", "listening")]),
+    true,
+  );
+  assert.equal(finished([row("a", "busy")], [row("a", "busy")]), false, "still working");
+  assert.equal(finished([row("a", "listening")], [row("a", "busy")]), false, "just started");
+  assert.equal(finished([], [row("a", "listening")]), false, "the first look finds nothing to compare");
+  assert.equal(finished([row("a", "busy")], [row("a", "offline", "ended")]), false, "stopped from the window");
+  assert.equal(finished([row("a", "busy")], []), false, "removed");
 });

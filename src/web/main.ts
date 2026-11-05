@@ -2,6 +2,7 @@
 // notes in the margin.
 import { folderFromPath, folderPath } from "../shared/folders.ts";
 import { Api, ApiError, obtainToken, onTokenStored } from "./api.ts";
+import { Chime } from "./chime.ts";
 import { byId } from "./dom.ts";
 import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
@@ -91,6 +92,7 @@ async function start(): Promise<void> {
 
   const api = new Api(token);
   const model = new Model(sessionId);
+  const chime = new Chime(byId<HTMLButtonElement>("chime-toggle"));
   // A note in the URL (#n12) opens its thread on load. Read it before anything rewrites the URL.
   const threadFromUrl = Number(/^#n(\d+)$/.exec(location.hash)?.[1]) || null;
 
@@ -106,6 +108,7 @@ async function start(): Promise<void> {
         if (next.session) model.sessionId = next.session.id;
         folder = next.folder || folder;
         render();
+        chime.update(next.sessions);
       }
       showSessionState(model);
     } catch (error) {

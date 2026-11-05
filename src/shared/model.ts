@@ -126,3 +126,11 @@ export function answeredNoteIds(model: Model, response: StoredResponse): Set<num
 export function sessionLabel(session: Pick<FolderSession, "id" | "label" | "name" | "first_message">): string {
   return session.label || session.name || session.first_message || `Session ${session.id.slice(0, 8)}`;
 }
+
+export type SessionActivity = Pick<FolderSession, "id" | "status" | "process">;
+
+/** Whether a session Claude was working in has finished. One stopped from the window hasn't. */
+export function sessionFinished(before: readonly SessionActivity[], after: readonly SessionActivity[]): boolean {
+  const working = new Set(before.filter((session) => session.status === "busy").map((session) => session.id));
+  return after.some((session) => working.has(session.id) && session.status !== "busy" && session.process !== "ended");
+}
