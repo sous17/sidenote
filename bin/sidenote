@@ -45,7 +45,7 @@ if ! node=$(find_node); then
       exit 0
       ;;
   esac
-  echo "sidenote needs Node.js 20 or newer, and couldn't find it. Install Node, or set SIDENOTE_NODE to its path." >&2
+  echo "sidenote needs Node.js 22 or newer, and couldn't find it. Install Node, or set SIDENOTE_NODE to its path." >&2
   exit 1
 fi
 
