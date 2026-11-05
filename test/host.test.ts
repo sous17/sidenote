@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SessionHost, replyOf } from "../src/server/host.ts";
+import { HostError, SessionHost, replyOf } from "../src/server/host.ts";
 import { FakeAgent, FakeClock, noteOn } from "./helpers.ts";
 import { Store } from "../src/server/store.ts";
 
@@ -8,9 +8,56 @@ function setup() {
   const clock = new FakeClock();
   const store = new Store({ clock });
   const agent = new FakeAgent();
-  const host = new SessionHost({ store, agent, clock });
-  return { store, agent, host };
+  const trust = { folder: true };
+  const host = new SessionHost({ store, agent, clock, isTrusted: () => trust.folder });
+  return { store, agent, host, trust };
 }
+
+test("a folder that lost its trust before the first message starts no agent", () => {
+  const { agent, host, trust } = setup();
+  const id = host.open("/w/shop");
+  trust.folder = false;
+  assert.throws(() => host.message(id, "Hi"), HostError);
+  assert.equal(agent.starts.length, 0);
+  assert.equal(host.view(id)?.state, "idle");
+
+  trust.folder = true;
+  host.message(id, "Hi");
+  assert.equal(agent.starts.length, 1, "trusting the folder again lets the session start");
+});
+
+test("a folder that lost its trust doesn't get a new agent after the last one exited", () => {
+  const { agent, host, trust } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Hi");
+  agent.emit({ type: "exit", message: "closed" });
+  trust.folder = false;
+  assert.throws(() => host.message(id, "Still there?"), HostError);
+  assert.equal(agent.starts.length, 1);
+});
+
+test("notes stay pending when a folder's lost trust stops the turn", () => {
+  const { store, agent, host, trust } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Hi");
+  agent.emit({ type: "text_delta", text: "Hello" });
+  agent.emit({ type: "turn_end", end: { outcome: "done", error: "", cost_usd: null } });
+  agent.emit({ type: "exit", message: "closed" });
+  noteOn(store, store.sessionContent(id).responses[0]!.id, "Why?");
+  trust.folder = false;
+  assert.throws(() => host.sendNotes(id), HostError);
+  assert.ok(store.sessionsWithPendingNotes().has(id));
+});
+
+test("a running agent keeps its session when the folder loses its trust", () => {
+  const { agent, host, trust } = setup();
+  const id = host.open("/w/shop");
+  host.message(id, "Hi");
+  agent.emit({ type: "turn_end", end: { outcome: "done", error: "", cost_usd: null } });
+  trust.folder = false;
+  host.message(id, "And again");
+  assert.deepEqual(agent.sent, ["Hi", "And again"], "nothing new starts, so there's no new trust to ask for");
+});
 
 test("a new session starts its agent at the first message, and each turn becomes a reply", () => {
   const { store, agent, host } = setup();

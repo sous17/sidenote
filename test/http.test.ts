@@ -55,6 +55,7 @@ before(async () => {
       delivery: new Delivery(store),
       host: new SessionHost({
         store,
+        isTrusted: () => true,
         agent: {
           name: "None",
           start: () => {
@@ -378,7 +379,11 @@ describe("starting a session", () => {
       createApp({
         store,
         delivery: new Delivery(store),
-        host: new SessionHost({ store, agent: { name: "None", start: () => assert.fail("no agent here") } }),
+        host: new SessionHost({
+          store,
+          isTrusted: () => true,
+          agent: { name: "None", start: () => assert.fail("no agent here") },
+        }),
         launchCodes: new LaunchCodes(),
         token: TOKEN,
         allowedHosts,

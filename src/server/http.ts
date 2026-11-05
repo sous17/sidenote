@@ -35,7 +35,7 @@ import {
   type WaiterPollResult,
 } from "../shared/types.ts";
 import type { Delivery } from "./delivery.ts";
-import { HostError, UnknownSession, type SessionHost } from "./host.ts";
+import { HostError, UnknownSession, untrustedFolderMessage, type SessionHost } from "./host.ts";
 import type { SessionProcesses } from "./processes.ts";
 import type { LaunchCodes } from "./launch.ts";
 import {
@@ -193,12 +193,7 @@ function routes({
   };
 
   const requireTrust = (folder: string): void => {
-    if (isTrusted(folder)) return;
-    throw new HttpError(
-      409,
-      `Claude Code doesn't trust ${folder} yet. Run claude there once and accept its trust prompt, then try again. ` +
-        "sidenote chat can't show that prompt, and without it the folder's hooks and MCP servers would run unasked.",
-    );
+    if (!isTrusted(folder)) throw new HttpError(409, untrustedFolderMessage(folder));
   };
 
   return [

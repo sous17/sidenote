@@ -28,6 +28,14 @@ export const MAX_QUEUED = 20;
 
 export class HostError extends Error {}
 
+/** What a user sees for a folder Claude Code doesn't trust, which `claude -p` never asks about. */
+export function untrustedFolderMessage(folder: string): string {
+  return (
+    `Claude Code doesn't trust ${folder} yet. Run claude there once and accept its trust prompt, then try again. ` +
+    "sidenote chat can't show that prompt, and without it the folder's hooks and MCP servers would run unasked."
+  );
+}
+
 /** The session isn't one this server runs: never opened, or opened before a restart. */
 export class UnknownSession extends HostError {}
 
@@ -57,11 +65,13 @@ export class SessionHost {
   readonly #store: Store;
   readonly #agent: Agent;
   readonly #clock: Clock;
+  readonly #isTrusted: (folder: string) => boolean;
   readonly #sessions = new Map<string, Hosted>();
 
-  constructor(options: { store: Store; agent: Agent; clock?: Clock }) {
+  constructor(options: { store: Store; agent: Agent; isTrusted: (folder: string) => boolean; clock?: Clock }) {
     this.#store = options.store;
     this.#agent = options.agent;
+    this.#isTrusted = options.isTrusted;
     this.#clock = options.clock ?? systemClock;
   }
 
@@ -222,6 +232,8 @@ export class SessionHost {
   }
 
   #startTurn(session: Hosted, text: string): void {
+    // Checked here, not only on open: an agent starts at the first message, and again after an exit.
+    if (!session.driver && !this.#isTrusted(session.cwd)) throw new HostError(untrustedFolderMessage(session.cwd));
     const notes = this.#store.claimPending(session.id);
     if (!text.trim() && !notes.length) return;
     const message = !notes.length
