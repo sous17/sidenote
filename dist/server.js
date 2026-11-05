@@ -2309,6 +2309,7 @@ var Store = class {
   #files;
   #clock;
   /** Without a directory, the store lives in memory only (tests). */
+  #awaitingFirstReply = /* @__PURE__ */ new Set();
   constructor(options = {}) {
     this.#files = options.dir === void 0 ? void 0 : new StoreFiles(options.dir);
     this.#clock = options.clock ?? systemClock;
@@ -2361,6 +2362,18 @@ var Store = class {
     this.#upsertSession(sessionId2, { name, cwd, activeAt: this.#clock.now() });
     this.#changed();
   }
+  /**
+   * Learns a new session's folder from its first prompt, so its row shows before the first reply.
+   * That reply still counts as the session's first. Kept in memory only: a server that restarts in
+   * between opens the window anyway.
+   */
+  promptSession(sessionId2, cwd) {
+    const meta = this.#data.sessions.get(sessionId2);
+    if (meta?.cwd) return;
+    if (!meta) this.#awaitingFirstReply.add(sessionId2);
+    this.#upsertSession(sessionId2, { name: "", cwd, activeAt: this.#clock.now() });
+    this.#changed();
+  }
   /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
   renameSession(sessionId2, label) {
     const meta = this.#data.sessions.get(sessionId2);
@@ -2372,6 +2385,7 @@ var Store = class {
   /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
   forgetSession(sessionId2) {
     const data = this.#data;
+    this.#awaitingFirstReply.delete(sessionId2);
     const known = data.sessions.delete(sessionId2) || data.messages.some((m2) => m2.session_id === sessionId2);
     if (!known) return false;
     const dropped = new Set(data.responses.filter((r) => r.session_id === sessionId2).map((r) => r.id));
@@ -2397,7 +2411,7 @@ var Store = class {
       if (reply.turn.ended) response.ended = reply.turn.ended;
       if (reply.turn.error) response.error = reply.turn.error;
     }
-    const newSession = !this.#data.sessions.has(reply.sessionId);
+    const newSession = this.#awaitingFirstReply.delete(reply.sessionId) || !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
     if (reply.createdAt === void 0 && !reply.turn?.ended) this.#takeAnswers(response);
     this.#data.responses.push(response);
@@ -2904,6 +2918,27 @@ import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
+// src/server/windows.ts
+var WINDOW_SEEN_MS = 2 * 60 * 1e3;
+var OpenWindows = class {
+  #lastSeen = /* @__PURE__ */ new Map();
+  #clock;
+  constructor(clock = systemClock) {
+    this.#clock = clock;
+  }
+  seen(folder) {
+    const now = this.#clock.monotonicMs();
+    for (const [known, at2] of this.#lastSeen) {
+      if (now - at2 >= WINDOW_SEEN_MS) this.#lastSeen.delete(known);
+    }
+    this.#lastSeen.set(folder, now);
+  }
+  isOpen(folder) {
+    const at2 = this.#lastSeen.get(folder);
+    return at2 !== void 0 && this.#clock.monotonicMs() - at2 < WINDOW_SEEN_MS;
+  }
+};
+
 // src/server/requests.ts
 import { isAbsolute } from "node:path";
 var BadRequest = class extends Error {
@@ -3001,6 +3036,8 @@ function parseClaim(input) {
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
   const claim = prompt === void 0 ? { session_id } : { session_id, prompt };
+  const cwd = optionalString(body, "cwd", LIMITS.cwd);
+  if (cwd) claim.cwd = cwd;
   const claudeProcess = optionalProcess(body);
   if (claudeProcess) claim.claude_process = claudeProcess;
   return claim;
@@ -3142,6 +3179,7 @@ function routes({
   startSession,
   processes
 }) {
+  const windows = new OpenWindows();
   const statusOf = (sessionId2) => host.sendStatus(sessionId2) ?? delivery.status(sessionId2);
   const snapshot = (sessionId2, folder) => {
     const latest = folder === null ? void 0 : store.folderSessions(folder)[0];
@@ -3189,6 +3227,8 @@ function routes({
       handle: async ({ query }) => {
         delivery.refresh(statusOf);
         processes.refresh();
+        const folder = query.get("f");
+        if (folder) windows.seen(folder);
         const known = query.get("v");
         if (known === String(store.revision.value) && query.get("wait") === "1") {
           await store.revision.waitPast(Number(known), LONG_POLL_MS);
@@ -3297,7 +3337,8 @@ function routes({
           text: input.text,
           createdAt: input.created_at
         });
-        return ok({ response, new_session: newSession }, 201);
+        const window_open = windows.isOpen(folderName(input.cwd));
+        return ok({ response, new_session: newSession, window_open }, 201);
       }
     },
     {
@@ -3335,8 +3376,9 @@ function routes({
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, prompt: typed, claude_process } = parseClaim(body);
+        const { session_id, prompt: typed, cwd, claude_process } = parseClaim(body);
         processes.record(session_id, claude_process);
+        if (cwd) store.promptSession(session_id, cwd);
         delivery.markBusy(session_id);
         const prompt = store.claimMessages(session_id);
         if (typed?.trim()) store.addMessage(session_id, typed.trim(), "terminal");

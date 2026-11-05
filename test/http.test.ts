@@ -527,3 +527,34 @@ describe("editing a note", () => {
     assert.equal(await bodyOf("edit-sending", note.id), "a");
   });
 });
+
+// Last: these add sessions to the store the tests above share.
+describe("open windows", () => {
+  const firstReply = (sessionId: string, cwd: string) =>
+    json<NewResponseResult>(call("POST", "/api/responses", { session_id: sessionId, cwd, text: "Hi." }));
+
+  test("a reply says whether a page is polling its folder's window", async () => {
+    assert.equal((await firstReply("w1", "/a/windowed")).window_open, false);
+    await call("GET", "/api/state?v=-1&s=w1&f=windowed");
+    const joined = await firstReply("w2", "/b/windowed");
+    assert.equal(joined.new_session, true);
+    assert.equal(joined.window_open, true);
+    assert.equal((await firstReply("w3", "/a/elsewhere")).window_open, false);
+  });
+
+  test("polls that name no folder, like the terminal app's, are not a window", async () => {
+    await firstReply("w4", "/a/terminal-only");
+    await call("GET", "/api/state?v=-1&s=w4");
+    assert.equal((await firstReply("w5", "/a/terminal-only")).window_open, false);
+  });
+
+  test("a claim with a folder lists the session before its first reply", async () => {
+    await call("POST", "/api/claim", { session_id: "w6", cwd: "/a/prompted", prompt: "Hello" });
+    const state = await json<StateSnapshot>(call("GET", "/api/state?v=-1&s=&f=prompted"));
+    assert.deepEqual(
+      state.sessions.map((row) => [row.id, row.first_message]),
+      [["w6", "Hello"]],
+    );
+    assert.equal((await firstReply("w6", "/a/prompted")).new_session, true);
+  });
+});

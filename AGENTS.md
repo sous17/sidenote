@@ -62,9 +62,10 @@ These were settled with the maintainer. Don't change them without asking.
   folder (`/<folder>`, the last segment of the session's cwd), so it can be bookmarked. The list
   names each session by the name given in the window, else `/rename`, else its first message. It
   docks only where the feed keeps
-  room for notes in the margin, and folds away while a thread is open. No view across folders.
-- **Notes sit in the margin beside the reply.** Clicking a note splits the screen into two halves,
-  the feed and that note's thread. Never three panes: the session list folds away meanwhile.
+  room for notes in the margin, and a thread leaves it as the user set it. No view across folders.
+- **Notes sit in the margin beside the reply.** Clicking a note splits the room beside the session
+  list into two halves, the feed and that note's thread. The list stays docked or folded, as the
+  user left it.
 - **No duplicated text.** The agent answers each note under a `**↳ Re: note N**` marker; those
   sections live only in the note's thread. A reply that only answers notes shows as a one-line
   row in the feed.

@@ -7,7 +7,7 @@ import { NoteEditor } from "./editor.ts";
 import { Feed } from "./feed.ts";
 import { Model, sessionLabel } from "../shared/model.ts";
 import { NewSessionForm } from "./newsession.ts";
-import { SessionPanel, rememberSession, rememberedSession } from "./panel.ts";
+import { SessionPanel, rememberSession, rememberedSession, sessionStateText } from "./panel.ts";
 import { PromptBox } from "./prompt.ts";
 import { installNoteStarters } from "./selection.ts";
 import { Sending } from "./sending.ts";
@@ -17,9 +17,20 @@ const POLL_INTERVAL_MS = 1500;
 
 const connection = byId("connection");
 
-function setConnection(state: "live" | "error", label: string): void {
+function setConnection(state: "live" | "idle" | "error", label: string): void {
   connection.dataset["state"] = state;
   connection.textContent = label;
+}
+
+/** Top right: whether the selected session's Claude can be reached, not just the server. */
+function showSessionState(model: Model): void {
+  const selected = model.snapshot.sessions.find((row) => row.id === model.sessionId);
+  if (!selected) {
+    setConnection("idle", "Connected");
+    return;
+  }
+  const reachable = selected.process !== "ended" && selected.status !== "offline";
+  setConnection(reachable ? "live" : "idle", sessionStateText(selected));
 }
 
 function showError(error: unknown): void {
@@ -96,7 +107,7 @@ async function start(): Promise<void> {
         folder = next.folder || folder;
         render();
       }
-      setConnection("live", "Live");
+      showSessionState(model);
     } catch (error) {
       // A restarted server has a new token; a window opened since then stored it for every tab.
       if (error instanceof ApiError && error.status === 403 && api.adoptStoredToken()) return;
@@ -171,7 +182,6 @@ async function start(): Promise<void> {
     panel: byId("session-panel"),
     list: byId("session-list"),
     toggle: byId<HTMLButtonElement>("panel-toggle"),
-    app: byId("app"),
     actions: {
       select: selectSession,
       rename: async (sessionId, label) => {
