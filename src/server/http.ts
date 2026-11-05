@@ -14,6 +14,7 @@ import type { IncomingMessage, RequestListener, ServerResponse } from "node:http
 import { extname, resolve, sep } from "node:path";
 import type { NewSession } from "../node/terminal.ts";
 import { folderName } from "../shared/folders.ts";
+import { OpenWindows } from "./windows.ts";
 import {
   MAX_PROMPT_CHARS,
   TOKEN_HEADER,
@@ -142,6 +143,7 @@ function routes({
   startSession,
   processes,
 }: AppOptions): Route[] {
+  const windows = new OpenWindows();
   const statusOf = (sessionId: string): SendStatus => host.sendStatus(sessionId) ?? delivery.status(sessionId);
 
   /** The session asked for, else the folder's most recently active one, with its folder's sessions. */
@@ -194,6 +196,8 @@ function routes({
       handle: async ({ query }) => {
         delivery.refresh(statusOf);
         processes.refresh();
+        const folder = query.get("f");
+        if (folder) windows.seen(folder);
         // The page passes the version it has; an unchanged store costs one empty reply.
         const known = query.get("v");
         if (known === String(store.revision.value) && query.get("wait") === "1") {
@@ -304,7 +308,8 @@ function routes({
           text: input.text,
           createdAt: input.created_at,
         });
-        return ok({ response, new_session: newSession } satisfies NewResponseResult, 201);
+        const window_open = windows.isOpen(folderName(input.cwd));
+        return ok({ response, new_session: newSession, window_open } satisfies NewResponseResult, 201);
       },
     },
     {
@@ -328,8 +333,9 @@ function routes({
       path: "/api/claim",
       needsToken: true,
       handle: ({ body }) => {
-        const { session_id, prompt: typed, claude_process } = parseClaim(body);
+        const { session_id, prompt: typed, cwd, claude_process } = parseClaim(body);
         processes.record(session_id, claude_process);
+        if (cwd) store.promptSession(session_id, cwd);
         delivery.markBusy(session_id);
         // A message still waiting from the page rides along with this terminal prompt.
         const prompt = store.claimMessages(session_id);

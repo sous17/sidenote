@@ -73,6 +73,8 @@ export class Store {
   readonly #clock: Clock;
 
   /** Without a directory, the store lives in memory only (tests). */
+  readonly #awaitingFirstReply = new Set<string>();
+
   constructor(options: { dir?: string; clock?: Clock } = {}) {
     this.#files = options.dir === undefined ? undefined : new StoreFiles(options.dir);
     this.#clock = options.clock ?? systemClock;
@@ -142,6 +144,19 @@ export class Store {
     this.#changed();
   }
 
+  /**
+   * Learns a new session's folder from its first prompt, so its row shows before the first reply.
+   * That reply still counts as the session's first. Kept in memory only: a server that restarts in
+   * between opens the window anyway.
+   */
+  promptSession(sessionId: string, cwd: string): void {
+    const meta = this.#data.sessions.get(sessionId);
+    if (meta?.cwd) return;
+    if (!meta) this.#awaitingFirstReply.add(sessionId);
+    this.#upsertSession(sessionId, { name: "", cwd, activeAt: this.#clock.now() });
+    this.#changed();
+  }
+
   /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
   renameSession(sessionId: string, label: string): boolean {
     const meta = this.#data.sessions.get(sessionId);
@@ -154,6 +169,7 @@ export class Store {
   /** Forgets a session with its replies, notes and messages. Claude's own transcript stays. */
   forgetSession(sessionId: string): boolean {
     const data = this.#data;
+    this.#awaitingFirstReply.delete(sessionId);
     // A session's first prompt comes before the first reply that makes the session known.
     const known = data.sessions.delete(sessionId) || data.messages.some((m) => m.session_id === sessionId);
     if (!known) return false;
@@ -181,7 +197,7 @@ export class Store {
       if (reply.turn.ended) response.ended = reply.turn.ended;
       if (reply.turn.error) response.error = reply.turn.error;
     }
-    const newSession = !this.#data.sessions.has(reply.sessionId);
+    const newSession = this.#awaitingFirstReply.delete(reply.sessionId) || !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
     // Backfilled replies are history: they never answer notes.
     // A turn that didn't finish answered nothing: its notes stay open for the next reply.

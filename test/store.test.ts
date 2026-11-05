@@ -3,6 +3,14 @@ import { describe, test } from "node:test";
 import { MAX_RESPONSES_PER_SESSION, SESSION_RETENTION_SECONDS } from "../src/server/store.ts";
 import { DAY, SESSION, fixture, noteOn, reply } from "./helpers.ts";
 
+const newReply = (text: string) => ({
+  sessionId: SESSION,
+  cwd: "/w/shop-api",
+  text,
+  sessionName: "",
+  createdAt: undefined,
+});
+
 describe("answers", () => {
   test("a live reply answers the session's delivered notes and takes their sections", () => {
     const { store } = fixture();
@@ -37,6 +45,26 @@ describe("answers", () => {
 });
 
 describe("sessions", () => {
+  test("a first prompt shows the session in its folder, and its first reply still counts as new", () => {
+    const { store } = fixture();
+    store.promptSession(SESSION, "/w/shop-api");
+    assert.deepEqual(
+      store.folderSessions("shop-api").map((row) => row.id),
+      [SESSION],
+    );
+    assert.equal(store.addResponse(newReply("One.")).newSession, true);
+    assert.equal(store.addResponse(newReply("Two.")).newSession, false);
+  });
+
+  test("a prompt fills in a missing folder, keeps a known one, and doesn't make a session new", () => {
+    const { store } = fixture();
+    store.touchSession(SESSION, "", "");
+    store.promptSession(SESSION, "/w/shop-api");
+    store.promptSession(SESSION, "/w/elsewhere");
+    assert.equal(store.session(SESSION)?.cwd, "/w/shop-api");
+    assert.equal(store.addResponse(newReply("One.")).newSession, false);
+  });
+
   test("content is per session, and a session keeps its name and folder", () => {
     const { store } = fixture();
     const first = store.addResponse({

@@ -60,7 +60,7 @@ function sessionName(transcriptPath: string | undefined): string {
   }
 }
 
-/** Stop: sends the finished reply to its session's window, opening it for a new session. */
+/** Stop: sends the finished reply to its session's window, opening one if a new session has none. */
 export async function hookStop(input: HookInput): Promise<void> {
   const text = input.last_assistant_message?.trim();
   const sessionId = input.session_id;
@@ -74,7 +74,10 @@ export async function hookStop(input: HookInput): Promise<void> {
     ...reportedProcess(),
   };
   const result = await client.post<NewResponseResult>("/api/responses", reply);
-  if (started || result.new_session) openBrowser(await client.windowUrl(sessionId, reply.cwd));
+  // A server that just started has a new token, which only a newly opened window can hand out.
+  if (started || (result.new_session && !result.window_open)) {
+    openBrowser(await client.windowUrl(sessionId, reply.cwd));
+  }
 }
 
 /**
@@ -102,6 +105,7 @@ export async function hookPrompt(input: HookInput): Promise<void> {
   const { client } = await SidenoteClient.ensure();
   const claim: ClaimRequest = { session_id: input.session_id, ...reportedProcess() };
   if (input.prompt && !isWakeText(input.prompt)) claim.prompt = input.prompt.slice(0, MAX_SHOWN_PROMPT_CHARS);
+  if (input.cwd) claim.cwd = input.cwd;
   const { comments, prompt } = await client.post<ClaimResult>("/api/claim", claim);
   if (!comments.length && prompt === undefined) return;
   const additionalContext =

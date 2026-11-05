@@ -509,8 +509,8 @@ claude plugin install sidenote@sidenote</code></pre>
         </div>
         <p class="text">
           Your browser opens the window for this session's folder, and from now on every reply Claude finishes shows up
-          there. Other sessions in the same folder join its session list. A session in another folder opens that
-          folder's window with its first reply.
+          there. Other sessions in the same folder join its session list from their first prompt, without opening
+          another tab. A session in a folder with no open window opens that folder's window with its first reply.
         </p>
         <h3>From a local copy</h3>
         <pre class="text"><code>git clone https://github.com/sous17/sidenote.git
@@ -639,8 +639,12 @@ claude plugin install sidenote@sidenote</code></pre>
               on.
             </p>
             <p>
-              In a narrow window, or while a thread is open, the list folds away. The button left of the folder name
-              brings it back.
+              The top right of the window says the same for the selected session: "Listening", "Claude is working", "Not
+              listening" or "Ended". It shows an error instead when the window can't reach sidenote.
+            </p>
+            <p>
+              In a narrow window the list folds away. The button left of the folder name brings it back. In a wide
+              window that button docks or folds the list, and opening a thread leaves it as you set it.
             </p>
           </div>
           <aside class="note">
@@ -999,7 +1003,7 @@ claude plugin update sidenote@sidenote</code></pre>
                 <td><code>hook-stop</code></td>
                 <td>
                   Posts each finished reply, starting the server if needed, and opens the window the first time a
-                  session replies.
+                  session replies, unless its folder's window is already open.
                 </td>
               </tr>
               <tr>
@@ -1026,7 +1030,10 @@ claude plugin update sidenote@sidenote</code></pre>
               <tr>
                 <td>UserPromptSubmit</td>
                 <td><code>hook-prompt</code></td>
-                <td>Shows the prompt you typed in the window and attaches pending notes, with any waiting message.</td>
+                <td>
+                  Shows the prompt you typed in the window, lists a new session there, and attaches pending notes, with
+                  any waiting message.
+                </td>
               </tr>
               <tr>
                 <td>SessionEnd</td>

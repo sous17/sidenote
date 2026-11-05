@@ -143,6 +143,8 @@ export function parseClaim(input: unknown): ClaimRequest {
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
   const claim: ClaimRequest = prompt === undefined ? { session_id } : { session_id, prompt };
+  const cwd = optionalString(body, "cwd", LIMITS.cwd);
+  if (cwd) claim.cwd = cwd;
   const claudeProcess = optionalProcess(body);
   if (claudeProcess) claim.claude_process = claudeProcess;
   return claim;
