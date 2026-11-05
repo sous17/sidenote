@@ -6,8 +6,7 @@ does and how it is built; this file covers the rules and decisions to keep.
 ## Before you commit
 
 - Run `npm run check`: formatting, both type checks, the build, then all tests. It must pass.
-- `dist/` is committed so installing needs no build step. After changing anything in `src/`, run
-  `npm run build` and commit `dist/` in the same commit. CI fails when `dist/` doesn't match.
+- `dist/` isn't committed. `npm run check` builds it, and the end-to-end tests need it.
 - Every behavior change comes with a test. Bugs found by hand get a test that would have caught them.
 - Run `npm run format` rather than formatting by hand.
 
@@ -104,4 +103,11 @@ conversations), from a scratch server, with the mouse pointer cropped out.
 ## Git
 
 - Don't push, force-push, or open pull requests unless the maintainer asks.
+- Commit messages and pull request titles follow Conventional Commits. semantic-release reads them on
+  `main`: `fix:` publishes a patch, `feat:` a minor version, `feat!:` a major one, and `docs:`, `test:`,
+  `ci:`, `chore:` and `refactor:` publish nothing. A squash merge keeps only the PR title, so that needs
+  the right prefix too. A commit that changes what users get must not use a prefix that publishes
+  nothing.
+- Users install from the `release` branch, which the release workflow writes. Never commit to it, and
+  never set a version by hand: `scripts/stage-plugin.ts` stamps each release with its own.
 - End commit messages with a `Co-Authored-By` line for the agent that wrote the change.
