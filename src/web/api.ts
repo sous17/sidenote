@@ -109,6 +109,10 @@ export class Api {
     return request("POST", "/api/comments", this.#token, note);
   }
 
+  editNote(id: number, body: string): Promise<null> {
+    return request("PATCH", `/api/comments/${id}`, this.#token, { body });
+  }
+
   deleteNote(id: number): Promise<null> {
     return request("DELETE", `/api/comments/${id}`, this.#token);
   }
