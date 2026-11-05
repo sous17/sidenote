@@ -21,7 +21,7 @@ await Promise.all([
     outdir: dist,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
   }),
   build({
     ...shared,

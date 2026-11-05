@@ -16,7 +16,7 @@ does and how it is built; this file covers the rules and decisions to keep.
 - TypeScript in strict mode, run directly by Node with type stripping. Use only erasable syntax:
   no enums, namespaces, parameter properties or `<Type>value` casts; use `as`. Import types with
   `import type`, and include the `.ts` extension in relative imports.
-- The plugin runs on Node 20 or newer, with no runtime dependencies on the server or CLI side.
+- The plugin runs on Node 22 or newer, with no runtime dependencies on the server or CLI side.
   Development needs Node 22.18 or newer.
 - `src/shared/types.ts` is the contract between the server, the hooks and the page, and also the
   on-disk format of `~/.sidenote/sessions/`. Change the store's shape only together with a
