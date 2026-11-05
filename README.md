@@ -10,7 +10,19 @@ gets its own answer in its own thread.
 
 ![Selecting text in a reply, writing a note beside it, clicking Send now, and opening the thread with Claude's answer](docs/demo.gif)
 
-**[Read the documentation](docs/index.html)** to install it and learn how it works.
+## Install
+
+You need Claude Code, Node.js 22 or newer, and macOS or Linux.
+
+```sh
+claude plugin marketplace add sous17/sidenote
+claude plugin install sidenote@sidenote
+```
+
+Restart Claude Code, then run `/sidenote:on` in a session. Your browser opens, and every reply Claude
+finishes shows up there.
+
+**[Read the documentation](https://sous17.github.io/sidenote/)** to learn how it works.
 
 ## Terminal app (work in progress)
 
@@ -21,4 +33,4 @@ not a finished app.
 
 ## License
 
-MIT
+[MIT](LICENSE)

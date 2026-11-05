@@ -45,7 +45,8 @@ Anyone who can call the API can put text in front of the user's agent, so:
   session's hooks reported, and checks its start time first, so a reused pid is never signalled
   (`src/node/process.ts`). A new session's prompt goes to `claude` as one argument after `--`, its
   name inside `--name=`; never build a shell command from them, except on macOS, where
-  AppleScript's `quoted form of` quotes them (`src/node/terminal.ts`).
+  AppleScript's `quoted form of` quotes them (`src/node/terminal.ts`). Terminal reads that command
+  as typed keys, so `src/server/requests.ts` refuses control characters in them.
 
 ## Hooks
 
@@ -101,5 +102,4 @@ conversations), from a scratch server, with the mouse pointer cropped out.
 ## Git
 
 - Don't push, force-push, or open pull requests unless the maintainer asks.
-- The repository is private and stays private until the maintainer decides to make it public.
 - End commit messages with a `Co-Authored-By` line for the agent that wrote the change.
