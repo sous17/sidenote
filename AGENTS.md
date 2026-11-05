@@ -76,6 +76,8 @@ These were settled with the maintainer. Don't change them without asking.
   Answers that touch several files fold each file open from its header.
 - **Look:** the "Bracket" logo, the `sidenote` wordmark in the normal text color (not purple), and
   a light, dark or system theme switch.
+- **Sound is opt-in.** The bell plays one soft sound when Claude finishes, only while the window is in
+  the background. It stays off until the user turns it on.
 - **Ending a session keeps it.** The pause icon stops Claude and leaves the row, its replies and its
   notes; the play icon resumes it in a terminal, where Claude asks for permissions. Only delete
   removes it. Row actions are icons, and steps that stop or delete something ask in a pop-up.
