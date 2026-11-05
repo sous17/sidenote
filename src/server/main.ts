@@ -17,7 +17,7 @@ import { SessionHost } from "./host.ts";
 import { createApp } from "./http.ts";
 import { SessionProcesses } from "./processes.ts";
 import { LaunchCodes } from "./launch.ts";
-import { acquireServerLock, holdServerLock, releaseServerLock } from "./lock.ts";
+import { acquireServerLock, holdServerLock, releaseServerLock, serverLockOwner } from "./lock.ts";
 import { Store } from "./store.ts";
 import { ServerWatch, WATCH_INTERVAL_MS } from "./watch.ts";
 
@@ -60,6 +60,9 @@ function registeredPid(): number | null {
 }
 
 function removeServerFile(): void {
+  // The lock's owner owns server.json: another server may be writing it between our read and remove.
+  const owner = serverLockOwner(paths.lockFile());
+  if (owner !== null && owner !== process.pid) return;
   if (registeredPid() === process.pid) rmSync(paths.serverFile(), { force: true });
 }
 
