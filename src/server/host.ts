@@ -100,6 +100,7 @@ export class SessionHost {
       error: "",
     });
     this.#store.touchSession(id, "", folder);
+    this.#store.markChat(id);
     this.#changed();
     return id;
   }

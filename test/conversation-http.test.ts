@@ -226,7 +226,7 @@ test("the terminal rewrites an unsent note through the API", async () => {
   assert.equal(store.sessionContent("edited-note").comments[0]?.body, "typo");
 });
 
-describe("sessions sidenote runs in a folder window", () => {
+describe("sessions sidenote runs stay out of folder windows", () => {
   const running = new FakeAgent();
 
   before(() => {
@@ -234,35 +234,43 @@ describe("sessions sidenote runs in a folder window", () => {
     server.on("request", app(new SessionHost({ store, agent: running, isTrusted: () => trusted })));
   });
 
-  const rowOf = async (id: string) => {
-    const { body } = await call<StateSnapshot>("GET", `/api/state?v=-1&s=&f=${basename(folder)}`);
-    return body.sessions.find((row) => row.id === id);
-  };
+  const window = async () => (await call<StateSnapshot>("GET", `/api/state?v=-1&s=&f=${basename(folder)}`)).body;
+  const listed = async (id: string) => (await window()).sessions.some((row) => row.id === id);
 
-  test("are listed with their own status, and named by what the user typed", async () => {
+  test("before, during and after a turn, and a window doesn't open on one", async () => {
     const id = await start();
-    assert.deepEqual(
-      [(await rowOf(id))?.status, (await rowOf(id))?.process],
-      ["listening", "running"],
-      "sidenote can end it, though no hook reported a process",
-    );
-    await call("POST", "/api/conversation/messages", { session_id: id, text: "Fix  the\nlogin" });
-    assert.equal((await rowOf(id))?.status, "busy");
+    assert.equal(await listed(id), false);
+    await call("POST", "/api/conversation/messages", { session_id: id, text: "Fix the login" });
+    assert.equal(await listed(id), false);
     running.reply("Done.");
-    assert.equal((await rowOf(id))?.first_message, "Fix the login");
+    assert.equal(await listed(id), false);
+    assert.notEqual((await window()).session?.id, id);
   });
 
-  test("end with their agent and stay on the list; removing one that runs is refused", async () => {
+  test("the terminal still reads its own session by id", async () => {
+    const id = await start();
+    await call("POST", "/api/conversation/messages", { session_id: id, text: "Hi" });
+    running.reply("Done.");
+    const { body } = await call<StateSnapshot>("GET", `/api/state?v=-1&s=${id}`);
+    assert.equal(body.session?.id, id);
+    assert.equal(body.responses.at(-1)?.text, "Done.");
+  });
+
+  test("a session that goes back to a terminal shows again with its next reply", async () => {
+    const id = await start();
+    await call("POST", "/api/responses", { session_id: id, cwd: folder, text: "From the hooks" });
+    assert.equal(await listed(id), true);
+  });
+
+  test("end with their agent; removing one that runs is refused", async () => {
     const id = await start();
     await call("POST", "/api/conversation/messages", { session_id: id, text: "Hi" });
     assert.equal((await call("POST", "/api/sessions/forget", { session_id: id })).status, 409);
-    assert.ok(await rowOf(id));
 
     const closed = running.closed;
     assert.equal((await call("POST", "/api/sessions/end", { session_id: id })).status, 204);
     assert.equal(running.closed, closed + 1);
     running.emit({ type: "exit", message: "closed" });
-    assert.equal((await rowOf(id))?.process, "ended");
     assert.equal((await call("GET", `/api/conversation?s=${id}`)).status, 404);
   });
 

@@ -80,6 +80,8 @@ export interface SessionMeta {
   cwd: string;
   /** When the session was last active; sessions idle too long are forgotten. */
   last_active: EpochSeconds;
+  /** sidenote chat runs it: it lives in the terminal, so folder windows leave it out. */
+  chat?: boolean;
 }
 
 export interface SessionSummary extends SessionMeta {

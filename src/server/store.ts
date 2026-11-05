@@ -100,7 +100,7 @@ export class Store {
   folderSessions(folder: string): Omit<FolderSession, "status" | "process">[] {
     const pending = this.#pendingNotesPerSession();
     return this.listSessions()
-      .filter((session) => folderName(session.cwd) === folder)
+      .filter((session) => !session.chat && folderName(session.cwd) === folder)
       .map((session) => ({
         ...session,
         first_message: this.#firstMessage(session.id).replace(/\s+/g, " ").trim().slice(0, FIRST_MESSAGE_CHARS),
@@ -157,6 +157,14 @@ export class Store {
     this.#changed();
   }
 
+  /** Marks a session sidenote chat runs, which folder windows leave out. */
+  markChat(sessionId: string): void {
+    const meta = this.#data.sessions.get(sessionId);
+    if (!meta || meta.chat) return;
+    meta.chat = true;
+    this.#changed();
+  }
+
   /** Names a session in the window; "" removes the name. Returns false for an unknown session. */
   renameSession(sessionId: string, label: string): boolean {
     const meta = this.#data.sessions.get(sessionId);
@@ -199,6 +207,8 @@ export class Store {
     }
     const newSession = this.#awaitingFirstReply.delete(reply.sessionId) || !this.#data.sessions.has(reply.sessionId);
     this.#upsertSession(reply.sessionId, { name: reply.sessionName, cwd: reply.cwd, activeAt: response.created_at });
+    // A reply from the hooks means the session went back to a terminal, so its window can show it.
+    if (!reply.turn) delete this.#data.sessions.get(reply.sessionId)!.chat;
     // Backfilled replies are history: they never answer notes.
     // A turn that didn't finish answered nothing: its notes stay open for the next reply.
     if (reply.createdAt === undefined && !reply.turn?.ended) this.#takeAnswers(response);

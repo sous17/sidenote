@@ -176,8 +176,7 @@ function routes({
       sessions: store.folderSessions(windowFolder).map((row) => ({
         ...row,
         status: statusOf(row.id).status,
-        // A session sidenote runs has no hooks to report its process, and sidenote can end it itself.
-        process: host.owns(row.id) ? "running" : processes.state(row.id),
+        process: processes.state(row.id),
       })),
       can_start_sessions,
       ...store.sessionContent(session.id),

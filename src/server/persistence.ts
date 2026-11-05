@@ -188,12 +188,17 @@ export function migrate(file: StoreFile): StoreData {
       label: meta.label ?? "",
       cwd: meta.cwd ?? "",
       last_active: meta.last_active ?? 0,
+      ...(meta.chat ? { chat: true } : {}),
     });
   }
   // Stores from before per-session windows have no session list: rebuild it from the replies.
   for (const response of responses) {
     const meta = sessions.get(response.session_id) ?? { name: "", label: "", cwd: response.cwd, last_active: 0 };
     meta.last_active = Math.max(meta.last_active, response.created_at);
+    // Stores from before chat was marked: only sidenote chat keeps the prompt on a reply, and the
+    // latest reply decides, because a session can move between chat and a terminal.
+    if (response.prompt !== undefined) meta.chat = true;
+    else delete meta.chat;
     sessions.set(response.session_id, meta);
   }
 

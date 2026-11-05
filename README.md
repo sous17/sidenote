@@ -1,4 +1,4 @@
-# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg"><img src="docs/logo-light.svg" alt="" width="36" height="36" align="absmiddle"></picture> sidenote
+# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg"><img src="docs/logo-light.svg" alt="" width="36" height="36" align="absmiddle"></picture> sidenote <sub>· inline notes for Claude Code</sub>
 
 **Reply to the exact sentence Claude wrote, and get an answer to just that.**
 
@@ -51,3 +51,7 @@ not a finished app.
 ## License
 
 [MIT](LICENSE)
+
+---
+
+If sidenote saves you some back-and-forth, a ⭐ on the repo would mean a lot. Thank you for trying it! 🙏
