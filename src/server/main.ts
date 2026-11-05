@@ -69,7 +69,8 @@ async function main(): Promise<void> {
   if (!acquireServerLock(paths.lockFile())) return;
   process.on("exit", () => releaseServerLock(paths.lockFile()));
   const store = new Store({ dir: paths.stateDir() });
-  const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }) });
+  const isTrusted = (folder: string): boolean => isTrustedFolder(folder);
+  const host = new SessionHost({ store, agent: new ClaudeAgent({ instructions: sessionContext() }), isTrusted });
   const token = randomBytes(32).toString("base64url");
   const allowedHosts = new Set<string>();
   let serverInfo = "";
@@ -92,7 +93,7 @@ async function main(): Promise<void> {
       onActivity: () => watch.active(),
       openFolder: (path) => openWithSystem(path, () => console.error(`couldn't open ${path}`)),
       processes: new SessionProcesses({ pidInUse, isSameProcess: isSameClaude }, store.revision),
-      isTrusted: (folder) => isTrustedFolder(folder),
+      isTrusted,
       startSession: canStartSessions()
         ? (session) => startInTerminal(terminalCommand(process.platform, session)!)
         : null,

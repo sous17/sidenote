@@ -28,7 +28,7 @@ export const HEADLESS_ENV = "SIDENOTE_HEADLESS";
 const CLOSE_GRACE_MS = 3000;
 const STDERR_TAIL_CHARS = 2000;
 
-/** The modes a user's settings can start a session in. Others leave Claude Code asking. */
+/** The modes sidenote passes on from a user's settings. For any other it passes no flag at all. */
 const STARTING_MODES: ReadonlySet<string> = new Set(["auto", "acceptEdits", "dontAsk", "plan"]);
 
 /**
@@ -37,7 +37,9 @@ const STARTING_MODES: ReadonlySet<string> = new Set(["auto", "acceptEdits", "don
  * command would wait for a key. Claude Code falls back to asking where auto isn't available.
  *
  * bypassPermissions is left out on purpose: sidenote doesn't turn checks off on the user's behalf.
- * Settings that can't be read keep it asking too, as they may hold a choice we can't see.
+ * Claude Code still reads it from the user's own settings, so it applies there, but only in a folder
+ * the user trusted, as sidenote starts no agent anywhere else (see SessionHost).
+ * Settings that can't be read keep it asking, as they may hold a choice we can't see.
  *
  * The flag outranks every settings file, so a mode set above the user's settings (overriding) means
  * no flag at all. It is never copied into the flag: Claude Code refuses auto from a project's files,

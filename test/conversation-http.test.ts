@@ -46,7 +46,7 @@ before(async () => {
   const address = server.address();
   port = typeof address === "object" && address ? address.port : 0;
   base = `http://127.0.0.1:${port}`;
-  server.on("request", app(new SessionHost({ store, agent })));
+  server.on("request", app(new SessionHost({ store, agent, isTrusted: () => trusted })));
 });
 
 after(() => {
@@ -203,7 +203,7 @@ test("the terminal starts its session again when the server restarted", async ()
   // A restart: a new host that has never heard of the session.
   const restarted = new FakeAgent();
   server.removeAllListeners("request");
-  server.on("request", app(new SessionHost({ store, agent: restarted })));
+  server.on("request", app(new SessionHost({ store, agent: restarted, isTrusted: () => trusted })));
 
   await api.message(id, "Still there?");
   assert.deepEqual(restarted.starts, [{ sessionId: id, cwd: folder, resume: true }]);
@@ -231,7 +231,7 @@ describe("sessions sidenote runs in a folder window", () => {
 
   before(() => {
     server.removeAllListeners("request");
-    server.on("request", app(new SessionHost({ store, agent: running })));
+    server.on("request", app(new SessionHost({ store, agent: running, isTrusted: () => trusted })));
   });
 
   const rowOf = async (id: string) => {

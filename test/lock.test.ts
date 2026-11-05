@@ -155,8 +155,10 @@ test("with server.json gone, a second server still finds the first and exits", a
 test("a server that lost the lock to another stops, and leaves that server's files alone", async (t) => {
   const { server, dir } = await watchedServer(t);
   const lock = join(dir, "server.lock");
-  writeFileSync(join(dir, "server.json"), JSON.stringify({ port: 1, token: "t", pid: process.ppid }));
+  // In this order, as a new server does it: with server.json first, a check between the two writes
+  // would still hold the lock, write server.json back, and remove it again on stopping.
   writeFileSync(lock, `${process.ppid}\n${processInfo(process.ppid)!.started}`);
+  writeFileSync(join(dir, "server.json"), JSON.stringify({ port: 1, token: "t", pid: process.ppid }));
   await once(server, "exit");
   assert.ok(existsSync(lock));
   assert.ok(existsSync(join(dir, "server.json")));
