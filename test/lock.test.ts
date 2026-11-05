@@ -115,8 +115,12 @@ async function watchedServer(t: TestContext): Promise<{ server: ChildProcess; di
   mkdirSync(dir);
   const env = { ...process.env, HOME: home, SIDENOTE_WATCH_INTERVAL_MS: "50" };
   const server = spawn(process.execPath, [serverScript], { env, stdio: "ignore" });
-  t.after(() => {
-    server.kill();
+  t.after(async () => {
+    // A server still shutting down can write to its folder while the folder is being removed.
+    if (server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await once(server, "exit");
+    }
     rmSync(home, { recursive: true, force: true });
   });
   await until(() => existsSync(join(dir, "server.json")));
