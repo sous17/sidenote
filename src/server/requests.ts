@@ -44,6 +44,9 @@ const DECISIONS: ReadonlySet<string> = new Set(["allow", "deny", "always"]);
 
 const WAITER_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 const LAUNCH_CODE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+// Line breaks aside. On macOS a new session's command is typed into Terminal, so Ctrl-C in a prompt
+// would end the quoted text and run the rest as a command.
+const CONTROL_CHARS = /[\x00-\x09\x0b-\x1f\x7f]/;
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -90,6 +93,24 @@ function nonEmpty(value: string, key: string): string {
   return value;
 }
 
+function folderPath(value: string, key: string): string {
+  if (!isAbsolute(value) || CONTROL_CHARS.test(value)) throw new BadRequest(`${key} must be an absolute path`);
+  return value;
+}
+
+/** A folder path, or "" when the caller doesn't know it. */
+function optionalFolder(body: JsonObject, key: string): string {
+  const value = optionalString(body, key, LIMITS.cwd) ?? "";
+  return value && folderPath(value, key);
+}
+
+/** Text that reaches a terminal: pasted tabs and line endings are kept readable, the rest refused. */
+function terminalText(value: string, key: string): string {
+  const text = value.replace(/\r\n?/g, "\n").replace(/\t/g, "  ");
+  if (CONTROL_CHARS.test(text)) throw new BadRequest(`${key} has control characters`);
+  return text;
+}
+
 export function parseNewResponse(input: unknown): Required<
   Omit<NewResponseRequest, "created_at" | "claude_process">
 > & {
@@ -104,7 +125,7 @@ export function parseNewResponse(input: unknown): Required<
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
-    cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
+    cwd: optionalFolder(body, "cwd"),
     text: string(body, "text", LIMITS.replyText),
     created_at: createdAt,
     claude_process: optionalProcess(body),
@@ -139,7 +160,7 @@ export function parseTouchSession(input: unknown): Required<TouchSessionRequest>
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
     session_name: (optionalString(body, "session_name", LIMITS.sessionName) ?? "").trim(),
-    cwd: optionalString(body, "cwd", LIMITS.cwd) ?? "",
+    cwd: optionalFolder(body, "cwd"),
   };
 }
 
@@ -148,7 +169,7 @@ export function parseClaim(input: unknown): ClaimRequest {
   const prompt = optionalString(body, "prompt", LIMITS.message);
   const session_id = matching(body, "session_id", SESSION_ID_PATTERN);
   const claim: ClaimRequest = prompt === undefined ? { session_id } : { session_id, prompt };
-  const cwd = optionalString(body, "cwd", LIMITS.cwd);
+  const cwd = optionalFolder(body, "cwd");
   if (cwd) claim.cwd = cwd;
   const claudeProcess = optionalProcess(body);
   if (claudeProcess) claim.claude_process = claudeProcess;
@@ -198,8 +219,7 @@ export function parseRedeem(input: unknown): RedeemRequest {
 
 export function parseRegisterSession(input: unknown): RegisterSessionRequest {
   const body = asObject(input);
-  const cwd = string(body, "cwd", LIMITS.cwd);
-  if (!isAbsolute(cwd) || cwd.includes("\0")) throw new BadRequest("cwd must be an absolute path");
+  const cwd = folderPath(string(body, "cwd", LIMITS.cwd), "cwd");
   const id = optionalString(body, "session_id", 256);
   return id === undefined ? { cwd } : { cwd, session_id: sessionId(id) };
 }
@@ -262,7 +282,7 @@ export function parseStartSession(input: unknown): Required<StartSessionRequest>
   const body = asObject(input);
   return {
     session_id: matching(body, "session_id", SESSION_ID_PATTERN),
-    prompt: (optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "").trim(),
-    name: (optionalString(body, "name", LIMITS.sessionName) ?? "").replace(/\s+/g, " ").trim(),
+    prompt: terminalText(optionalString(body, "prompt", MAX_PROMPT_CHARS) ?? "", "prompt").trim(),
+    name: terminalText((optionalString(body, "name", LIMITS.sessionName) ?? "").replace(/\s+/g, " "), "name").trim(),
   };
 }

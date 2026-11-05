@@ -6,8 +6,7 @@ does and how it is built; this file covers the rules and decisions to keep.
 ## Before you commit
 
 - Run `npm run check`: formatting, both type checks, the build, then all tests. It must pass.
-- `dist/` is committed so installing needs no build step. After changing anything in `src/`, run
-  `npm run build` and commit `dist/` in the same commit. CI fails when `dist/` doesn't match.
+- `dist/` isn't committed. `npm run check` builds it, and the end-to-end tests need it.
 - Every behavior change comes with a test. Bugs found by hand get a test that would have caught them.
 - Run `npm run format` rather than formatting by hand.
 
@@ -16,7 +15,7 @@ does and how it is built; this file covers the rules and decisions to keep.
 - TypeScript in strict mode, run directly by Node with type stripping. Use only erasable syntax:
   no enums, namespaces, parameter properties or `<Type>value` casts; use `as`. Import types with
   `import type`, and include the `.ts` extension in relative imports.
-- The plugin runs on Node 20 or newer, with no runtime dependencies on the server or CLI side.
+- The plugin runs on Node 22 or newer, with no runtime dependencies on the server or CLI side.
   Development needs Node 22.18 or newer.
 - `src/shared/types.ts` is the contract between the server, the hooks and the page, and also the
   on-disk format of `~/.sidenote/sessions/`. Change the store's shape only together with a
@@ -40,12 +39,15 @@ Anyone who can call the API can put text in front of the user's agent, so:
   never `innerHTML`.
 - Keep the content security policy free of inline and remote scripts, and keep the server bound
   to `127.0.0.1` with its `Host` check.
+- Never start `claude -p` in a folder the user hasn't trusted in Claude Code: it shows no trust prompt
+  and still runs a repository's hooks and MCP servers (`src/node/trust.ts`).
 - Anything that starts or stops a process takes a session id, never a path or a pid from the
   request. Starting uses the folder recorded for the session; stopping uses the Claude process the
   session's hooks reported, and checks its start time first, so a reused pid is never signalled
   (`src/node/process.ts`). A new session's prompt goes to `claude` as one argument after `--`, its
   name inside `--name=`; never build a shell command from them, except on macOS, where
-  AppleScript's `quoted form of` quotes them (`src/node/terminal.ts`).
+  AppleScript's `quoted form of` quotes them (`src/node/terminal.ts`). Terminal reads that command
+  as typed keys, so `src/server/requests.ts` refuses control characters in them.
 
 ## Hooks
 
@@ -101,5 +103,11 @@ conversations), from a scratch server, with the mouse pointer cropped out.
 ## Git
 
 - Don't push, force-push, or open pull requests unless the maintainer asks.
-- The repository is private and stays private until the maintainer decides to make it public.
+- Commit messages and pull request titles follow Conventional Commits. semantic-release reads them on
+  `main`: `fix:` publishes a patch, `feat:` a minor version, `feat!:` a major one, and `docs:`, `test:`,
+  `ci:`, `chore:` and `refactor:` publish nothing. A squash merge keeps only the PR title, so that needs
+  the right prefix too. A commit that changes what users get must not use a prefix that publishes
+  nothing.
+- Users install from the `release` branch, which the release workflow writes. Never commit to it, and
+  never set a version by hand: `scripts/stage-plugin.ts` stamps each release with its own.
 - End commit messages with a `Co-Authored-By` line for the agent that wrote the change.

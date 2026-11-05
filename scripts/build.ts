@@ -1,5 +1,5 @@
 // Builds dist/: the CLI and server for Node, and the page for the browser.
-// dist/ is committed, so installing the plugin needs no npm install or build step.
+// dist/ isn't committed: the release workflow builds it for the release branch, which users install.
 import { build, type BuildOptions } from "esbuild";
 import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,7 +21,7 @@ await Promise.all([
     outdir: dist,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
   }),
   build({
     ...shared,

@@ -487,36 +487,28 @@
 
         <h2 id="install">Install</h2>
         <p class="text">
-          You need Claude Code with plugin support and <code>asyncRewake</code> hooks (any recent version), Node.js 20
+          You need Claude Code with plugin support and <code>asyncRewake</code> hooks (any recent version), Node.js 22
           or newer, and macOS or Linux.
         </p>
         <div class="row">
           <div>
-            <p>The repository is its own plugin marketplace:</p>
+            <p>In a Claude Code session:</p>
+            <pre><code>/plugin install sidenote --marketplace sous17/sidenote</code></pre>
+            <p>
+              From your shell, that's <code>claude plugin install sidenote --marketplace sous17/sidenote</code>. On a
+              Claude Code older than 2.1.292, run these instead:
+            </p>
             <pre><code>claude plugin marketplace add sous17/sidenote
 claude plugin install sidenote@sidenote</code></pre>
-            <p>
-              Or inside Claude Code: <code>/plugin marketplace add sous17/sidenote</code>, then
-              <code>/plugin install sidenote@sidenote</code>.
-            </p>
             <p>Restart Claude Code, or run <code>/reload-plugins</code>, and turn sidenote on:</p>
             <pre><code>/sidenote:on</code></pre>
           </div>
-          <aside class="note">
-            <strong>Private repository</strong>While the repository is private, the machine needs GitHub access first.
-            The simplest way is <code>gh auth login</code>, then <code>gh auth setup-git</code>.
-          </aside>
         </div>
         <p class="text">
           Your browser opens the window for this session's folder, and from now on every reply Claude finishes shows up
           there. Other sessions in the same folder join its session list from their first prompt, without opening
           another tab. A session in a folder with no open window opens that folder's window with its first reply.
         </p>
-        <h3>From a local copy</h3>
-        <pre class="text"><code>git clone https://github.com/sous17/sidenote.git
-claude plugin marketplace add ./sidenote
-claude plugin install sidenote@sidenote</code></pre>
-
         <h2 id="notes">Leave a note</h2>
         <div class="row">
           <div>
@@ -707,8 +699,10 @@ claude plugin install sidenote@sidenote</code></pre>
 
         <h2 id="terminal">In the terminal (preview)</h2>
         <p class="text">
-          Both commands below are a work in progress. <code>bin/</code> isn't on your <code>PATH</code>, so
-          <code>/sidenote:status</code> prints the full command for this session on its <code>terminal:</code> line.
+          Both commands below are a work in progress. Run <code>/sidenote:terminal</code> once to put
+          <code>sidenote</code> on your <code>PATH</code>, in <code>~/.local/bin</code>. It keeps working through plugin
+          updates, and if that folder isn't on your <code>PATH</code> yet, it gives you the line to add. Until then,
+          <code>/sidenote:status</code> prints the full command on its <code>terminal:</code> line.
         </p>
         <p class="text">
           <code>sidenote tui</code> shows a session's replies, notes and threads in any terminal window, beside or
@@ -718,6 +712,11 @@ claude plugin install sidenote@sidenote</code></pre>
           <code>sidenote chat</code> makes sidenote the whole session: no Claude Code window beside it, and no
           <code>/sidenote:on</code> needed. Run it in your project folder and type at the <code>you ›</code> line.
           Claude's reply streams in above it, with its tool calls on one line. <kbd>Esc</kbd> interrupts Claude.
+        </p>
+        <p class="text">
+          It only runs in a folder you trusted in Claude Code. If it refuses, run <code>claude</code> in the folder once
+          and accept the trust prompt. Claude Code doesn't save that answer for your home folder, so start from a
+          project folder instead.
         </p>
         <p class="text">
           Sessions start in Claude Code's auto mode, as they do at the terminal, so routine commands run without asking.
@@ -784,6 +783,13 @@ claude plugin install sidenote@sidenote</code></pre>
               <tr>
                 <td><code>/sidenote:status</code></td>
                 <td>Shows this session's window address, replies, pending notes, and Send now status.</td>
+              </tr>
+              <tr>
+                <td><code>/sidenote:terminal</code></td>
+                <td>
+                  Puts <code>sidenote</code> on your <code>PATH</code>, for <code>sidenote chat</code> and
+                  <code>sidenote tui</code>
+                </td>
               </tr>
               <tr>
                 <td><code>/sidenote:backfill</code></td>
@@ -870,6 +876,10 @@ claude plugin install sidenote@sidenote</code></pre>
                 <td>Problems from the hooks and the server. Look here first.</td>
               </tr>
               <tr>
+                <td><code>launcher</code></td>
+                <td>Where the plugin is now, for the <code>sidenote</code> command, if you installed it.</td>
+              </tr>
+              <tr>
                 <td><code>enabled</code></td>
                 <td>Present while sidenote is on.</td>
               </tr>
@@ -938,6 +948,11 @@ claude plugin install sidenote@sidenote</code></pre>
         </p>
 
         <h2 id="update">Update and uninstall</h2>
+        <p class="text">
+          Claude Code leaves auto-update off for marketplaces like this one. To turn it on, run <code>/plugin</code>,
+          open the <strong>Marketplaces</strong> tab, select <code>sidenote</code> and choose
+          <strong>Enable auto-update</strong>. To update by hand:
+        </p>
         <pre class="text"><code>claude plugin marketplace update sidenote
 claude plugin update sidenote@sidenote</code></pre>
         <pre class="text"><code>claude plugin uninstall sidenote@sidenote</code></pre>
@@ -1115,6 +1130,11 @@ claude plugin update sidenote@sidenote</code></pre>
             runs unasked, and anything Claude Code would ask about waits for your answer.
           </li>
           <li>
+            <strong>Trusted folders only.</strong> <code>sidenote chat</code> runs <code>claude -p</code>, which never
+            shows Claude Code's trust prompt and still runs a repository's hooks and MCP servers. So it refuses a folder
+            you haven't trusted in Claude Code, and anything it can't read counts as not trusted.
+          </li>
+          <li>
             <strong>A token for every call.</strong> A random 256-bit token, created on each start, is stored in
             <code>~/.sidenote/server.json</code>, readable only by you. It travels in a custom header, which other
             websites can't send to the server: the server never approves a cross-origin request.
@@ -1166,7 +1186,7 @@ claude plugin update sidenote@sidenote</code></pre>
         <h2 id="contributing">Contributing</h2>
         <p class="text">
           Development needs Node 22.18 or newer: tests run the TypeScript directly with Node's type stripping, with no
-          compile step. The plugin itself runs on Node 20 or newer.
+          compile step. The plugin itself runs on Node 22 or newer.
         </p>
         <pre class="text"><code>npm install
 npm run check      # formatting, types, build dist/, then the tests
@@ -1214,7 +1234,7 @@ npm run format     # apply Prettier</code></pre>
               </tr>
               <tr>
                 <td><code>dist/</code></td>
-                <td>Built output, committed so installing needs no build step</td>
+                <td>Built output, not committed: <code>npm run build</code> makes it</td>
               </tr>
               <tr>
                 <td><code>docs/</code></td>
@@ -1224,14 +1244,16 @@ npm run format     # apply Prettier</code></pre>
           </table>
         </div>
         <p class="text">
-          Run <code>npm run build</code> after changing anything in <code>src/</code>, and commit
-          <code>dist/</code> with it. CI runs <code>npm run check</code> on Linux and macOS and fails if
-          <code>dist/</code> doesn't match the source.
+          Commit messages and pull request titles follow
+          <a href="https://www.conventionalcommits.org/">Conventional Commits</a>. Each push to <code>main</code> runs
+          <a href="https://semantic-release.gitbook.io/">semantic-release</a>: a <code>fix:</code> or
+          <code>feat:</code> publishes a new version, with a GitHub Release and the built plugin on the
+          <code>release</code> branch, which is what users install.
         </p>
         <p class="text">
-          To try a change without reinstalling, start Claude Code with <code>claude --plugin-dir .</code> from the
-          repository folder. <a href="https://github.com/sous17/sidenote/blob/main/AGENTS.md">AGENTS.md</a> has the
-          project's rules.
+          To try a change, run <code>npm run build</code>, then start Claude Code with
+          <code>claude --plugin-dir .</code> from the repository folder.
+          <a href="https://github.com/sous17/sidenote/blob/main/AGENTS.md">AGENTS.md</a> has the project's rules.
         </p>
 
         <footer>sidenote is MIT licensed.</footer>

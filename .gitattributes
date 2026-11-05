@@ -1,4 +1,2 @@
 * text=auto eol=lf
-# Built output: committed so installing needs no build step, hidden from diffs and language stats.
-dist/** linguist-generated=true -diff
 *.png binary

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +70,7 @@ before(async () => {
         openedFolders.push(path);
       },
       processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+      isTrusted: () => true,
       startSession: async (session) => {
         if (nextStartFails) throw new Error(nextStartFails);
         startedSessions.push(session);
@@ -317,6 +318,17 @@ describe("open folder", () => {
     assert.equal((await open({ session_id: "o1" }, { "X-Review-Token": "wrong" })).status, 403);
     assert.deepEqual(openedFolders, [folder, folder]);
   });
+
+  test("won't open an app, which macOS would run", async () => {
+    const app = mkdtempSync(join(tmpdir(), "sidenote-app-"));
+    mkdirSync(join(app, "Contents"));
+    writeFileSync(join(app, "Contents", "Info.plist"), "");
+    await call("POST", "/api/sessions", { session_id: "o3", cwd: app });
+    const opened = openedFolders.length;
+
+    assert.equal((await call("POST", "/api/open-folder", { session_id: "o3" })).status, 409);
+    assert.equal(openedFolders.length, opened);
+  });
 });
 
 describe("starting a session", () => {
@@ -374,6 +386,7 @@ describe("starting a session", () => {
         openFolder: () => {},
         startSession: null,
         processes: new SessionProcesses({ pidInUse, isSameProcess }, store.revision),
+        isTrusted: () => true,
       }),
     );
     await new Promise<void>((resolve) => bare.listen(0, "127.0.0.1", resolve));

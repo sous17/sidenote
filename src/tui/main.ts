@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { SidenoteClient } from "../cli/client.ts";
+import { ApiError, SidenoteClient } from "../cli/client.ts";
 import { paths } from "../node/paths.ts";
 import { SESSION_ID_PATTERN } from "../shared/types.ts";
 import type { AnsiOptions } from "./ansi.ts";
@@ -97,7 +97,15 @@ export async function runChat(args: string[]): Promise<void> {
 
   const { client } = await SidenoteClient.ensure();
   const api = new ClientApi(client, { startServer: true });
-  const sessionId = await api.startConversation(process.cwd(), requested);
+  let sessionId: string;
+  try {
+    sessionId = await api.startConversation(process.cwd(), requested);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 409) throw error;
+    console.error(error.detail);
+    process.exitCode = 1;
+    return;
+  }
   const { app, running } = startScreen(
     (terminal) =>
       new App({

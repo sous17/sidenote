@@ -5,13 +5,16 @@ import {
   BadRequest,
   LIMITS,
   parseActivity,
+  parseClaim,
   parseProgress,
   parseNewNote,
   parseNewResponse,
   parsePrompt,
+  parseRegisterSession,
   parseRename,
   parseSend,
   parseStartSession,
+  parseTouchSession,
   parseWaiter,
 } from "../src/server/requests.ts";
 import { FakeClock } from "./helpers.ts";
@@ -81,6 +84,34 @@ test("a name given in the window is one line, and empty removes it", () => {
   assert.throws(() => parseRename({ session_id: "s", label: "x".repeat(LIMITS.sessionName + 1) }), BadRequest);
   assert.throws(() => parseRename({ session_id: "s" }), BadRequest);
   assert.equal(parseStartSession({ session_id: "s", name: " a\tb " }).name, "a b");
+});
+
+test("text for a terminal keeps pasted whitespace and refuses keystrokes", () => {
+  const start = (fields: object) => parseStartSession({ session_id: "s", ...fields });
+  assert.equal(start({ prompt: "one\r\ntwo\tthree" }).prompt, "one\ntwo  three");
+  for (const char of ["\x03", "\x04", "\x15", "\x16", "\x1b", "\x7f", "\0"]) {
+    assert.throws(() => start({ prompt: `x${char}; rm -rf ~` }), BadRequest, JSON.stringify(char));
+    assert.throws(() => start({ name: `x${char}y` }), BadRequest, JSON.stringify(char));
+  }
+});
+
+test("a folder is an absolute path without control characters, or not given", () => {
+  const session_id = "s";
+  const parsers = [
+    (cwd: unknown) => parseTouchSession({ session_id, cwd }).cwd,
+    (cwd: unknown) => parseNewResponse({ session_id, text: "hi", cwd }).cwd,
+    (cwd: unknown) => parseClaim({ session_id, cwd }).cwd,
+    (cwd: unknown) => parseRegisterSession({ cwd }).cwd,
+  ];
+  for (const parse of parsers) {
+    assert.equal(parse("/home/me/shop api"), "/home/me/shop api");
+    for (const cwd of ["relative/path", "-a", "/home/me\x03", "/home/\0me"]) {
+      assert.throws(() => parse(cwd), BadRequest, JSON.stringify(cwd));
+    }
+  }
+  assert.equal(parseTouchSession({ session_id }).cwd, "");
+  assert.equal(parseClaim({ session_id, cwd: "" }).cwd, undefined);
+  assert.throws(() => parseRegisterSession({ cwd: "" }), BadRequest, "registering needs a folder");
 });
 
 test("a reported Claude process is a pid above 1 and a start time, or nothing", () => {

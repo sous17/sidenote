@@ -1,12 +1,12 @@
 {
   "name": "sidenote",
-  "version": "0.5.1",
+  "version": "0.0.0-development",
   "description": "Leave inline notes on Claude Code replies in your browser, and send them back to Claude.",
   "type": "module",
   "private": true,
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "node scripts/build.ts",

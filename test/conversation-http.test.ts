@@ -12,7 +12,7 @@ import { LaunchCodes } from "../src/server/launch.ts";
 import { SessionProcesses } from "../src/server/processes.ts";
 import { Store } from "../src/server/store.ts";
 import type { ConversationView, SendResult, StartConversationResult, StateSnapshot } from "../src/shared/types.ts";
-import { SidenoteClient } from "../src/cli/client.ts";
+import { ApiError, SidenoteClient } from "../src/cli/client.ts";
 import { ClientApi } from "../src/tui/api.ts";
 import { FakeAgent, noteOn } from "./helpers.ts";
 
@@ -23,6 +23,7 @@ const store = new Store();
 const agent = new FakeAgent();
 let base = "";
 let port = 0;
+let trusted = true;
 
 function app(host: SessionHost) {
   return createApp({
@@ -36,6 +37,7 @@ function app(host: SessionHost) {
     openFolder: () => {},
     startSession: null,
     processes: new SessionProcesses({ pidInUse: () => false, isSameProcess: () => false }, store.revision),
+    isTrusted: () => trusted,
   });
 }
 
@@ -80,6 +82,30 @@ test("starts a session in a folder, and refuses anything that isn't one", async 
   assert.equal((await call("POST", "/api/sessions/register", { cwd: `${folder}/missing` })).status, 400);
   assert.equal((await call("POST", "/api/sessions/register", { cwd: folder, session_id: "../x" })).status, 400);
   assert.equal((await call("GET", "/api/conversation?s=never-started")).status, 404);
+});
+
+test("a folder Claude Code doesn't trust starts nothing, and leaves no session behind", async () => {
+  const before = store.listSessions().length;
+  trusted = false;
+  try {
+    const registered = await call<{ error: string }>("POST", "/api/sessions/register", { cwd: folder });
+    assert.equal(registered.status, 409);
+    assert.match(registered.body.error, /accept its trust prompt/);
+    assert.equal(store.listSessions().length, before);
+  } finally {
+    trusted = true;
+  }
+});
+
+test("a session whose folder lost its trust can't be started either", async () => {
+  const id = (await call<{ session_id: string }>("POST", "/api/sessions/register", { cwd: folder })).body.session_id;
+  trusted = false;
+  try {
+    assert.equal((await call("POST", "/api/conversations", { session_id: id })).status, 409);
+    assert.equal((await call("GET", `/api/conversation?s=${id}`)).status, 404, "nothing was started");
+  } finally {
+    trusted = true;
+  }
 });
 
 test("starting a session takes its id, never a path", async () => {
@@ -155,6 +181,20 @@ test("an empty message without notes is refused with the reason", async () => {
   assert.match(refused.body.error, /nothing to send/);
   const unknown = await call("POST", "/api/conversation/messages", { session_id: "nope", text: "hi" });
   assert.equal(unknown.status, 404, "a session this server doesn't run, say after a restart");
+});
+
+test("the terminal gets the server's words for an untrusted folder, to show as they are", async () => {
+  const api = new ClientApi(new SidenoteClient({ port, token: TOKEN, pid: process.pid }));
+  trusted = false;
+  try {
+    await assert.rejects(
+      api.startConversation(folder),
+      (error: unknown) =>
+        error instanceof ApiError && error.status === 409 && error.detail.startsWith("Claude Code doesn't trust"),
+    );
+  } finally {
+    trusted = true;
+  }
 });
 
 test("the terminal starts its session again when the server restarted", async () => {
