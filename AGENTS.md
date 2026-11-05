@@ -65,6 +65,7 @@ These were settled with the maintainer. Don't change them without asking.
   names each session by the name given in the window, else `/rename`, else its first message. It
   docks only where the feed keeps
   room for notes in the margin, and a thread leaves it as the user set it. No view across folders.
+  Sessions `sidenote chat` runs stay out of it: they live in the terminal.
 - **Notes sit in the margin beside the reply.** Clicking a note splits the room beside the session
   list into two halves, the feed and that note's thread. The list stays docked or folded, as the
   user left it.

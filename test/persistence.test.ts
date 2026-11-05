@@ -220,3 +220,26 @@ test("a turn sidenote ran keeps its prompt and steps in the session's file", (t)
   assert.deepEqual(reply?.steps, [{ tool: "Edit", summary: "a.ts", after_block: -1, failed: false }]);
   assert.equal(reply?.ended, "interrupted");
 });
+
+test("a store from before chat was marked finds its chat sessions by their replies", () => {
+  const reply = { cwd: "/w", text: "hi", note_answers: {} };
+  const data = migrate({
+    responses: [
+      { ...reply, id: 1, session_id: "chat", created_at: 1, prompt: "Fix it" },
+      { ...reply, id: 2, session_id: "terminal", created_at: 2 },
+      { ...reply, id: 3, session_id: "moved", created_at: 3, prompt: "Fix it" },
+      { ...reply, id: 4, session_id: "moved", created_at: 4 },
+    ],
+  });
+  assert.equal(data.sessions.get("chat")?.chat, true);
+  assert.equal(data.sessions.get("terminal")?.chat, undefined);
+  assert.equal(data.sessions.get("moved")?.chat, undefined, "the latest reply decides");
+});
+
+test("a chat session stays marked through a restart, even before its first reply", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sidenote-chat-"));
+  const store = new Store({ dir });
+  store.touchSession(SESSION, "", "/w/shop");
+  store.markChat(SESSION);
+  assert.deepEqual(new Store({ dir }).folderSessions("shop"), []);
+});
