@@ -28,6 +28,10 @@ var init_paths = __esm({
       portFile: () => join(stateDir(), "port"),
       logFile: () => join(stateDir(), "server.log"),
       enabledFlag: () => join(stateDir(), "enabled"),
+      /** Where the installed plugin's launcher is now, for the command below. */
+      launcherFile: () => join(stateDir(), "launcher"),
+      /** The `sidenote` command. Claude Code's own installer uses this folder too. */
+      commandFile: () => join(homedir(), ".local", "bin", "sidenote"),
       transcriptsDir: () => join(homedir(), ".claude", "projects"),
       claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
       /** Claude Code's own state, which records the folders the user trusted. */
@@ -4912,7 +4916,7 @@ __export(main_exports, {
   terminalOptions: () => terminalOptions
 });
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { existsSync as existsSync3, mkdtempSync, readFileSync as readFileSync6, rmSync as rmSync2, writeFileSync } from "node:fs";
+import { existsSync as existsSync3, mkdtempSync, readFileSync as readFileSync7, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
 import { join as join4 } from "node:path";
 import { setTimeout as sleep3 } from "node:timers/promises";
@@ -5059,9 +5063,9 @@ function editInEditor(text) {
   const dir = mkdtempSync(join4(tmpdir(), "sidenote-note-"));
   const file = join4(dir, "note.md");
   try {
-    writeFileSync(file, text, { mode: 384 });
+    writeFileSync2(file, text, { mode: 384 });
     const result = spawnSync2(editor[0], [...editor.slice(1), file], { stdio: "inherit" });
-    return result.status === 0 ? readFileSync6(file, "utf8") : null;
+    return result.status === 0 ? readFileSync7(file, "utf8") : null;
   } catch {
     return null;
   } finally {
@@ -5083,8 +5087,8 @@ var init_main = __esm({
 });
 
 // src/cli/main.ts
-import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, join as join5 } from "node:path";
+import { appendFileSync, existsSync as existsSync4, mkdirSync as mkdirSync3, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname3, join as join5 } from "node:path";
 import { setTimeout as sleep4 } from "node:timers/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -5097,12 +5101,65 @@ init_paths();
 init_folders();
 init_client();
 
+// src/cli/command.ts
+init_paths();
+import { lstatSync, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync } from "node:fs";
+import { delimiter, dirname as dirname2 } from "node:path";
+var MARKER = "# Made by /sidenote:terminal.";
+var SCRIPT = `#!/bin/sh
+${MARKER} It runs the installed plugin, wherever its last update put it.
+launcher=$(cat "$HOME/.sidenote/launcher" 2>/dev/null)
+if [ ! -x "$launcher" ]; then
+  echo "sidenote can't find its plugin. Start Claude Code once, or install the plugin again." >&2
+  exit 1
+fi
+exec "$launcher" "$@"
+`;
+function ours(file) {
+  try {
+    return lstatSync(file).isFile() && readFileSync4(file, "utf8").includes(MARKER);
+  } catch {
+    return false;
+  }
+}
+function writeLauncher(launcher) {
+  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
+  writeFileSync(paths.launcherFile(), launcher, { mode: 384 });
+}
+var onPath = (folder) => (process.env["PATH"] ?? "").split(delimiter).includes(folder);
+function installCommand(launcher) {
+  const file = paths.commandFile();
+  if (lstatSync(file, { throwIfNoEntry: false }) && !ours(file)) {
+    return { ok: false, message: `${file} already exists and isn't sidenote's, so it was left alone.` };
+  }
+  writeLauncher(launcher);
+  mkdirSync2(dirname2(file), { recursive: true });
+  writeFileSync(file, SCRIPT, { mode: 493 });
+  const ready = "Run sidenote chat or sidenote tui from any terminal.";
+  if (onPath(dirname2(file))) return { ok: true, message: ready };
+  return {
+    ok: true,
+    message: `Installed ${file}, but that folder isn't on your PATH. Add this line to your shell's profile, then open a new terminal: export PATH="$HOME/.local/bin:$PATH"
+${ready}`
+  };
+}
+function commandInstalled() {
+  const file = paths.commandFile();
+  return ours(file) && onPath(dirname2(file));
+}
+function refreshLauncher(launcher) {
+  try {
+    if (lstatSync(paths.launcherFile(), { throwIfNoEntry: false })) writeLauncher(launcher);
+  } catch {
+  }
+}
+
 // src/cli/hooks.ts
 init_paths();
 init_process();
 init_client();
 import { randomBytes } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync5 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync6 } from "node:fs";
 import { setTimeout as sleep2 } from "node:timers/promises";
 
 // src/shared/format.ts
@@ -5238,7 +5295,7 @@ function firstLine(text) {
 }
 
 // src/cli/transcript.ts
-import { existsSync, readdirSync, readFileSync as readFileSync4 } from "node:fs";
+import { existsSync, readdirSync, readFileSync as readFileSync5 } from "node:fs";
 import { join as join3 } from "node:path";
 var QUESTION_TOOLS = /* @__PURE__ */ new Set(["AskUserQuestion", "ExitPlanMode"]);
 function findTranscript(transcriptsDir, sessionId) {
@@ -5310,7 +5367,7 @@ function cwdFromTranscript(transcript) {
   return "";
 }
 function readTranscript(file) {
-  return readFileSync4(file, "utf8");
+  return readFileSync5(file, "utf8");
 }
 function isUserPrompt(entry2) {
   if (entry2.isMeta) return false;
@@ -5330,7 +5387,7 @@ function reportedProcess() {
 function sessionName(transcriptPath) {
   if (!transcriptPath) return "";
   try {
-    return sessionNameFromTranscript(readFileSync5(transcriptPath, "utf8"));
+    return sessionNameFromTranscript(readFileSync6(transcriptPath, "utf8"));
   } catch {
     return "";
   }
@@ -5467,6 +5524,7 @@ var USAGE = `sidenote: leave inline notes on Claude Code replies in your browser
   sidenote open [session]      reopen the session's window
   sidenote status [session]    show the session's replies, notes and Send now status
   sidenote backfill [session]  import the session's earlier replies
+  sidenote install-command     put sidenote on your PATH, so it runs from any terminal
   sidenote hook-session        SessionStart hook: ask Claude to show code changes as diffs
   sidenote hook-stop           Stop hook: send the finished reply to its session's window
   sidenote hook-clear          SessionEnd hook: forget the session on /clear
@@ -5479,7 +5537,7 @@ The /sidenote:* commands pass the current session. Without one, the most recentl
 session is used.`;
 var NOT_RUNNING = "sidenote is off; use /sidenote:on first.";
 var SERVER_STOP_TIMEOUT_MS = 5e3;
-var LAUNCHER = join5(dirname2(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
+var LAUNCHER = join5(dirname3(fileURLToPath2(import.meta.url)), "..", "bin", "sidenote");
 function shellQuote(text) {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
@@ -5539,8 +5597,8 @@ async function exited(pid) {
   return false;
 }
 async function turnOn() {
-  mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
-  writeFileSync2(paths.enabledFlag(), "");
+  mkdirSync3(paths.stateDir(), { recursive: true, mode: 448 });
+  writeFileSync3(paths.enabledFlag(), "");
   const { client } = await SidenoteClient.ensure();
   return openWindow(client, sessionArgument2());
 }
@@ -5587,7 +5645,9 @@ var commands = {
     console.log(`replies: ${responses.length}`);
     console.log(`pending notes: ${comments.filter((c2) => c2.delivered_at === null).length}`);
     console.log(`Send now: ${session.status === "offline" ? "available after Claude's next reply" : "ready"}`);
-    console.log(`terminal: ${shellQuote(LAUNCHER)} tui ${session.id}`);
+    const short = commandInstalled();
+    console.log(`terminal: ${short ? "sidenote" : shellQuote(LAUNCHER)} tui ${session.id}`);
+    if (!short) console.log("tip: /sidenote:terminal installs a short sidenote command");
   },
   /** Imports the session's earlier replies from its transcript, so you can leave notes on them. */
   async backfill() {
@@ -5622,6 +5682,11 @@ var commands = {
     }
     console.log(`Imported ${imported} earlier replies of this session.`);
   },
+  "install-command": async () => {
+    const { ok, message } = installCommand(LAUNCHER);
+    console.log(message);
+    if (!ok) process.exitCode = 1;
+  },
   async tui() {
     const { runTui: runTui2 } = await Promise.resolve().then(() => (init_main(), main_exports));
     await runTui2(process.argv.slice(3));
@@ -5630,7 +5695,10 @@ var commands = {
     const { runChat: runChat2 } = await Promise.resolve().then(() => (init_main(), main_exports));
     await runChat2(process.argv.slice(3));
   },
-  "hook-session": () => runHook(hookSession),
+  "hook-session": () => {
+    refreshLauncher(LAUNCHER);
+    return runHook(hookSession);
+  },
   "hook-stop": () => runHook(hookStop),
   "hook-clear": () => runHook(hookClear),
   "hook-prompt": () => runHook(hookPrompt),
@@ -5645,7 +5713,7 @@ async function runHook(handler) {
     for await (const chunk of process.stdin) chunks.push(chunk);
     await handler(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
   } catch (error) {
-    mkdirSync2(paths.stateDir(), { recursive: true, mode: 448 });
+    mkdirSync3(paths.stateDir(), { recursive: true, mode: 448 });
     appendFileSync(paths.logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${handler.name} failed: ${String(error)}
 `, {
       mode: 384

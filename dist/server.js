@@ -25,6 +25,10 @@ var paths = {
   portFile: () => join(stateDir(), "port"),
   logFile: () => join(stateDir(), "server.log"),
   enabledFlag: () => join(stateDir(), "enabled"),
+  /** Where the installed plugin's launcher is now, for the command below. */
+  launcherFile: () => join(stateDir(), "launcher"),
+  /** The `sidenote` command. Claude Code's own installer uses this folder too. */
+  commandFile: () => join(homedir(), ".local", "bin", "sidenote"),
   transcriptsDir: () => join(homedir(), ".claude", "projects"),
   claudeSettings: () => join(process.env["CLAUDE_CONFIG_DIR"] ?? join(homedir(), ".claude"), "settings.json"),
   /** Claude Code's own state, which records the folders the user trusted. */
