@@ -1,6 +1,6 @@
 // src/server/main.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync as renameSync2, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname as dirname3, join as join7 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3982,7 +3982,11 @@ async function main() {
   const token = randomBytes2(32).toString("base64url");
   const allowedHosts = /* @__PURE__ */ new Set();
   let serverInfo = "";
-  const register = () => writeFileSync2(paths.serverFile(), serverInfo, { mode: 384 });
+  const register = () => {
+    const temp = `${paths.serverFile()}.tmp`;
+    writeFileSync2(temp, serverInfo, { mode: 384 });
+    renameSync2(temp, paths.serverFile());
+  };
   const watch = new ServerWatch({
     holdsLock: () => holdServerLock(paths.lockFile()),
     isRegistered: () => registeredPid() === process.pid,
