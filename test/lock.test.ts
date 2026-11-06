@@ -115,8 +115,12 @@ async function watchedServer(t: TestContext): Promise<{ server: ChildProcess; di
   mkdirSync(dir);
   const env = { ...process.env, HOME: home, SIDENOTE_WATCH_INTERVAL_MS: "50" };
   const server = spawn(process.execPath, [serverScript], { env, stdio: "ignore" });
-  t.after(() => {
-    server.kill();
+  t.after(async () => {
+    // A server still shutting down can write to its folder while the folder is being removed.
+    if (server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await once(server, "exit");
+    }
     rmSync(home, { recursive: true, force: true });
   });
   await until(() => existsSync(join(dir, "server.json")));
@@ -150,6 +154,19 @@ test("with server.json gone, a second server still finds the first and exits", a
   });
   await once(second, "exit");
   assert.equal(server.exitCode, null);
+});
+
+test("server.json is never seen half written, however closely it is watched", async (t) => {
+  const { server, dir } = await watchedServer(t);
+  const file = join(dir, "server.json");
+  const deadline = Date.now() + 5000;
+  for (let round = 0; round < 10; round += 1) {
+    writeFileSync(file, JSON.stringify({ port: 1, token: "t", pid: process.ppid }));
+    // Reading without a pause, because the gap in a plain write lasts a moment. A bad read throws.
+    while ((JSON.parse(readFileSync(file, "utf8")) as ServerInfo).pid !== server.pid) {
+      assert.ok(Date.now() < deadline, "the server didn't put server.json back");
+    }
+  }
 });
 
 test("a server that lost the lock leaves server.json alone, even when it names that server", async (t) => {
