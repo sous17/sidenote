@@ -1,6 +1,6 @@
 // The sidenote server: one per machine, started in the background by the CLI.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,7 +77,12 @@ async function main(): Promise<void> {
   const token = randomBytes(32).toString("base64url");
   const allowedHosts = new Set<string>();
   let serverInfo = "";
-  const register = (): void => writeFileSync(paths.serverFile(), serverInfo, { mode: 0o600 });
+  // Atomically: a client reading during a plain write would find an empty file, and no server.
+  const register = (): void => {
+    const temp = `${paths.serverFile()}.tmp`;
+    writeFileSync(temp, serverInfo, { mode: 0o600 });
+    renameSync(temp, paths.serverFile());
+  };
   const watch = new ServerWatch({
     holdsLock: () => holdServerLock(paths.lockFile()),
     isRegistered: () => registeredPid() === process.pid,
